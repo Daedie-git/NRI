@@ -37,7 +37,7 @@ static inline D3D12_BARRIER_SYNC GetBarrierSyncFlags(StageBits stageBits, Access
         return D3D12_BARRIER_SYNC_ALL;
 
     if (stageBits == StageBits::NONE)
-        return D3D12_BARRIER_SYNC_NONE;
+        return accessBits == AccessBits::NONE ? D3D12_BARRIER_SYNC_ALL : D3D12_BARRIER_SYNC_NONE;
 
     // Gather bits
     D3D12_BARRIER_SYNC flags = D3D12_BARRIER_SYNC_NONE; // = 0
@@ -90,7 +90,7 @@ static inline D3D12_BARRIER_SYNC GetBarrierSyncFlags(StageBits stageBits, Access
 static inline D3D12_BARRIER_ACCESS GetBarrierAccessFlags(AccessBits accessBits) {
     // Check non-mask values first
     if (accessBits == AccessBits::NONE)
-        return D3D12_BARRIER_ACCESS_NO_ACCESS;
+        return D3D12_BARRIER_ACCESS_COMMON;
 
     // Gather bits
     D3D12_BARRIER_ACCESS flags = D3D12_BARRIER_ACCESS_COMMON; // = 0
@@ -1030,6 +1030,19 @@ NRI_INLINE void CommandBufferD3D12::Barrier(const BarrierDesc& barrierDesc) {
                 out.LayoutBefore = GetBarrierLayout(in.before.layout, in.before.access);
                 out.LayoutAfter = GetBarrierLayout(in.after.layout, in.after.access);
                 out.pResource = texture;
+
+                // In D3D12 enhanced barriers, LAYOUT_UNDEFINED is only valid when paired with ACCESS_NO_ACCESS
+                // (or when both before/after are LAYOUT_UNDEFINED). Our higher-level barriers use UNDEFINED as a
+                // "discard/unknown" producer, so force the compatible access/sync here.
+                if (out.LayoutBefore == D3D12_BARRIER_LAYOUT_UNDEFINED) {
+                    out.SyncBefore = D3D12_BARRIER_SYNC_NONE;
+                    out.AccessBefore = D3D12_BARRIER_ACCESS_NO_ACCESS;
+                }
+                if (out.LayoutAfter == D3D12_BARRIER_LAYOUT_UNDEFINED) {
+                    out.SyncAfter = D3D12_BARRIER_SYNC_NONE;
+                    out.AccessAfter = D3D12_BARRIER_ACCESS_NO_ACCESS;
+                }
+
                 out.Subresources.IndexOrFirstMipLevel = in.mipOffset;
                 out.Subresources.NumMipLevels = in.mipNum == REMAINING ? desc.mipNum : in.mipNum;
                 out.Subresources.FirstArraySlice = in.layerOffset;
