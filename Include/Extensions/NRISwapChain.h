@@ -90,7 +90,7 @@ NriStruct(SwapChainDesc) {
     NriOptional uint8_t queuedFrameNum;         // aka "max frame latency", aka "number of frames in flight" (mostly for D3D11)
 
     // Present scaling and positioning, silently ignored if "features.resizableSwapChain" is not supported
-    NriOptional Nri(Scaling) scaling;           // VK: if scaling is not supported, "OUT_OF_DATE" error is triggered on resizing
+    NriOptional Nri(Scaling) scaling;           // VK: silently disabled if unsupported for selected present mode or image extent
     NriOptional Nri(Gravity) gravityX;
     NriOptional Nri(Gravity) gravityY;
 };

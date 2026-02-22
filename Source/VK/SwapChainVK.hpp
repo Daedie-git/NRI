@@ -303,10 +303,42 @@ Result SwapChainVK::Create(const SwapChainDesc& swapChainDesc) {
 
         // Scaling mode
         VkSwapchainPresentScalingCreateInfoEXT scalingInfo = {VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_SCALING_CREATE_INFO_EXT};
+        bool usePresentScaling = false;
         if (m_Device.m_IsSupported.swapChainMaintenance1) {
             scalingInfo.scalingBehavior = swapChainDesc.scaling == Scaling::STRETCH ? VK_PRESENT_SCALING_STRETCH_BIT_EXT : VK_PRESENT_SCALING_ONE_TO_ONE_BIT_EXT;
             scalingInfo.presentGravityX = GetGravity(swapChainDesc.gravityX);
             scalingInfo.presentGravityY = GetGravity(swapChainDesc.gravityY);
+
+            VkSurfacePresentModeEXT surfacePresentMode = {VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_EXT};
+            surfacePresentMode.presentMode = presentMode;
+
+            VkSurfacePresentScalingCapabilitiesEXT presentScalingCaps = {VK_STRUCTURE_TYPE_SURFACE_PRESENT_SCALING_CAPABILITIES_EXT};
+
+            VkPhysicalDeviceSurfaceInfo2KHR surfaceInfo = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR};
+            surfaceInfo.surface = m_Surface;
+            surfaceInfo.pNext = &surfacePresentMode;
+
+            VkSurfaceCapabilities2KHR caps2 = {VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
+            caps2.pNext = &presentScalingCaps;
+
+            VkResult vkResult = vk.GetPhysicalDeviceSurfaceCapabilities2KHR(m_Device, &surfaceInfo, &caps2);
+            NRI_RETURN_ON_BAD_VKRESULT(&m_Device, vkResult, "vkGetPhysicalDeviceSurfaceCapabilities2KHR");
+
+            const bool isScalingSupported = (presentScalingCaps.supportedPresentScaling & scalingInfo.scalingBehavior) != 0;
+            const bool isWidthValid = swapchainInfo.imageExtent.width >= presentScalingCaps.minScaledImageExtent.width
+                && swapchainInfo.imageExtent.width <= presentScalingCaps.maxScaledImageExtent.width;
+            const bool isHeightValid = swapchainInfo.imageExtent.height >= presentScalingCaps.minScaledImageExtent.height
+                && swapchainInfo.imageExtent.height <= presentScalingCaps.maxScaledImageExtent.height;
+
+            usePresentScaling = isScalingSupported && isWidthValid && isHeightValid;
+            if (!isScalingSupported) {
+                NRI_REPORT_WARNING(&m_Device, "Create(): Present scaling is unsupported for selected present mode; swap chain scaling will be disabled");
+            } else if (!isWidthValid || !isHeightValid) {
+                NRI_REPORT_WARNING(&m_Device, "Create(): Image extent is out of present scaling range; swap chain scaling will be disabled");
+            }
+        }
+
+        if (usePresentScaling) {
             APPEND_STRUCT(scalingInfo);
         }
 
