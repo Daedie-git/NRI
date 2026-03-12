@@ -15,16 +15,45 @@ static inline DXGI_FORMAT GetShaderFormatForDepth(DXGI_FORMAT format) {
     }
 }
 
-static inline uint32_t GetPlaneIndex(Format format) { // TODO: still unclear, is it needed for a stencil-only SRV?
+static inline uint32_t GetPlaneIndex(DXGI_FORMAT resourceFormat, Format viewFormat) { // TODO: still unclear, is it needed for a stencil-only SRV?
     // https://microsoft.github.io/DirectX-Specs/d3d/PlanarDepthStencilDDISpec.html
-    switch (format) {
+    switch (viewFormat) {
         case Format::X32_G8_UINT_X24:
         case Format::X24_G8_UINT:
             return 1;
 
         default:
-            return 0;
+            break;
     }
+
+    // NV12/P010/P016 expose luma in plane 0 and chroma in plane 1.
+    switch (resourceFormat) {
+        case DXGI_FORMAT_NV12:
+            switch (viewFormat) {
+                case Format::R8_UNORM:
+                    return 0;
+                case Format::RG8_UNORM:
+                    return 1;
+                default:
+                    break;
+            }
+            break;
+        case DXGI_FORMAT_P010:
+        case DXGI_FORMAT_P016:
+            switch (viewFormat) {
+                case Format::R16_UNORM:
+                    return 0;
+                case Format::RG16_UNORM:
+                    return 1;
+                default:
+                    break;
+            }
+            break;
+        default:
+            break;
+    }
+
+    return 0;
 }
 
 static inline uint32_t GetComponentSwizzle(ComponentSwizzle componentSwizzle, uint32_t channelIndex) {
@@ -58,6 +87,7 @@ static inline uint32_t GetComponentMapping(const ComponentMapping& componentMapp
 Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
     const TextureD3D12& textureD3D12 = *(TextureD3D12*)textureViewDesc.texture;
     const TextureDesc& textureDesc = textureD3D12.GetDesc();
+    const DXGI_FORMAT resourceFormat = ((ID3D12Resource*)textureD3D12)->GetDesc().Format;
 
     DXGI_FORMAT format = GetDxgiFormat(textureViewDesc.format).typed;
     Dim_t mipNum = textureViewDesc.mipNum == REMAINING ? (textureDesc.mipNum - textureViewDesc.mipOffset) : textureViewDesc.mipNum;
@@ -157,7 +187,7 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
                     desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     desc.Texture2D.MostDetailedMip = textureViewDesc.mipOffset;
                     desc.Texture2D.MipLevels = mipNum;
-                    desc.Texture2D.PlaneSlice = GetPlaneIndex(textureViewDesc.format);
+                    desc.Texture2D.PlaneSlice = GetPlaneIndex(resourceFormat, textureViewDesc.format);
                 }
 
                 return CreateShaderResourceView(textureD3D12, desc);
@@ -176,7 +206,7 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
                     desc.Texture2DArray.MipLevels = mipNum;
                     desc.Texture2DArray.FirstArraySlice = textureViewDesc.layerOffset;
                     desc.Texture2DArray.ArraySize = layerNum;
-                    desc.Texture2DArray.PlaneSlice = GetPlaneIndex(textureViewDesc.format);
+                    desc.Texture2DArray.PlaneSlice = GetPlaneIndex(resourceFormat, textureViewDesc.format);
                 }
 
                 return CreateShaderResourceView(textureD3D12, desc);
@@ -208,7 +238,7 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
                 desc.Format = format;
                 desc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
                 desc.Texture2D.MipSlice = textureViewDesc.mipOffset;
-                desc.Texture2D.PlaneSlice = GetPlaneIndex(textureViewDesc.format);
+                desc.Texture2D.PlaneSlice = GetPlaneIndex(resourceFormat, textureViewDesc.format);
 
                 return CreateUnorderedAccessView(textureD3D12, desc);
             }
@@ -219,7 +249,7 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
                 desc.Texture2DArray.MipSlice = textureViewDesc.mipOffset;
                 desc.Texture2DArray.FirstArraySlice = textureViewDesc.layerOffset;
                 desc.Texture2DArray.ArraySize = layerNum;
-                desc.Texture2DArray.PlaneSlice = GetPlaneIndex(textureViewDesc.format);
+                desc.Texture2DArray.PlaneSlice = GetPlaneIndex(resourceFormat, textureViewDesc.format);
 
                 return CreateUnorderedAccessView(textureD3D12, desc);
             }
@@ -235,7 +265,7 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
                     desc.Texture2DArray.MipSlice = textureViewDesc.mipOffset;
                     desc.Texture2DArray.FirstArraySlice = textureViewDesc.layerOffset;
                     desc.Texture2DArray.ArraySize = layerNum;
-                    desc.Texture2DArray.PlaneSlice = GetPlaneIndex(textureViewDesc.format);
+                    desc.Texture2DArray.PlaneSlice = GetPlaneIndex(resourceFormat, textureViewDesc.format);
                 }
 
                 return CreateRenderTargetView(textureD3D12, desc);
