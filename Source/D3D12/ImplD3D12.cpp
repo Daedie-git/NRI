@@ -1467,6 +1467,30 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
     commandBufferD3D12.DecodeVideo(desc);
 }
 
+static const VideoH265ReferenceDesc* FindVideoH265ReferenceDesc(const VideoH265ReferenceDesc* references, uint32_t referenceNum, uint32_t slot) {
+    if (!references)
+        return nullptr;
+
+    for (uint32_t i = 0; i < referenceNum; i++) {
+        if (references[i].slot == slot)
+            return &references[i];
+    }
+
+    return nullptr;
+}
+
+static const VideoH264ReferenceDesc* FindVideoEncodeH264ReferenceDesc(const VideoH264PictureDesc* h264PictureDesc, uint32_t slot) {
+    if (!h264PictureDesc)
+        return nullptr;
+
+    for (uint32_t i = 0; i < h264PictureDesc->referenceNum; i++) {
+        if (h264PictureDesc->references[i].slot == slot)
+            return &h264PictureDesc->references[i];
+    }
+
+    return nullptr;
+}
+
 static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEncodeDesc& videoEncodeDesc) {
     CommandBufferD3D12& commandBufferD3D12 = (CommandBufferD3D12&)commandBuffer;
     DeviceD3D12& device = commandBufferD3D12.GetDevice();
@@ -1482,9 +1506,23 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     }
 
     VideoSessionD3D12& session = *(VideoSessionD3D12*)videoEncodeDesc.session;
+    if (videoEncodeDesc.h264PictureDesc && session.m_Desc.codec != VideoCodec::H264) {
+        NRI_REPORT_ERROR(&device, "'h264PictureDesc' can only be used with H.264 sessions");
+        return;
+    }
+    if (videoEncodeDesc.h264PictureDesc && videoEncodeDesc.h264PictureDesc->referenceNum != 0 && !videoEncodeDesc.h264PictureDesc->references) {
+        NRI_REPORT_ERROR(&device, "'h264PictureDesc->references' is NULL");
+        return;
+    }
+
     VideoSessionParametersD3D12& parameters = *(VideoSessionParametersD3D12*)videoEncodeDesc.parameters;
     if (parameters.m_Session != &session) {
         NRI_REPORT_ERROR(&device, "'parameters' must belong to 'session'");
+        return;
+    }
+
+    if (videoEncodeDesc.h265ReferenceDescs && session.m_Desc.codec != VideoCodec::H265) {
+        NRI_REPORT_ERROR(&device, "'h265ReferenceDescs' can only be used with H.265 sessions");
         return;
     }
 
@@ -1492,9 +1530,25 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         NRI_REPORT_ERROR(&device, "'session' is not an encode session");
         return;
     }
+    if (session.m_Desc.codec == VideoCodec::H264 && videoEncodeDesc.referenceNum) {
+        if (!videoEncodeDesc.h264PictureDesc) {
+            NRI_REPORT_ERROR(&device, "'h264PictureDesc' must be valid when H.264 encode uses references");
+            return;
+        }
+        if (videoEncodeDesc.h264PictureDesc->referenceNum != videoEncodeDesc.referenceNum) {
+            NRI_REPORT_ERROR(&device, "'h264PictureDesc->referenceNum' must match 'referenceNum'");
+            return;
+        }
+    }
 
     Scratch<ID3D12Resource*> referenceResources = NRI_ALLOCATE_SCRATCH(device, ID3D12Resource*, videoEncodeDesc.referenceNum);
     Scratch<uint32_t> referenceSubresources = NRI_ALLOCATE_SCRATCH(device, uint32_t, videoEncodeDesc.referenceNum);
+    Scratch<UINT> h264List0References = NRI_ALLOCATE_SCRATCH(device, UINT, videoEncodeDesc.referenceNum);
+    Scratch<UINT> h264List1References = NRI_ALLOCATE_SCRATCH(device, UINT, videoEncodeDesc.referenceNum);
+    Scratch<D3D12_VIDEO_ENCODER_REFERENCE_PICTURE_DESCRIPTOR_H264> h264ReferenceDescriptors =
+        NRI_ALLOCATE_SCRATCH(device, D3D12_VIDEO_ENCODER_REFERENCE_PICTURE_DESCRIPTOR_H264, videoEncodeDesc.referenceNum);
+    uint32_t h264List0ReferenceNum = 0;
+    uint32_t h264List1ReferenceNum = 0;
     for (uint32_t i = 0; i < videoEncodeDesc.referenceNum; i++) {
         if (!videoEncodeDesc.references[i].picture) {
             NRI_REPORT_ERROR(&device, "'references[%u].picture' is NULL", i);
@@ -1504,6 +1558,31 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         VideoPictureD3D12& reference = *(VideoPictureD3D12*)videoEncodeDesc.references[i].picture;
         referenceResources[i] = (ID3D12Resource*)(*reference.m_Texture);
         referenceSubresources[i] = reference.m_Subresource;
+
+        if (session.m_Desc.codec == VideoCodec::H264) {
+            const VideoH264ReferenceDesc* referenceDesc = FindVideoEncodeH264ReferenceDesc(videoEncodeDesc.h264PictureDesc, videoEncodeDesc.references[i].slot);
+            if (!referenceDesc) {
+                NRI_REPORT_ERROR(&device, "'references[%u].slot' is not described by 'h264PictureDesc'", i);
+                return;
+            }
+
+            if (referenceDesc->listIndex == 0)
+                h264List0References[h264List0ReferenceNum++] = i;
+            else if (referenceDesc->listIndex == 1)
+                h264List1References[h264List1ReferenceNum++] = i;
+            else {
+                NRI_REPORT_ERROR(&device, "'h264PictureDesc->references' listIndex must be 0 or 1");
+                return;
+            }
+
+            h264ReferenceDescriptors[i] = {};
+            h264ReferenceDescriptors[i].ReconstructedPictureResourceIndex = i;
+            h264ReferenceDescriptors[i].IsLongTermReference = referenceDesc->longTermReference != 0;
+            h264ReferenceDescriptors[i].LongTermPictureIdx = referenceDesc->longTermPictureIndex;
+            h264ReferenceDescriptors[i].PictureOrderCountNumber = referenceDesc->pictureOrderCount;
+            h264ReferenceDescriptors[i].FrameDecodingOrderNumber = referenceDesc->frameNum;
+            h264ReferenceDescriptors[i].TemporalLayerIndex = referenceDesc->temporalLayer;
+        }
     }
 
     const VideoEncodeRateControlDesc defaultRateControl = {VideoEncodeRateControlMode::CQP, 26, 28, 30, 30, 1};
@@ -1521,12 +1600,13 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     rateControl.TargetFrameRate = {rateControlDesc.frameRateNumerator ? rateControlDesc.frameRateNumerator : 30, rateControlDesc.frameRateDenominator ? rateControlDesc.frameRateDenominator : 1};
 
     D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_H264 h264Gop = {};
-    h264Gop.GOPLength = 1;
-    h264Gop.PPicturePeriod = 0;
+    h264Gop.GOPLength = videoEncodeDesc.referenceNum ? 60 : 1;
+    h264Gop.PPicturePeriod = videoEncodeDesc.referenceNum ? 1 : 0;
 
     D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_HEVC hevcGop = {};
-    hevcGop.GOPLength = 1;
-    hevcGop.PPicturePeriod = 0;
+    hevcGop.GOPLength = session.m_Desc.maxReferenceNum ? 0 : 1;
+    hevcGop.PPicturePeriod = session.m_Desc.maxReferenceNum ? 1 : 0;
+    hevcGop.log2_max_pic_order_cnt_lsb_minus4 = 4;
 
     D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE gop = {};
     if (session.m_Desc.codec == VideoCodec::H264) {
@@ -1568,6 +1648,17 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         NRI_REPORT_ERROR(&device, "Unsupported video encode frame type");
         return;
     }
+    h264Picture.pic_parameter_set_id = videoEncodeDesc.h264PictureDesc ? videoEncodeDesc.h264PictureDesc->pictureParameterSetId : 0;
+    h264Picture.idr_pic_id = pictureDesc.idrPictureId;
+    h264Picture.PictureOrderCountNumber = pictureDesc.pictureOrderCount;
+    h264Picture.FrameDecodingOrderNumber = pictureDesc.frameIndex;
+    h264Picture.TemporalLayerIndex = pictureDesc.temporalLayer;
+    h264Picture.List0ReferenceFramesCount = h264List0ReferenceNum;
+    h264Picture.pList0ReferenceFrames = h264List0ReferenceNum ? h264List0References : nullptr;
+    h264Picture.List1ReferenceFramesCount = h264List1ReferenceNum;
+    h264Picture.pList1ReferenceFrames = h264List1ReferenceNum ? h264List1References : nullptr;
+    h264Picture.ReferenceFramesReconPictureDescriptorsCount = videoEncodeDesc.referenceNum;
+    h264Picture.pReferenceFramesReconPictureDescriptors = videoEncodeDesc.referenceNum ? h264ReferenceDescriptors : nullptr;
 
     D3D12_VIDEO_ENCODER_PICTURE_CONTROL_CODEC_DATA_HEVC hevcPicture = {};
     switch (pictureDesc.frameType) {
@@ -1586,6 +1677,43 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     case VideoEncodeFrameType::MAX_NUM:
         NRI_REPORT_ERROR(&device, "Unsupported video encode frame type");
         return;
+    }
+    if (session.m_Desc.codec == VideoCodec::H265 && videoEncodeDesc.referenceNum > 15) {
+        NRI_REPORT_ERROR(&device, "'referenceNum' exceeds the H.265 reference list size");
+        return;
+    }
+
+    Scratch<UINT> hevcList0References = NRI_ALLOCATE_SCRATCH(device, UINT, videoEncodeDesc.referenceNum ? videoEncodeDesc.referenceNum : 1);
+    Scratch<UINT> hevcList1References = NRI_ALLOCATE_SCRATCH(device, UINT, videoEncodeDesc.referenceNum ? videoEncodeDesc.referenceNum : 1);
+    Scratch<D3D12_VIDEO_ENCODER_REFERENCE_PICTURE_DESCRIPTOR_HEVC> hevcReferenceDescriptors =
+        NRI_ALLOCATE_SCRATCH(device, D3D12_VIDEO_ENCODER_REFERENCE_PICTURE_DESCRIPTOR_HEVC, videoEncodeDesc.referenceNum ? videoEncodeDesc.referenceNum : 1);
+    if (session.m_Desc.codec == VideoCodec::H265) {
+        const uint32_t list0ReferenceNum = pictureDesc.frameType == VideoEncodeFrameType::B && videoEncodeDesc.referenceNum > 1 ? 1 : videoEncodeDesc.referenceNum;
+        const uint32_t list1ReferenceNum = pictureDesc.frameType == VideoEncodeFrameType::B && videoEncodeDesc.referenceNum > 1 ? videoEncodeDesc.referenceNum - 1 : 0;
+        for (uint32_t i = 0; i < list0ReferenceNum; i++)
+            hevcList0References[i] = i;
+        for (uint32_t i = 0; i < list1ReferenceNum; i++)
+            hevcList1References[i] = list0ReferenceNum + i;
+
+        for (uint32_t i = 0; i < videoEncodeDesc.referenceNum; i++) {
+            const VideoH265ReferenceDesc* referenceDesc = FindVideoH265ReferenceDesc(videoEncodeDesc.h265ReferenceDescs, videoEncodeDesc.referenceNum, videoEncodeDesc.references[i].slot);
+            hevcReferenceDescriptors[i] = {};
+            hevcReferenceDescriptors[i].ReconstructedPictureResourceIndex = i;
+            hevcReferenceDescriptors[i].IsRefUsedByCurrentPic = TRUE;
+            hevcReferenceDescriptors[i].IsLongTermReference = referenceDesc && referenceDesc->longTerm;
+            hevcReferenceDescriptors[i].PictureOrderCountNumber = referenceDesc ? (UINT)referenceDesc->pictureOrderCount : videoEncodeDesc.references[i].slot;
+            hevcReferenceDescriptors[i].TemporalLayerIndex = referenceDesc ? referenceDesc->temporalLayer : 0;
+        }
+
+        hevcPicture.slice_pic_parameter_set_id = 0;
+        hevcPicture.PictureOrderCountNumber = (UINT)pictureDesc.pictureOrderCount;
+        hevcPicture.TemporalLayerIndex = pictureDesc.temporalLayer;
+        hevcPicture.List0ReferenceFramesCount = list0ReferenceNum;
+        hevcPicture.pList0ReferenceFrames = list0ReferenceNum ? hevcList0References : nullptr;
+        hevcPicture.List1ReferenceFramesCount = list1ReferenceNum;
+        hevcPicture.pList1ReferenceFrames = list1ReferenceNum ? hevcList1References : nullptr;
+        hevcPicture.ReferenceFramesReconPictureDescriptorsCount = videoEncodeDesc.referenceNum;
+        hevcPicture.pReferenceFramesReconPictureDescriptors = videoEncodeDesc.referenceNum ? hevcReferenceDescriptors : nullptr;
     }
 
     D3D12_VIDEO_ENCODER_PICTURE_CONTROL_CODEC_DATA pictureCodecData = {};

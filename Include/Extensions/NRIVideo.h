@@ -68,6 +68,14 @@ NriBits(VideoH264DecodePictureBits, uint8_t,
     COMPLEMENTARY_FIELD_PAIR            = NriBit(5)
 );
 
+NriBits(VideoH265DecodePictureBits, uint8_t,
+    NONE                                = 0,
+    IRAP                                = NriBit(0),
+    IDR                                 = NriBit(1),
+    REFERENCE                           = NriBit(2),
+    SHORT_TERM_REF_PIC_SET_SPS          = NriBit(3)
+);
+
 NriEnum(VideoEncodeFrameType, uint8_t,
     IDR,
     I,
@@ -176,6 +184,30 @@ NriStruct(VideoH264DecodePictureDesc) {
     uint32_t sliceOffsetNum;
 };
 
+NriStruct(VideoH265ReferenceDesc) {
+    uint32_t slot;
+    int32_t pictureOrderCount;
+    uint8_t temporalLayer;
+    Nri(VideoEncodeFrameType) frameType;
+    uint8_t longTerm;
+    uint8_t reserved;
+};
+
+NriStruct(VideoH265DecodePictureDesc) {
+    Nri(VideoH265DecodePictureBits) flags;
+    uint8_t videoParameterSetId;
+    uint8_t sequenceParameterSetId;
+    uint8_t pictureParameterSetId;
+    int32_t pictureOrderCount;
+    uint8_t numDeltaPocsOfRefRpsIdx;
+    uint8_t reserved;
+    uint16_t numBitsForShortTermRefPicSetInSlice;
+    NriOptional const uint32_t* sliceSegmentOffsets; // if provided, must include "sliceSegmentOffsetNum" entries
+    uint32_t sliceSegmentOffsetNum;
+    NriOptional const NriPtr(VideoH265ReferenceDesc) references; // if provided, must include "referenceNum" entries
+    uint32_t referenceNum;
+};
+
 NriStruct(VideoEncodeRateControlDesc) {
     Nri(VideoEncodeRateControlMode) mode;
     uint8_t qpI;
@@ -191,6 +223,26 @@ NriStruct(VideoEncodePictureDesc) {
     uint16_t idrPictureId;
     uint32_t frameIndex;
     int32_t pictureOrderCount;
+};
+
+NriStruct(VideoH264ReferenceDesc) {
+    Nri(VideoEncodeFrameType) frameType;
+    uint8_t temporalLayer;
+    uint8_t listIndex;
+    uint8_t longTermReference;
+    uint32_t frameNum;
+    int32_t pictureOrderCount;
+    uint32_t slot;
+    uint16_t longTermPictureIndex;
+    uint16_t longTermFrameIndex;
+};
+
+NriStruct(VideoH264PictureDesc) {
+    uint8_t sequenceParameterSetId;
+    uint8_t pictureParameterSetId;
+    uint16_t reserved;
+    NriOptional const NriPtr(VideoH264ReferenceDesc) references; // if provided, must include "referenceNum" entries
+    uint32_t referenceNum;
 };
 
 NriStruct(VideoAV1ReferenceDesc) {
@@ -224,6 +276,7 @@ NriStruct(VideoDecodeDesc) {
     NriOptional const NriPtr(VideoDecodeArgument) arguments; // if provided, must include "argumentNum" entries
     uint32_t argumentNum;
     NriOptional const NriPtr(VideoH264DecodePictureDesc) h264PictureDesc;
+    NriOptional const NriPtr(VideoH265DecodePictureDesc) h265PictureDesc;
 };
 
 NriStruct(VideoEncodeDesc) {
@@ -240,7 +293,9 @@ NriStruct(VideoEncodeDesc) {
     NriOptional const NriPtr(VideoReference) references; // if provided, must include "referenceNum" entries
     uint32_t referenceNum;
     uint32_t reconstructedSlot;
+    NriOptional const NriPtr(VideoH264PictureDesc) h264PictureDesc;
     NriOptional const NriPtr(VideoAV1PictureDesc) av1PictureDesc;
+    NriOptional const NriPtr(VideoH265ReferenceDesc) h265ReferenceDescs; // if provided, must include "referenceNum" entries
 };
 
 // Threadsafe: no
