@@ -79,6 +79,17 @@ NriEnum(VideoEncodeRateControlMode, uint8_t,
     CQP
 );
 
+NriEnum(VideoAV1ReferenceName, uint8_t,
+    NONE,
+    LAST,
+    LAST2,
+    LAST3,
+    GOLDEN,
+    BWDREF,
+    ALTREF2,
+    ALTREF
+);
+
 NriStruct(VideoSessionDesc) {
     Nri(VideoUsage) usage;
     Nri(VideoCodec) codec;
@@ -182,6 +193,25 @@ NriStruct(VideoEncodePictureDesc) {
     int32_t pictureOrderCount;
 };
 
+NriStruct(VideoAV1ReferenceDesc) {
+    Nri(VideoAV1ReferenceName) name;
+    uint8_t refFrameIndex;
+    Nri(VideoEncodeFrameType) frameType;
+    uint8_t orderHint;
+    uint32_t frameId;
+    uint32_t slot;
+};
+
+NriStruct(VideoAV1PictureDesc) {
+    uint32_t currentFrameId;
+    uint8_t orderHint;
+    uint8_t refreshFrameFlags;
+    Nri(VideoAV1ReferenceName) primaryReferenceName;
+    uint8_t reserved;
+    NriOptional const NriPtr(VideoAV1ReferenceDesc) references; // if provided, must include "referenceNum" entries
+    uint32_t referenceNum;
+};
+
 NriStruct(VideoDecodeDesc) {
     NriPtr(VideoSession) session;
     NriOptional NriPtr(VideoSessionParameters) parameters;
@@ -209,6 +239,8 @@ NriStruct(VideoEncodeDesc) {
     uint64_t metadataOffset;
     NriOptional const NriPtr(VideoReference) references; // if provided, must include "referenceNum" entries
     uint32_t referenceNum;
+    uint32_t reconstructedSlot;
+    NriOptional const NriPtr(VideoAV1PictureDesc) av1PictureDesc;
 };
 
 // Threadsafe: no

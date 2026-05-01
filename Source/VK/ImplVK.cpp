@@ -2076,6 +2076,61 @@ static StdVideoAV1FrameType GetVideoEncodeAV1FrameTypeVK(VideoEncodeFrameType fr
     return STD_VIDEO_AV1_FRAME_TYPE_INVALID;
 }
 
+static uint8_t GetVideoEncodeAV1ReferenceNameIndexVK(VideoAV1ReferenceName name) {
+    switch (name) {
+    case VideoAV1ReferenceName::NONE:
+        return STD_VIDEO_AV1_PRIMARY_REF_NONE;
+    case VideoAV1ReferenceName::LAST:
+        return 0;
+    case VideoAV1ReferenceName::LAST2:
+        return 1;
+    case VideoAV1ReferenceName::LAST3:
+        return 2;
+    case VideoAV1ReferenceName::GOLDEN:
+        return 3;
+    case VideoAV1ReferenceName::BWDREF:
+        return 4;
+    case VideoAV1ReferenceName::ALTREF2:
+        return 5;
+    case VideoAV1ReferenceName::ALTREF:
+        return 6;
+    case VideoAV1ReferenceName::MAX_NUM:
+        return STD_VIDEO_AV1_PRIMARY_REF_NONE;
+    }
+
+    return STD_VIDEO_AV1_PRIMARY_REF_NONE;
+}
+
+static bool HasVideoEncodeReferenceSlot(const VideoEncodeDesc& videoEncodeDesc, uint32_t slot) {
+    for (uint32_t i = 0; i < videoEncodeDesc.referenceNum; i++) {
+        if (videoEncodeDesc.references[i].slot == slot)
+            return true;
+    }
+
+    return false;
+}
+
+static bool HasVideoEncodeAV1ReferenceNameSlot(const int32_t* referenceNameSlotIndices, int32_t slot) {
+    for (uint32_t i = 0; i < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR; i++) {
+        if (referenceNameSlotIndices[i] == slot)
+            return true;
+    }
+
+    return false;
+}
+
+static const VideoAV1ReferenceDesc* FindVideoEncodeAV1ReferenceDesc(const VideoAV1PictureDesc* av1PictureDesc, uint32_t slot) {
+    if (!av1PictureDesc)
+        return nullptr;
+
+    for (uint32_t i = 0; i < av1PictureDesc->referenceNum; i++) {
+        if (av1PictureDesc->references[i].slot == slot)
+            return &av1PictureDesc->references[i];
+    }
+
+    return nullptr;
+}
+
 static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEncodeDesc& videoEncodeDesc) {
     CommandBufferVK& commandBufferVK = (CommandBufferVK&)commandBuffer;
     DeviceVK& device = commandBufferVK.GetDevice();
@@ -2102,6 +2157,18 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     VideoPictureVK& reconstructedPicture = *(VideoPictureVK*)videoEncodeDesc.reconstructedPicture;
     if (parameters.m_Session != &session) {
         NRI_REPORT_ERROR(&device, "'parameters' must belong to 'session'");
+        return;
+    }
+    if (videoEncodeDesc.av1PictureDesc && session.m_Desc.codec != VideoCodec::AV1) {
+        NRI_REPORT_ERROR(&device, "'av1PictureDesc' can only be used with AV1 sessions");
+        return;
+    }
+    if (videoEncodeDesc.av1PictureDesc && videoEncodeDesc.av1PictureDesc->referenceNum != 0 && !videoEncodeDesc.av1PictureDesc->references) {
+        NRI_REPORT_ERROR(&device, "'av1PictureDesc->references' is NULL");
+        return;
+    }
+    if (session.m_Desc.maxReferenceNum != 0 && videoEncodeDesc.reconstructedSlot > session.m_Desc.maxReferenceNum) {
+        NRI_REPORT_ERROR(&device, "'reconstructedSlot' exceeds the session DPB slot count");
         return;
     }
 
@@ -2199,15 +2266,16 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         h265StdSetupReference.TemporalId = h265StdPicture.TemporalId;
         h265SetupReference.pStdReferenceInfo = &h265StdSetupReference;
         break;
-    case VideoCodec::AV1:
+    case VideoCodec::AV1: {
         for (int32_t& slotIndex : av1Picture.referenceNameSlotIndices)
             slotIndex = -1;
+        const VideoAV1PictureDesc* av1PictureDesc = videoEncodeDesc.av1PictureDesc;
         av1StdPicture.frame_type = GetVideoEncodeAV1FrameTypeVK(pictureDesc.frameType);
         av1StdPicture.frame_presentation_time = pictureDesc.frameIndex;
-        av1StdPicture.current_frame_id = pictureDesc.frameIndex;
-        av1StdPicture.order_hint = (uint8_t)pictureDesc.pictureOrderCount;
+        av1StdPicture.current_frame_id = av1PictureDesc ? av1PictureDesc->currentFrameId : pictureDesc.frameIndex;
+        av1StdPicture.order_hint = av1PictureDesc ? av1PictureDesc->orderHint : (uint8_t)pictureDesc.pictureOrderCount;
         av1StdPicture.primary_ref_frame = STD_VIDEO_AV1_PRIMARY_REF_NONE;
-        av1StdPicture.refresh_frame_flags = pictureDesc.frameType == VideoEncodeFrameType::IDR ? 0xFF : 0;
+        av1StdPicture.refresh_frame_flags = av1PictureDesc ? av1PictureDesc->refreshFrameFlags : (pictureDesc.frameType == VideoEncodeFrameType::IDR ? 0xFF : 0);
         av1StdPicture.render_width_minus_1 = (uint16_t)(session.m_Desc.width - 1);
         av1StdPicture.render_height_minus_1 = (uint16_t)(session.m_Desc.height - 1);
         av1StdPicture.interpolation_filter = STD_VIDEO_AV1_INTERPOLATION_FILTER_SWITCHABLE;
@@ -2220,6 +2288,46 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         av1StdPicture.flags.showable_frame = true;
         for (int8_t& refFrameIndex : av1StdPicture.ref_frame_idx)
             refFrameIndex = -1;
+        if (av1PictureDesc) {
+            if (av1PictureDesc->referenceNum > VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR) {
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->referenceNum' exceeds AV1 reference name count");
+                return;
+            }
+
+            for (uint32_t i = 0; i < av1PictureDesc->referenceNum; i++) {
+                const VideoAV1ReferenceDesc& reference = av1PictureDesc->references[i];
+                const uint8_t referenceNameIndex = GetVideoEncodeAV1ReferenceNameIndexVK(reference.name);
+                if (referenceNameIndex >= VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR) {
+                    NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].name' is invalid", i);
+                    return;
+                }
+                if (!HasVideoEncodeReferenceSlot(videoEncodeDesc, reference.slot)) {
+                    NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].slot' is not present in 'references'", i);
+                    return;
+                }
+
+                av1Picture.referenceNameSlotIndices[referenceNameIndex] = (int32_t)reference.slot;
+                av1StdPicture.ref_frame_idx[referenceNameIndex] = (int8_t)reference.refFrameIndex;
+            }
+
+            for (uint32_t i = 0; i < videoEncodeDesc.referenceNum; i++) {
+                if (!HasVideoEncodeAV1ReferenceNameSlot(av1Picture.referenceNameSlotIndices, (int32_t)videoEncodeDesc.references[i].slot)) {
+                    NRI_REPORT_ERROR(&device, "'references[%u].slot' is not named by 'av1PictureDesc'", i);
+                    return;
+                }
+            }
+
+            const uint8_t primaryReferenceIndex = GetVideoEncodeAV1ReferenceNameIndexVK(av1PictureDesc->primaryReferenceName);
+            if (primaryReferenceIndex < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR && av1Picture.referenceNameSlotIndices[primaryReferenceIndex] < 0) {
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->primaryReferenceName' does not name an active reference");
+                return;
+            }
+            av1StdPicture.primary_ref_frame = primaryReferenceIndex;
+        } else if (videoEncodeDesc.referenceNum) {
+            av1Picture.referenceNameSlotIndices[0] = (int32_t)videoEncodeDesc.references[0].slot;
+            av1StdPicture.ref_frame_idx[0] = 0;
+            av1StdPicture.primary_ref_frame = 0;
+        }
         av1TileInfo.flags.uniform_tile_spacing_flag = true;
         av1TileInfo.TileCols = 1;
         av1TileInfo.TileRows = 1;
@@ -2239,8 +2347,13 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         av1StdPicture.pLoopFilter = &av1LoopFilter;
         av1StdPicture.pCDEF = &av1Cdef;
         av1StdPicture.pGlobalMotion = &av1GlobalMotion;
-        av1Picture.predictionMode = pictureDesc.frameType == VideoEncodeFrameType::B ? VK_VIDEO_ENCODE_AV1_PREDICTION_MODE_BIDIRECTIONAL_COMPOUND_KHR : VK_VIDEO_ENCODE_AV1_PREDICTION_MODE_INTRA_ONLY_KHR;
-        av1Picture.rateControlGroup = pictureDesc.frameType == VideoEncodeFrameType::B ? VK_VIDEO_ENCODE_AV1_RATE_CONTROL_GROUP_BIPREDICTIVE_KHR : VK_VIDEO_ENCODE_AV1_RATE_CONTROL_GROUP_INTRA_KHR;
+        const bool hasActiveAv1References = videoEncodeDesc.referenceNum != 0;
+        av1Picture.predictionMode = hasActiveAv1References
+            ? (pictureDesc.frameType == VideoEncodeFrameType::B ? VK_VIDEO_ENCODE_AV1_PREDICTION_MODE_BIDIRECTIONAL_COMPOUND_KHR : VK_VIDEO_ENCODE_AV1_PREDICTION_MODE_SINGLE_REFERENCE_KHR)
+            : VK_VIDEO_ENCODE_AV1_PREDICTION_MODE_INTRA_ONLY_KHR;
+        av1Picture.rateControlGroup = hasActiveAv1References
+            ? (pictureDesc.frameType == VideoEncodeFrameType::B ? VK_VIDEO_ENCODE_AV1_RATE_CONTROL_GROUP_BIPREDICTIVE_KHR : VK_VIDEO_ENCODE_AV1_RATE_CONTROL_GROUP_PREDICTIVE_KHR)
+            : VK_VIDEO_ENCODE_AV1_RATE_CONTROL_GROUP_INTRA_KHR;
         av1Picture.constantQIndex = rateControlDesc.qpI;
         av1Picture.pStdPictureInfo = &av1StdPicture;
         av1GopRemaining.useGopRemainingFrames = true;
@@ -2252,12 +2365,16 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         av1StdSetupReference.OrderHint = av1StdPicture.order_hint;
         av1SetupReference.pStdReferenceInfo = &av1StdSetupReference;
         break;
+    }
     case VideoCodec::MAX_NUM:
         NRI_REPORT_ERROR(&device, "Unsupported video encode codec");
         return;
     }
 
     Scratch<VkVideoReferenceSlotInfoKHR> referenceSlots = NRI_ALLOCATE_SCRATCH(device, VkVideoReferenceSlotInfoKHR, videoEncodeDesc.referenceNum + 1);
+    const uint32_t referenceScratchNum = videoEncodeDesc.referenceNum ? videoEncodeDesc.referenceNum : 1;
+    Scratch<StdVideoEncodeAV1ReferenceInfo> av1StdReferences = NRI_ALLOCATE_SCRATCH(device, StdVideoEncodeAV1ReferenceInfo, referenceScratchNum);
+    Scratch<VkVideoEncodeAV1DpbSlotInfoKHR> av1References = NRI_ALLOCATE_SCRATCH(device, VkVideoEncodeAV1DpbSlotInfoKHR, referenceScratchNum);
     for (uint32_t i = 0; i < videoEncodeDesc.referenceNum; i++) {
         if (!videoEncodeDesc.references[i].picture) {
             NRI_REPORT_ERROR(&device, "'references[%u].picture' is NULL", i);
@@ -2268,6 +2385,17 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         referenceSlots[i] = {VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
         referenceSlots[i].slotIndex = videoEncodeDesc.references[i].slot;
         referenceSlots[i].pPictureResource = &picture.m_Resource;
+
+        if (session.m_Desc.codec == VideoCodec::AV1) {
+            const VideoAV1ReferenceDesc* referenceDesc = FindVideoEncodeAV1ReferenceDesc(videoEncodeDesc.av1PictureDesc, videoEncodeDesc.references[i].slot);
+            av1StdReferences[i] = {};
+            av1StdReferences[i].frame_type = referenceDesc ? GetVideoEncodeAV1FrameTypeVK(referenceDesc->frameType) : STD_VIDEO_AV1_FRAME_TYPE_KEY;
+            av1StdReferences[i].RefFrameId = referenceDesc ? referenceDesc->frameId : videoEncodeDesc.references[i].slot;
+            av1StdReferences[i].OrderHint = referenceDesc ? referenceDesc->orderHint : 0;
+            av1References[i] = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_DPB_SLOT_INFO_KHR};
+            av1References[i].pStdReferenceInfo = &av1StdReferences[i];
+            referenceSlots[i].pNext = &av1References[i];
+        }
     }
 
     VkVideoReferenceSlotInfoKHR setupReferenceSlot = {VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
@@ -2279,7 +2407,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         else if (session.m_Desc.codec == VideoCodec::AV1)
             setupReferenceSlot.pNext = &av1SetupReference;
     }
-    setupReferenceSlot.slotIndex = session.m_Desc.maxReferenceNum ? 0 : -1;
+    setupReferenceSlot.slotIndex = session.m_Desc.maxReferenceNum ? (int32_t)videoEncodeDesc.reconstructedSlot : -1;
     setupReferenceSlot.pPictureResource = &reconstructedPicture.m_Resource;
 
     VkVideoEncodeInfoKHR encodeInfo = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR};
@@ -2301,6 +2429,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     if (session.m_Desc.maxReferenceNum) {
         referenceSlots[videoEncodeDesc.referenceNum] = setupReferenceSlot;
         referenceSlots[videoEncodeDesc.referenceNum].slotIndex = -1;
+        referenceSlots[videoEncodeDesc.referenceNum].pNext = nullptr;
     }
 
     VkVideoBeginCodingInfoKHR beginInfo = {VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR};
