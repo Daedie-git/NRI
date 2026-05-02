@@ -494,6 +494,40 @@ NRI_INLINE void CommandBufferD3D12::EncodeVideo(const VideoEncodeD3D12Desc& desc
         return;
     }
 
+    if (desc.d3d12InputArguments1 && desc.d3d12OutputArguments1) {
+        ComPtr<ID3D12VideoEncodeCommandList4> commandList;
+        HRESULT hr = std::get<ComPtr<ID3D12VideoEncodeCommandList>>(m_CommandList)->QueryInterface(IID_PPV_ARGS(&commandList));
+        if (FAILED(hr)) {
+            NRI_REPORT_ERROR(&m_Device, "ID3D12VideoEncodeCommandList4 is not supported");
+            return;
+        }
+
+        commandList->EncodeFrame1(
+            (ID3D12VideoEncoder*)desc.d3d12Encoder,
+            (ID3D12VideoEncoderHeap1*)desc.d3d12Heap1,
+            (D3D12_VIDEO_ENCODER_ENCODEFRAME_INPUT_ARGUMENTS1*)desc.d3d12InputArguments1,
+            (D3D12_VIDEO_ENCODER_ENCODEFRAME_OUTPUT_ARGUMENTS1*)desc.d3d12OutputArguments1);
+
+        if (desc.d3d12ResolveMetadataInputArguments1 && desc.d3d12ResolveMetadataOutputArguments1) {
+            const D3D12_VIDEO_ENCODER_RESOLVE_METADATA_INPUT_ARGUMENTS1& input =
+                *(const D3D12_VIDEO_ENCODER_RESOLVE_METADATA_INPUT_ARGUMENTS1*)desc.d3d12ResolveMetadataInputArguments1;
+
+            D3D12_RESOURCE_BARRIER metadataReady = {};
+            metadataReady.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+            metadataReady.Transition.pResource = input.HWLayoutMetadata.pBuffer;
+            metadataReady.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+            metadataReady.Transition.StateBefore = D3D12_RESOURCE_STATE_VIDEO_ENCODE_WRITE;
+            metadataReady.Transition.StateAfter = D3D12_RESOURCE_STATE_VIDEO_ENCODE_READ;
+            commandList->ResourceBarrier(1, &metadataReady);
+
+            commandList->ResolveEncoderOutputMetadata1(
+                (const D3D12_VIDEO_ENCODER_RESOLVE_METADATA_INPUT_ARGUMENTS1*)desc.d3d12ResolveMetadataInputArguments1,
+                (const D3D12_VIDEO_ENCODER_RESOLVE_METADATA_OUTPUT_ARGUMENTS1*)desc.d3d12ResolveMetadataOutputArguments1);
+        }
+
+        return;
+    }
+
     ComPtr<ID3D12VideoEncodeCommandList2> commandList;
     HRESULT hr = std::get<ComPtr<ID3D12VideoEncodeCommandList>>(m_CommandList)->QueryInterface(IID_PPV_ARGS(&commandList));
     if (FAILED(hr)) {
