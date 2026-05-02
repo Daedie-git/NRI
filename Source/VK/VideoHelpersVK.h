@@ -40,6 +40,75 @@ inline uint8_t GetVideoEncodeQPByFrameTypeVK(const VideoEncodeRateControlDesc& r
     return frameType == VideoEncodeFrameType::B ? rateControlDesc.qpB : (frameType == VideoEncodeFrameType::P ? rateControlDesc.qpP : rateControlDesc.qpI);
 }
 
+struct VideoEncodeHEVCReferenceListsVK {
+    std::array<uint32_t, STD_VIDEO_H265_MAX_NUM_LIST_REF> list0 = {};
+    std::array<uint32_t, STD_VIDEO_H265_MAX_NUM_LIST_REF> list1 = {};
+    uint32_t list0Num = 0;
+    uint32_t list1Num = 0;
+    uint32_t failingReference = 0;
+    bool missingDescriptor = false;
+    bool invalidPictureOrderCount = false;
+};
+
+inline const VideoH265ReferenceDesc* FindVideoH265ReferenceDescVK(const VideoH265ReferenceDesc* references, uint32_t referenceNum, uint32_t slot) {
+    if (!references)
+        return nullptr;
+
+    for (uint32_t i = 0; i < referenceNum; i++) {
+        if (references[i].slot == slot)
+            return &references[i];
+    }
+
+    return nullptr;
+}
+
+inline bool BuildVideoEncodeHEVCReferenceListsVK(const VideoReference* references, const VideoH265ReferenceDesc* referenceDescs, uint32_t referenceNum,
+    VideoEncodeFrameType frameType, int32_t currentPictureOrderCount, VideoEncodeHEVCReferenceListsVK& lists) {
+    lists = {};
+
+    if (referenceNum > STD_VIDEO_H265_MAX_NUM_LIST_REF) {
+        lists.failingReference = STD_VIDEO_H265_MAX_NUM_LIST_REF;
+        return false;
+    }
+
+    if (referenceNum && !referenceDescs) {
+        lists.missingDescriptor = true;
+        return false;
+    }
+
+    for (uint32_t i = 0; i < referenceNum; i++) {
+        const VideoH265ReferenceDesc* referenceDesc = FindVideoH265ReferenceDescVK(referenceDescs, referenceNum, references[i].slot);
+        if (!referenceDesc) {
+            lists.failingReference = i;
+            lists.missingDescriptor = true;
+            return false;
+        }
+
+        if (referenceDesc->pictureOrderCount < currentPictureOrderCount)
+            lists.list0[lists.list0Num++] = i;
+        else if (referenceDesc->pictureOrderCount > currentPictureOrderCount) {
+            if (frameType != VideoEncodeFrameType::B) {
+                lists.failingReference = i;
+                lists.invalidPictureOrderCount = true;
+                return false;
+            }
+
+            lists.list1[lists.list1Num++] = i;
+        } else {
+            lists.failingReference = i;
+            lists.invalidPictureOrderCount = true;
+            return false;
+        }
+    }
+
+    if (referenceNum && !lists.list0Num) {
+        lists.invalidPictureOrderCount = true;
+        return false;
+    }
+
+    return true;
+}
+
 struct VideoEncodeAV1ReferenceMappingVK {
     std::array<int32_t, VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR> referenceNameSlotIndices = {};
     std::array<int8_t, VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR> refFrameIndices = {};
