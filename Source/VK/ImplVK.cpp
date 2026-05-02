@@ -2610,7 +2610,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         av1StdPicture.refresh_frame_flags = av1PictureDesc ? av1PictureDesc->refreshFrameFlags : (pictureDesc.frameType == VideoEncodeFrameType::IDR ? 0xFF : 0);
         av1StdPicture.render_width_minus_1 = (uint16_t)(session.m_Desc.width - 1);
         av1StdPicture.render_height_minus_1 = (uint16_t)(session.m_Desc.height - 1);
-        av1StdPicture.interpolation_filter = STD_VIDEO_AV1_INTERPOLATION_FILTER_SWITCHABLE;
+        av1StdPicture.interpolation_filter = STD_VIDEO_AV1_INTERPOLATION_FILTER_EIGHTTAP;
         av1StdPicture.TxMode = STD_VIDEO_AV1_TX_MODE_SELECT;
         av1StdPicture.flags.error_resilient_mode = true;
         av1StdPicture.flags.disable_cdf_update = true;
@@ -2622,7 +2622,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
             FillVideoAV1PictureFlagsVK(av1StdPicture.flags, av1PictureDesc->flags);
             av1StdPicture.render_width_minus_1 = av1PictureDesc->renderWidthMinus1 ? av1PictureDesc->renderWidthMinus1 : av1StdPicture.render_width_minus_1;
             av1StdPicture.render_height_minus_1 = av1PictureDesc->renderHeightMinus1 ? av1PictureDesc->renderHeightMinus1 : av1StdPicture.render_height_minus_1;
-            av1StdPicture.interpolation_filter = (StdVideoAV1InterpolationFilter)(av1PictureDesc->interpolationFilter ? av1PictureDesc->interpolationFilter : STD_VIDEO_AV1_INTERPOLATION_FILTER_SWITCHABLE);
+            av1StdPicture.interpolation_filter = (StdVideoAV1InterpolationFilter)av1PictureDesc->interpolationFilter;
             av1StdPicture.TxMode = (StdVideoAV1TxMode)(av1PictureDesc->txMode ? av1PictureDesc->txMode : STD_VIDEO_AV1_TX_MODE_SELECT);
             av1StdPicture.coded_denom = av1PictureDesc->codedDenom;
             av1StdPicture.delta_q_res = av1PictureDesc->deltaQRes;
@@ -2633,6 +2633,11 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         if (av1StdPicture.frame_type == STD_VIDEO_AV1_FRAME_TYPE_KEY) {
             av1StdPicture.primary_ref_frame = STD_VIDEO_AV1_PRIMARY_REF_NONE;
             av1StdPicture.refresh_frame_flags = 0xFF;
+        } else if (videoEncodeDesc.referenceNum) {
+            av1StdPicture.flags.error_resilient_mode = false;
+            av1StdPicture.flags.disable_cdf_update = false;
+            av1StdPicture.flags.allow_screen_content_tools = false;
+            av1StdPicture.flags.force_integer_mv = false;
         }
         av1StdPicture.flags.showable_frame = av1StdPicture.frame_type != STD_VIDEO_AV1_FRAME_TYPE_KEY;
         if (av1StdPicture.refresh_frame_flags && !videoEncodeDesc.reconstructedPicture) {
