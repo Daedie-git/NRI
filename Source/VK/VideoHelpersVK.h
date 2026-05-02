@@ -11,7 +11,7 @@
 
 namespace nri {
 
-inline uint8_t GetVideoEncodeAV1ReferenceNameIndexVK(VideoAV1ReferenceName name) {
+inline uint8_t GetVideoAV1ReferenceNameIndexVK(VideoAV1ReferenceName name) {
     switch (name) {
     case VideoAV1ReferenceName::NONE:
         return STD_VIDEO_AV1_PRIMARY_REF_NONE;
@@ -34,6 +34,17 @@ inline uint8_t GetVideoEncodeAV1ReferenceNameIndexVK(VideoAV1ReferenceName name)
     }
 
     return STD_VIDEO_AV1_PRIMARY_REF_NONE;
+}
+
+inline uint8_t GetVideoAV1NamedReferenceIndexVK(VideoAV1ReferenceName name) {
+    const uint8_t referenceNameIndex = GetVideoAV1ReferenceNameIndexVK(name);
+    return name != VideoAV1ReferenceName::NONE && referenceNameIndex < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR
+        ? referenceNameIndex
+        : VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR;
+}
+
+inline uint8_t GetVideoEncodeAV1ReferenceNameIndexVK(VideoAV1ReferenceName name) {
+    return GetVideoAV1ReferenceNameIndexVK(name);
 }
 
 inline uint8_t GetVideoEncodeQPByFrameTypeVK(const VideoEncodeRateControlDesc& rateControlDesc, VideoEncodeFrameType frameType) {
@@ -401,6 +412,14 @@ struct VideoEncodeAV1ReferenceMappingVK {
     bool missingPrimaryReference = false;
 };
 
+struct VideoDecodeAV1ReferenceMappingVK {
+    std::array<int32_t, VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR> referenceNameSlotIndices = {};
+    uint32_t failingReference = 0;
+    bool invalidName = false;
+    bool invalidRefFrameIndex = false;
+    bool missingPrimaryReference = false;
+};
+
 inline bool HasVideoReferenceSlotVK(const VideoReference* references, uint32_t referenceNum, uint32_t slot) {
     for (uint32_t i = 0; i < referenceNum; i++) {
         if (references[i].slot == slot)
@@ -439,7 +458,7 @@ inline bool BuildVideoEncodeAV1ReferenceMappingVK(const VideoReference* referenc
             return false;
         }
 
-        const uint8_t referenceNameIndex = GetVideoEncodeAV1ReferenceNameIndexVK(reference.name);
+        const uint8_t referenceNameIndex = GetVideoAV1NamedReferenceIndexVK(reference.name);
         if (reference.name == VideoAV1ReferenceName::NONE)
             continue;
 
@@ -453,7 +472,54 @@ inline bool BuildVideoEncodeAV1ReferenceMappingVK(const VideoReference* referenc
         mapping.refFrameIndices[referenceNameIndex] = (int8_t)reference.refFrameIndex;
     }
 
-    const uint8_t primaryReferenceIndex = GetVideoEncodeAV1ReferenceNameIndexVK(pictureDesc.primaryReferenceName);
+    const uint8_t primaryReferenceIndex = GetVideoAV1ReferenceNameIndexVK(pictureDesc.primaryReferenceName);
+    if (primaryReferenceIndex < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR && mapping.referenceNameSlotIndices[primaryReferenceIndex] < 0) {
+        mapping.missingPrimaryReference = true;
+        return false;
+    }
+
+    return true;
+}
+
+inline bool BuildVideoDecodeAV1ReferenceMappingVK(const VideoAV1DecodePictureDesc& pictureDesc, VideoDecodeAV1ReferenceMappingVK& mapping) {
+    for (int32_t& slotIndex : mapping.referenceNameSlotIndices)
+        slotIndex = -1;
+    mapping.failingReference = 0;
+    mapping.invalidName = false;
+    mapping.invalidRefFrameIndex = false;
+    mapping.missingPrimaryReference = false;
+
+    if (pictureDesc.referenceNum > 8) {
+        mapping.failingReference = 8;
+        return false;
+    }
+
+    for (uint32_t i = 0; i < pictureDesc.referenceNum; i++) {
+        const VideoAV1ReferenceDesc& reference = pictureDesc.references[i];
+        if (reference.refFrameIndex >= 8) {
+            mapping.failingReference = i;
+            mapping.invalidRefFrameIndex = true;
+            return false;
+        }
+
+        const uint8_t referenceNameIndex = GetVideoAV1NamedReferenceIndexVK(reference.name);
+        if (reference.name == VideoAV1ReferenceName::NONE)
+            continue;
+
+        if (referenceNameIndex >= VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR) {
+            mapping.failingReference = i;
+            mapping.invalidName = true;
+            return false;
+        }
+
+        mapping.referenceNameSlotIndices[referenceNameIndex] = (int32_t)reference.slot;
+    }
+
+    const uint8_t primaryReferenceIndex = GetVideoAV1ReferenceNameIndexVK(pictureDesc.primaryReferenceName);
+    if (pictureDesc.primaryReferenceName == VideoAV1ReferenceName::MAX_NUM) {
+        mapping.invalidName = true;
+        return false;
+    }
     if (primaryReferenceIndex < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR && mapping.referenceNameSlotIndices[primaryReferenceIndex] < 0) {
         mapping.missingPrimaryReference = true;
         return false;

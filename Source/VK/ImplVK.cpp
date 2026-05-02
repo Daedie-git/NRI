@@ -2116,7 +2116,20 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         av1StdPicture.frame_type = GetVideoAV1FrameTypeVK(desc.frameType);
         av1StdPicture.current_frame_id = desc.currentFrameId;
         av1StdPicture.OrderHint = desc.orderHint;
-        av1StdPicture.primary_ref_frame = GetVideoEncodeAV1ReferenceNameIndexVK(desc.primaryReferenceName);
+        VideoDecodeAV1ReferenceMappingVK referenceMapping = {};
+        if (!BuildVideoDecodeAV1ReferenceMappingVK(desc, referenceMapping)) {
+            if (referenceMapping.invalidName)
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].name' or 'av1PictureDesc->primaryReferenceName' is invalid", referenceMapping.failingReference);
+            else if (referenceMapping.invalidRefFrameIndex)
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].refFrameIndex' is invalid", referenceMapping.failingReference);
+            else if (referenceMapping.missingPrimaryReference)
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->primaryReferenceName' does not name an active reference");
+            else
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->referenceNum' exceeds AV1 DPB slot count");
+            return;
+        }
+
+        av1StdPicture.primary_ref_frame = GetVideoAV1ReferenceNameIndexVK(desc.primaryReferenceName);
         av1StdPicture.refresh_frame_flags = desc.refreshFrameFlags;
         av1StdPicture.interpolation_filter = (StdVideoAV1InterpolationFilter)(desc.interpolationFilter ? desc.interpolationFilter : STD_VIDEO_AV1_INTERPOLATION_FILTER_SWITCHABLE);
         av1StdPicture.TxMode = (StdVideoAV1TxMode)(desc.txMode ? desc.txMode : STD_VIDEO_AV1_TX_MODE_SELECT);
@@ -2128,17 +2141,11 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
 
         for (uint32_t i = 0; i < desc.referenceNum; i++) {
             const VideoAV1ReferenceDesc& reference = desc.references[i];
-            if (reference.refFrameIndex >= 8) {
-                NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].refFrameIndex' is invalid", i);
-                return;
-            }
-
             av1StdPicture.OrderHints[reference.refFrameIndex] = reference.orderHint;
             av1StdPicture.expectedFrameId[reference.refFrameIndex] = reference.frameId;
-            const uint8_t referenceNameIndex = GetVideoEncodeAV1ReferenceNameIndexVK(reference.name);
-            if (referenceNameIndex < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR)
-                av1Picture.referenceNameSlotIndices[referenceNameIndex] = (int32_t)reference.slot;
         }
+        for (uint32_t i = 0; i < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR; i++)
+            av1Picture.referenceNameSlotIndices[i] = referenceMapping.referenceNameSlotIndices[i];
 
         av1TileInfo.flags.uniform_tile_spacing_flag = true;
         av1TileInfo.TileCols = 1;
@@ -2665,7 +2672,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
                 av1Picture.referenceNameSlotIndices[i] = referenceMapping.referenceNameSlotIndices[i];
                 av1StdPicture.ref_frame_idx[i] = referenceMapping.refFrameIndices[i];
             }
-            const uint8_t primaryReferenceIndex = GetVideoEncodeAV1ReferenceNameIndexVK(av1PictureDesc->primaryReferenceName);
+            const uint8_t primaryReferenceIndex = GetVideoAV1ReferenceNameIndexVK(av1PictureDesc->primaryReferenceName);
             const int8_t primaryRefFrameIndex = primaryReferenceIndex < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR ? referenceMapping.refFrameIndices[primaryReferenceIndex] : -1;
             if (primaryRefFrameIndex >= 0) {
                 for (int8_t& refFrameIndex : av1StdPicture.ref_frame_idx) {
