@@ -1246,6 +1246,20 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
         if (configuration.DecodeProfile == GUID {})
             return Result::UNSUPPORTED;
 
+        D3D12_FEATURE_DATA_VIDEO_DECODE_SUPPORT decodeSupport = {};
+        decodeSupport.Configuration = configuration;
+        decodeSupport.Width = videoSessionDesc.width;
+        decodeSupport.Height = videoSessionDesc.height;
+        decodeSupport.DecodeFormat = GetDxgiFormat(videoSessionDesc.format).typed;
+        decodeSupport.FrameRate = {30, 1};
+        hr = videoDevice->CheckFeatureSupport(D3D12_FEATURE_VIDEO_DECODE_SUPPORT, &decodeSupport, sizeof(decodeSupport));
+        NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12VideoDevice::CheckFeatureSupport(D3D12_FEATURE_VIDEO_DECODE_SUPPORT)");
+        if ((decodeSupport.SupportFlags & D3D12_VIDEO_DECODE_SUPPORT_FLAG_SUPPORTED) == 0) {
+            NRI_REPORT_WARNING(&m_Device, "D3D12 video decode support rejected: supportFlags=0x%X configurationFlags=0x%X decodeTier=0x%X", decodeSupport.SupportFlags,
+                decodeSupport.ConfigurationFlags, decodeSupport.DecodeTier);
+            return Result::UNSUPPORTED;
+        }
+
         D3D12_VIDEO_DECODER_DESC decoderDesc = {};
         decoderDesc.Configuration = configuration;
 
@@ -1435,7 +1449,7 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
             encoderSupport.SubregionFrameEncoding = D3D12_VIDEO_ENCODER_FRAME_SUBREGION_LAYOUT_MODE_FULL_FRAME;
             encoderSupport.ResolutionsListCount = 1;
             encoderSupport.pResolutionList = &resolution;
-            encoderSupport.MaxReferenceFramesInDPB = videoSessionDesc.maxReferenceNum;
+            encoderSupport.MaxReferenceFramesInDPB = 8;
             encoderSupport.SuggestedProfile = profile;
             encoderSupport.SuggestedLevel = suggestedLevel;
             encoderSupport.pResolutionDependentSupport = &resolutionLimits;
@@ -1495,32 +1509,15 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
             level.pAV1LevelSetting = &av1Level;
         }
 
-        if (videoSessionDesc.codec == VideoCodec::AV1) {
-            ComPtr<ID3D12VideoDevice4> videoDevice4;
-            hr = m_Device->QueryInterface(IID_PPV_ARGS(&videoDevice4));
-            NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12Device::QueryInterface(ID3D12VideoDevice4)");
+        D3D12_VIDEO_ENCODER_HEAP_DESC heapDesc = {};
+        heapDesc.EncodeCodec = codec;
+        heapDesc.EncodeProfile = profile;
+        heapDesc.EncodeLevel = level;
+        heapDesc.ResolutionsListCount = 1;
+        heapDesc.pResolutionList = &resolution;
 
-            D3D12_VIDEO_ENCODER_HEAP_DESC1 heapDesc = {};
-            heapDesc.EncodeCodec = codec;
-            heapDesc.EncodeProfile = profile;
-            heapDesc.EncodeLevel = level;
-            heapDesc.ResolutionsListCount = 1;
-            heapDesc.pResolutionList = &resolution;
-
-            hr = videoDevice4->CreateVideoEncoderHeap1(&heapDesc, IID_PPV_ARGS(&m_EncoderHeap1));
-            NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12VideoDevice4::CreateVideoEncoderHeap1");
-            m_EncoderHeap = m_EncoderHeap1.GetInterface();
-        } else {
-            D3D12_VIDEO_ENCODER_HEAP_DESC heapDesc = {};
-            heapDesc.EncodeCodec = codec;
-            heapDesc.EncodeProfile = profile;
-            heapDesc.EncodeLevel = level;
-            heapDesc.ResolutionsListCount = 1;
-            heapDesc.pResolutionList = &resolution;
-
-            hr = videoDevice->CreateVideoEncoderHeap(&heapDesc, IID_PPV_ARGS(&m_EncoderHeap));
-            NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12VideoDevice3::CreateVideoEncoderHeap");
-        }
+        hr = videoDevice->CreateVideoEncoderHeap(&heapDesc, IID_PPV_ARGS(&m_EncoderHeap));
+        NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12VideoDevice3::CreateVideoEncoderHeap");
     } else
         return Result::UNSUPPORTED;
 
@@ -1724,9 +1721,9 @@ static uint32_t GetVideoEncodeAV1ReferenceNameIndexD3D12(VideoAV1ReferenceName n
     return 7;
 }
 
-static bool HasVideoEncodeAV1ReferenceNameSlotD3D12(const uint32_t* referenceNameSlots, uint32_t slot) {
-    for (uint32_t i = 0; i < 7; i++) {
-        if (referenceNameSlots[i] == slot)
+static bool HasVideoEncodeAV1DPBSlotResourceD3D12(const uint32_t* dpbSlotResourceIndices, uint32_t resourceIndex) {
+    for (uint32_t i = 0; i < 8; i++) {
+        if (dpbSlotResourceIndices[i] == resourceIndex)
             return true;
     }
 
@@ -1999,6 +1996,9 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         std::array<uint32_t, 7> referenceNameSlots = {};
         for (uint32_t& slot : referenceNameSlots)
             slot = UINT32_MAX;
+        std::array<uint32_t, 8> av1DPBSlotResourceIndices = {};
+        for (uint32_t& resourceIndex : av1DPBSlotResourceIndices)
+            resourceIndex = UINT32_MAX;
 
         av1Picture.Flags = D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_FLAG_ENABLE_ERROR_RESILIENT_MODE;
         if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_LOOP_RESTORATION_FILTER) {
@@ -2043,18 +2043,14 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         av1Picture.CDEF.CdefDampingMinus3 = 3;
 
         if (videoEncodeDesc.av1PictureDesc) {
-            if (videoEncodeDesc.av1PictureDesc->referenceNum > 7) {
-                NRI_REPORT_ERROR(&device, "'av1PictureDesc->referenceNum' exceeds AV1 reference name count");
+            if (videoEncodeDesc.av1PictureDesc->referenceNum > 8) {
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->referenceNum' exceeds AV1 DPB slot count");
                 return;
             }
 
             for (uint32_t i = 0; i < videoEncodeDesc.av1PictureDesc->referenceNum; i++) {
                 const VideoAV1ReferenceDesc& reference = videoEncodeDesc.av1PictureDesc->references[i];
                 const uint32_t referenceNameIndex = GetVideoEncodeAV1ReferenceNameIndexD3D12(reference.name);
-                if (referenceNameIndex >= 7) {
-                    NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].name' is invalid", i);
-                    return;
-                }
 
                 uint32_t resourceIndex = UINT32_MAX;
                 for (uint32_t j = 0; j < videoEncodeDesc.referenceNum; j++) {
@@ -2079,14 +2075,22 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
                 av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex].FrameType = GetVideoEncodeAV1FrameTypeD3D12(reference.frameType);
                 av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex].OrderHint = reference.orderHint;
                 av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex].PictureIndex = reference.frameId;
-                av1Picture.ReferenceIndices[referenceNameIndex] = reference.refFrameIndex;
-                activeReferenceNames[referenceNameIndex] = true;
-                referenceNameSlots[referenceNameIndex] = reference.slot;
+                av1DPBSlotResourceIndices[reference.refFrameIndex] = resourceIndex;
+                if (reference.name != VideoAV1ReferenceName::NONE) {
+                    if (referenceNameIndex >= 7) {
+                        NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].name' is invalid", i);
+                        return;
+                    }
+
+                    av1Picture.ReferenceIndices[referenceNameIndex] = reference.refFrameIndex;
+                    activeReferenceNames[referenceNameIndex] = true;
+                    referenceNameSlots[referenceNameIndex] = reference.slot;
+                }
             }
 
             for (uint32_t i = 0; i < videoEncodeDesc.referenceNum; i++) {
-                if (!HasVideoEncodeAV1ReferenceNameSlotD3D12(referenceNameSlots.data(), videoEncodeDesc.references[i].slot)) {
-                    NRI_REPORT_ERROR(&device, "'references[%u].slot' is not named by 'av1PictureDesc'", i);
+                if (!HasVideoEncodeAV1DPBSlotResourceD3D12(av1DPBSlotResourceIndices.data(), i)) {
+                    NRI_REPORT_ERROR(&device, "'references[%u].slot' is not present in the AV1 DPB snapshot", i);
                     return;
                 }
             }
@@ -2121,7 +2125,8 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     }
 
     D3D12_VIDEO_ENCODER_PICTURE_CONTROL_DESC pictureControl = {};
-    if (session.m_Desc.maxReferenceNum)
+    const bool isAV1NonReferencePicture = session.m_Desc.codec == VideoCodec::AV1 && av1Picture.RefreshFrameFlags == 0;
+    if (session.m_Desc.maxReferenceNum && !isAV1NonReferencePicture)
         pictureControl.Flags |= D3D12_VIDEO_ENCODER_PICTURE_CONTROL_FLAG_USED_AS_REFERENCE_PICTURE;
     pictureControl.PictureControlCodecData = pictureCodecData;
     pictureControl.ReferenceFrames.NumTexture2Ds = videoEncodeDesc.referenceNum;

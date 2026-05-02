@@ -246,7 +246,7 @@ NriStruct(VideoH264PictureDesc) {
 };
 
 NriStruct(VideoAV1ReferenceDesc) {
-    Nri(VideoAV1ReferenceName) name;
+    Nri(VideoAV1ReferenceName) name; // NONE describes an AV1 DPB slot that is not mapped to a current-frame reference name
     uint8_t refFrameIndex;
     Nri(VideoEncodeFrameType) frameType;
     uint8_t orderHint;
@@ -260,7 +260,7 @@ NriStruct(VideoAV1PictureDesc) {
     uint8_t refreshFrameFlags;
     Nri(VideoAV1ReferenceName) primaryReferenceName;
     uint8_t reserved;
-    NriOptional const NriPtr(VideoAV1ReferenceDesc) references; // if provided, must include "referenceNum" entries
+    NriOptional const NriPtr(VideoAV1ReferenceDesc) references; // if provided, must include "referenceNum" DPB snapshot entries
     uint32_t referenceNum;
 };
 
