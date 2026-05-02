@@ -1356,13 +1356,6 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
                 return Result::UNSUPPORTED;
 
             av1Config.FeatureFlags = av1Caps.RequiredFeatureFlags;
-            const D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAGS optionalAv1FeatureFlags =
-                D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_ORDER_HINT_TOOLS |
-                D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_LOOP_RESTORATION_FILTER |
-                D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_CDEF_FILTERING |
-                D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_QUANTIZATION_DELTAS |
-                D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_LOOP_FILTER_DELTAS;
-            av1Config.FeatureFlags |= av1Caps.SupportedFeatureFlags & optionalAv1FeatureFlags;
             m_AV1FeatureFlags = av1Config.FeatureFlags;
         }
 
@@ -2040,7 +2033,8 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
             av1Picture.LoopFilter.RefDeltas[6] = -1;
             av1Picture.LoopFilter.RefDeltas[7] = -1;
         }
-        av1Picture.CDEF.CdefDampingMinus3 = 3;
+        if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_CDEF_FILTERING)
+            av1Picture.CDEF.CdefDampingMinus3 = 3;
 
         if (videoEncodeDesc.av1PictureDesc) {
             if (videoEncodeDesc.av1PictureDesc->referenceNum > 8) {
