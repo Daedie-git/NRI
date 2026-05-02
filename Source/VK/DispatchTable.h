@@ -193,6 +193,20 @@ struct DispatchTable {
     VK_FUNC(CmdDrawMeshTasksEXT);                         // - | +
     VK_FUNC(CmdDrawMeshTasksIndirectEXT);                 // - | +
     VK_FUNC(CmdDrawMeshTasksIndirectCountEXT);            // - | +
+                                                          // VK_KHR_video_decode_queue / VK_KHR_video_encode_queue
+    VK_FUNC(GetPhysicalDeviceVideoCapabilitiesKHR);       // + | +
+    VK_FUNC(GetPhysicalDeviceVideoFormatPropertiesKHR);   // + | +
+    VK_FUNC(CreateVideoSessionKHR);                       // + | +
+    VK_FUNC(DestroyVideoSessionKHR);                      // - | +
+    VK_FUNC(GetVideoSessionMemoryRequirementsKHR);        // + | +
+    VK_FUNC(BindVideoSessionMemoryKHR);                   // + | +
+    VK_FUNC(CreateVideoSessionParametersKHR);             // + | +
+    VK_FUNC(DestroyVideoSessionParametersKHR);            // - | +
+    VK_FUNC(CmdBeginVideoCodingKHR);                      // - | +
+    VK_FUNC(CmdControlVideoCodingKHR);                    // - | +
+    VK_FUNC(CmdEndVideoCodingKHR);                        // - | +
+    VK_FUNC(CmdDecodeVideoKHR);                           // - | +
+    VK_FUNC(CmdEncodeVideoKHR);                           // - | +
                                                           // VK_NV_low_latency2
     VK_FUNC(GetLatencyTimingsNV);                         // + | +
     VK_FUNC(LatencySleepNV);                              // + | +

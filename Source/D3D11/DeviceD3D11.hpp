@@ -29,6 +29,8 @@ DeviceD3D11::DeviceD3D11(const CallbackInterface& callbacks, const AllocationCal
           Vector<QueueD3D11*>(GetStdAllocator()),
           Vector<QueueD3D11*>(GetStdAllocator()),
           Vector<QueueD3D11*>(GetStdAllocator()),
+          Vector<QueueD3D11*>(GetStdAllocator()),
+          Vector<QueueD3D11*>(GetStdAllocator()),
       } {
     m_Desc.graphicsAPI = GraphicsAPI::D3D11;
     m_Desc.nriVersion = NRI_VERSION;
@@ -367,7 +369,7 @@ void DeviceD3D11::FillDesc() {
         }
     }
 
-    m_Desc.shaderModel = 51;
+    m_Desc.shaderModel = NriShaderModel(5, 1);
 
     m_Desc.viewport.maxNum = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
     m_Desc.viewport.boundsMin = D3D11_VIEWPORT_BOUNDS_MIN;
@@ -514,7 +516,7 @@ void DeviceD3D11::FillDesc() {
     m_Desc.features.filterOpMinMax = options1.MinMaxFiltering != 0;
     m_Desc.features.logicOp = options.OutputMergerLogicOp != 0;
     m_Desc.features.lineSmoothing = true;
-    m_Desc.features.enhancedBarriers = true;  // don't care, but advertise support
+    m_Desc.features.enhancedBarriers = true;                       // don't care, but advertise support
     m_Desc.features.waitableSwapChain = m_Desc.features.swapChain; // TODO: swap chain version >= 2?
     m_Desc.features.resizableSwapChain = m_Desc.features.swapChain;
     m_Desc.features.pipelineStatistics = true;

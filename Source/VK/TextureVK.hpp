@@ -17,6 +17,17 @@ Result TextureVK::Create(const TextureDesc& textureDesc) {
     VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     m_Device.FillCreateInfo(m_Desc, info);
 
+    VideoResourceProfileListVK videoProfiles = {};
+    const bool isVideoDecode = (m_Desc.usage & TextureUsageBits::VIDEO_DECODE) != 0;
+    const bool isVideoEncode = (m_Desc.usage & TextureUsageBits::VIDEO_ENCODE) != 0;
+    if (isVideoDecode || isVideoEncode) {
+        videoProfiles.Fill(isVideoDecode, isVideoEncode, m_Desc.format, m_Device.GetVideoCodecOperations(isVideoDecode, isVideoEncode));
+        if (videoProfiles.list.profileCount) {
+            videoProfiles.list.pNext = info.pNext;
+            info.pNext = &videoProfiles.list;
+        }
+    }
+
     const auto& vk = m_Device.GetDispatchTable();
     VkResult vkResult = vk.CreateImage(m_Device, &info, m_Device.GetVkAllocationCallbacks(), &m_Handle);
     NRI_RETURN_ON_BAD_VKRESULT(&m_Device, vkResult, "vkCreateImage");
@@ -52,6 +63,16 @@ Result TextureVK::Create(const TextureVKDesc& textureVKDesc) {
 
     if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)
         m_Desc.usage |= TextureUsageBits::INPUT_ATTACHMENT;
+
+    if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR)
+        m_Desc.usage |= TextureUsageBits::VIDEO_DECODE;
+    else if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR)
+        m_Desc.usage |= TextureUsageBits::VIDEO_DECODE | TextureUsageBits::VIDEO_REFERENCE_ONLY;
+
+    if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR)
+        m_Desc.usage |= TextureUsageBits::VIDEO_ENCODE;
+    else if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR)
+        m_Desc.usage |= TextureUsageBits::VIDEO_ENCODE | TextureUsageBits::VIDEO_REFERENCE_ONLY;
 
     m_OwnsNativeObjects = false;
     m_Handle = (VkImage)textureVKDesc.vkImage;
@@ -122,10 +143,6 @@ void TextureVK::GetMemoryDesc(MemoryLocation memoryLocation, MemoryDesc& memoryD
 
     memoryDesc = {};
     m_Device.GetMemoryDesc(memoryLocation, requirements.memoryRequirements, dedicatedRequirements, memoryDesc);
-}
-
-VkImageAspectFlags TextureVK::GetImageAspectFlags() const {
-    return ::GetImageAspectFlags(m_Desc.format);
 }
 
 NRI_INLINE void TextureVK::SetDebugName(const char* name) {

@@ -20,7 +20,10 @@ static inline uint32_t NextPow2(uint32_t n) {
 static constexpr VkBufferUsageFlags GetBufferUsageFlags(BufferUsageBits bufferUsageBits, uint32_t structureStride, bool isDeviceAddressSupported) {
     VkBufferUsageFlags flags = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT; // TODO: ban "the opposite" for UPLOAD/READBACK?
 
-    if (isDeviceAddressSupported)
+    constexpr uint32_t videoUsageMask = (uint32_t)BufferUsageBits::VIDEO_DECODE | (uint32_t)BufferUsageBits::VIDEO_ENCODE;
+    const uint32_t usageMask = (uint32_t)bufferUsageBits;
+    const bool isVideoOnly = (usageMask & videoUsageMask) != 0 && (usageMask & ~videoUsageMask) == 0;
+    if (isDeviceAddressSupported && !isVideoOnly)
         flags |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
 
     if (bufferUsageBits & BufferUsageBits::VERTEX_BUFFER)
@@ -52,6 +55,12 @@ static constexpr VkBufferUsageFlags GetBufferUsageFlags(BufferUsageBits bufferUs
 
     if (bufferUsageBits & BufferUsageBits::MICROMAP_BUILD_INPUT)
         flags |= VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT;
+
+    if (bufferUsageBits & BufferUsageBits::VIDEO_DECODE)
+        flags |= VK_BUFFER_USAGE_VIDEO_DECODE_SRC_BIT_KHR;
+
+    if (bufferUsageBits & BufferUsageBits::VIDEO_ENCODE)
+        flags |= VK_BUFFER_USAGE_VIDEO_ENCODE_DST_BIT_KHR;
 
     // Based on comments for "BufferDesc::structureStride"
     if (structureStride == 0 || structureStride == 4) {
@@ -88,6 +97,16 @@ static constexpr VkImageUsageFlags GetImageUsageFlags(TextureUsageBits textureUs
 
     if (textureUsageBits & TextureUsageBits::INPUT_ATTACHMENT)
         flags |= VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT;
+
+    if (textureUsageBits & TextureUsageBits::VIDEO_DECODE)
+        flags |= VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR | VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR;
+    if ((textureUsageBits & TextureUsageBits::VIDEO_REFERENCE_ONLY) && (textureUsageBits & TextureUsageBits::VIDEO_DECODE))
+        flags |= VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR;
+
+    if (textureUsageBits & TextureUsageBits::VIDEO_ENCODE)
+        flags |= VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR | VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR;
+    if ((textureUsageBits & TextureUsageBits::VIDEO_REFERENCE_ONLY) && (textureUsageBits & TextureUsageBits::VIDEO_ENCODE))
+        flags |= VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR;
 
     return flags;
 }
@@ -318,6 +337,18 @@ void DeviceVK::ProcessDeviceExtensions(Vector<const char*>& desiredDeviceExts, b
     APPEND_EXT(true, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     APPEND_EXT(true, VK_KHR_SWAPCHAIN_MUTABLE_FORMAT_EXTENSION_NAME);
     APPEND_EXT(true, VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_QUEUE_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_ENCODE_H264_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_ENCODE_H265_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME);
+    APPEND_EXT(true, VK_KHR_VIDEO_MAINTENANCE_2_EXTENSION_NAME);
     APPEND_EXT(true, VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
     APPEND_EXT(true, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);
     APPEND_EXT(true, VK_EXT_FRAGMENT_SHADER_INTERLOCK_EXTENSION_NAME);
@@ -338,9 +369,43 @@ void DeviceVK::ProcessDeviceExtensions(Vector<const char*>& desiredDeviceExts, b
     APPEND_EXT(true, VK_NV_LOW_LATENCY_2_EXTENSION_NAME);
 }
 
+static void AppendQueueCreateInfoVK(Vector<VkDeviceQueueCreateInfo>& queueCreateInfos, uint32_t queueFamilyIndex, uint32_t queueNum, const float* queuePriorities, const float* zeroPriorities) {
+    if (queueFamilyIndex == INVALID_FAMILY_INDEX || queueNum == 0)
+        return;
+
+    uint32_t queueCreateInfoIndex = INVALID_FAMILY_INDEX;
+    for (uint32_t i = 0; i < queueCreateInfos.size(); i++) {
+        if (queueCreateInfos[i].queueFamilyIndex == queueFamilyIndex) {
+            queueCreateInfoIndex = i;
+            break;
+        }
+    }
+
+    if (queueCreateInfoIndex == INVALID_FAMILY_INDEX) {
+        queueCreateInfoIndex = (uint32_t)queueCreateInfos.size();
+        VkDeviceQueueCreateInfo& queueCreateInfo = queueCreateInfos.emplace_back();
+        queueCreateInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+        queueCreateInfo.queueFamilyIndex = queueFamilyIndex;
+        queueCreateInfo.pQueuePriorities = zeroPriorities;
+    }
+
+    VkDeviceQueueCreateInfo& queueCreateInfo = queueCreateInfos[queueCreateInfoIndex];
+    if (queueNum > queueCreateInfo.queueCount) {
+        queueCreateInfo.queueCount = queueNum;
+        queueCreateInfo.pQueuePriorities = zeroPriorities;
+    }
+
+    if (queuePriorities && queueNum >= queueCreateInfo.queueCount)
+        queueCreateInfo.pQueuePriorities = queuePriorities;
+}
+
 DeviceVK::DeviceVK(const CallbackInterface& callbacks, const AllocationCallbacks& allocationCallbacks)
     : DeviceBase(callbacks, allocationCallbacks)
+    , m_ActiveQueueFamilyIndices(GetStdAllocator())
+    , m_QueueFamilyProps(GetStdAllocator())
     , m_QueueFamilies{
+          Vector<QueueVK*>(GetStdAllocator()),
+          Vector<QueueVK*>(GetStdAllocator()),
           Vector<QueueVK*>(GetStdAllocator()),
           Vector<QueueVK*>(GetStdAllocator()),
           Vector<QueueVK*>(GetStdAllocator()),
@@ -478,6 +543,7 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
     // Queue family indices
     std::array<uint32_t, (size_t)QueueType::MAX_NUM> queueFamilyIndices = {};
     queueFamilyIndices.fill(INVALID_FAMILY_INDEX);
+    Vector<QueueFamilyPropsVK> queueFamilyPropsStorage(GetStdAllocator());
     if (isWrapper) {
         for (uint32_t i = 0; i < descVK.queueFamilyNum; i++) {
             const QueueFamilyVKDesc& queueFamilyVKDesc = descVK.queueFamilies[i];
@@ -488,58 +554,23 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
         m_VK.GetPhysicalDeviceQueueFamilyProperties2(m_PhysicalDevice, &familyNum, nullptr);
 
         Scratch<VkQueueFamilyProperties2> familyProps2 = NRI_ALLOCATE_SCRATCH(*this, VkQueueFamilyProperties2, familyNum);
-        for (uint32_t i = 0; i < familyNum; i++)
+        Scratch<VkQueueFamilyVideoPropertiesKHR> familyVideoProps = NRI_ALLOCATE_SCRATCH(*this, VkQueueFamilyVideoPropertiesKHR, familyNum);
+        for (uint32_t i = 0; i < familyNum; i++) {
             familyProps2[i] = {VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2};
+            familyVideoProps[i] = {VK_STRUCTURE_TYPE_QUEUE_FAMILY_VIDEO_PROPERTIES_KHR};
+            familyProps2[i].pNext = &familyVideoProps[i];
+        }
 
         m_VK.GetPhysicalDeviceQueueFamilyProperties2(m_PhysicalDevice, &familyNum, familyProps2);
 
-        std::array<uint32_t, (size_t)QueueType::MAX_NUM> scores = {};
-        for (uint32_t i = 0; i < familyNum; i++) { // TODO: same code is used in "Creation.cpp"
+        queueFamilyPropsStorage.resize(familyNum);
+        for (uint32_t i = 0; i < familyNum; i++) {
             const VkQueueFamilyProperties& familyProps = familyProps2[i].queueFamilyProperties;
-
-            bool graphics = familyProps.queueFlags & VK_QUEUE_GRAPHICS_BIT;
-            bool compute = familyProps.queueFlags & VK_QUEUE_COMPUTE_BIT;
-            bool copy = familyProps.queueFlags & VK_QUEUE_TRANSFER_BIT;
-            bool sparse = familyProps.queueFlags & VK_QUEUE_SPARSE_BINDING_BIT;
-            bool videoDecode = familyProps.queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR;
-            bool videoEncode = familyProps.queueFlags & VK_QUEUE_VIDEO_ENCODE_BIT_KHR;
-            bool protect = familyProps.queueFlags & VK_QUEUE_PROTECTED_BIT;
-            bool opticalFlow = familyProps.queueFlags & VK_QUEUE_OPTICAL_FLOW_BIT_NV;
-            bool taken = false;
-
-            { // Prefer as much features as possible
-                size_t index = (size_t)QueueType::GRAPHICS;
-                uint32_t score = GRAPHICS_QUEUE_SCORE;
-
-                if (!taken && graphics && score > scores[index]) {
-                    queueFamilyIndices[index] = i;
-                    scores[index] = score;
-                    taken = true;
-                }
-            }
-
-            { // Prefer compute-only
-                size_t index = (size_t)QueueType::COMPUTE;
-                uint32_t score = COMPUTE_QUEUE_SCORE;
-
-                if (!taken && compute && score > scores[index]) {
-                    queueFamilyIndices[index] = i;
-                    scores[index] = score;
-                    taken = true;
-                }
-            }
-
-            { // Prefer copy-only
-                size_t index = (size_t)QueueType::COPY;
-                uint32_t score = COPY_QUEUE_SCORE;
-
-                if (!taken && copy && score > scores[index]) {
-                    queueFamilyIndices[index] = i;
-                    scores[index] = score;
-                    taken = true;
-                }
-            }
+            queueFamilyPropsStorage[i] = {familyProps.queueFlags, familyProps.queueCount, familyVideoProps[i].videoCodecOperations};
         }
+
+        SelectQueueFamiliesVK(queueFamilyPropsStorage.data(), familyNum, queueFamilyIndices);
+        m_QueueFamilyProps = queueFamilyPropsStorage;
     }
 
     { // Memory props
@@ -609,6 +640,8 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
     PNEXTCHAIN_APPEND_FEATURES(true, KHR, ShaderClock, SHADER_CLOCK);
     PNEXTCHAIN_APPEND_FEATURES(true, KHR, DynamicRenderingLocalRead, DYNAMIC_RENDERING_LOCAL_READ);
     PNEXTCHAIN_APPEND_FEATURES(true, KHR, UnifiedImageLayouts, UNIFIED_IMAGE_LAYOUTS);
+    PNEXTCHAIN_APPEND_FEATURES(true, KHR, VideoMaintenance1, VIDEO_MAINTENANCE_1);
+    PNEXTCHAIN_APPEND_FEATURES(true, KHR, VideoMaintenance2, VIDEO_MAINTENANCE_2);
     PNEXTCHAIN_APPEND_FEATURES(true, EXT, CustomBorderColor, CUSTOM_BORDER_COLOR);
     PNEXTCHAIN_APPEND_FEATURES(true, EXT, FragmentShaderInterlock, FRAGMENT_SHADER_INTERLOCK);
     PNEXTCHAIN_APPEND_FEATURES(true, EXT, ImageSlicedViewOf3D, IMAGE_SLICED_VIEW_OF_3D);
@@ -673,6 +706,7 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
     m_IsSupported.swapChainMaintenance1 = SwapchainMaintenance1Features.swapchainMaintenance1;
     m_IsSupported.fifoLatestReady = PresentModeFifoLatestReadyFeatures.presentModeFifoLatestReady;
     m_IsSupported.unifiedImageLayoutsVideo = UnifiedImageLayoutsFeatures.unifiedImageLayoutsVideo;
+    m_IsSupported.videoMaintenance2 = VideoMaintenance2Features.videoMaintenance2;
 
     m_IsMemoryZeroInitializationEnabled = desc.enableMemoryZeroInitialization && ZeroInitializeDeviceMemoryFeatures.zeroInitializeDeviceMemory;
 
@@ -696,30 +730,33 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
                 features13.robustImageAccess = 0;
             }
 
-            // Create device
-            std::array<VkDeviceQueueCreateInfo, (size_t)QueueType::MAX_NUM> queueCreateInfos = {};
-
             VkDeviceCreateInfo deviceCreateInfo = {VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
             deviceCreateInfo.pNext = &features;
-            deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
             deviceCreateInfo.enabledExtensionCount = (uint32_t)desiredDeviceExts.size();
             deviceCreateInfo.ppEnabledExtensionNames = desiredDeviceExts.data();
 
             std::array<float, 256> zeroPriorities = {};
+            Vector<VkDeviceQueueCreateInfo> queueCreateInfos(GetStdAllocator());
+            std::array<uint32_t, 3> selectedVideoQueueFamilyIndices = {};
 
             for (uint32_t i = 0; i < desc.queueFamilyNum; i++) {
                 const QueueFamilyDesc& queueFamily = desc.queueFamilies[i];
                 uint32_t queueFamilyIndex = queueFamilyIndices[(size_t)queueFamily.queueType];
 
-                if (queueFamily.queueNum && queueFamilyIndex != INVALID_FAMILY_INDEX) {
-                    VkDeviceQueueCreateInfo& queueCreateInfo = queueCreateInfos[deviceCreateInfo.queueCreateInfoCount++];
-
-                    queueCreateInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-                    queueCreateInfo.queueCount = queueFamily.queueNum;
-                    queueCreateInfo.queueFamilyIndex = queueFamilyIndex;
-                    queueCreateInfo.pQueuePriorities = queueFamily.queuePriorities ? queueFamily.queuePriorities : zeroPriorities.data();
+                if ((queueFamily.queueType == QueueType::VIDEO_DECODE || queueFamily.queueType == QueueType::VIDEO_ENCODE) && !queueFamilyPropsStorage.empty()) {
+                    const uint32_t selectedVideoQueueFamilyNum = SelectVideoQueueFamiliesVK(queueFamilyPropsStorage.data(), (uint32_t)queueFamilyPropsStorage.size(), queueFamily.queueType, selectedVideoQueueFamilyIndices);
+                    for (uint32_t selectedFamilyIndex = 0; selectedFamilyIndex < selectedVideoQueueFamilyNum; selectedFamilyIndex++) {
+                        const uint32_t familyIndex = selectedVideoQueueFamilyIndices[selectedFamilyIndex];
+                        const uint32_t queueNum = std::min(queueFamily.queueNum, queueFamilyPropsStorage[familyIndex].queueCount);
+                        AppendQueueCreateInfoVK(queueCreateInfos, familyIndex, queueNum, queueFamily.queuePriorities, zeroPriorities.data());
+                    }
+                } else {
+                    AppendQueueCreateInfoVK(queueCreateInfos, queueFamilyIndex, queueFamily.queueNum, queueFamily.queuePriorities, zeroPriorities.data());
                 }
             }
+
+            deviceCreateInfo.queueCreateInfoCount = (uint32_t)queueCreateInfos.size();
+            deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
 
             VkResult vkResult = m_VK.CreateDevice(m_PhysicalDevice, &deviceCreateInfo, m_AllocationCallbackPtr, &m_Device);
             NRI_RETURN_ON_BAD_VKRESULT(this, vkResult, "vkCreateDevice");
@@ -758,12 +795,39 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
                 m_Desc.adapterDesc.queueNum[(size_t)queueFamilyVKDesc.queueType] = 0;
         }
     } else {
+        std::array<uint32_t, 3> selectedVideoQueueFamilyIndices = {};
+
         for (uint32_t i = 0; i < desc.queueFamilyNum; i++) {
             const QueueFamilyDesc& queueFamilyDesc = desc.queueFamilies[i];
             auto& queueFamily = m_QueueFamilies[(size_t)queueFamilyDesc.queueType];
             uint32_t queueFamilyIndex = queueFamilyIndices[(size_t)queueFamilyDesc.queueType];
 
-            if (queueFamilyIndex != INVALID_FAMILY_INDEX) {
+            if ((queueFamilyDesc.queueType == QueueType::VIDEO_DECODE || queueFamilyDesc.queueType == QueueType::VIDEO_ENCODE) && !queueFamilyPropsStorage.empty()) {
+                uint32_t totalQueueNum = 0;
+                const uint32_t selectedVideoQueueFamilyNum = SelectVideoQueueFamiliesVK(queueFamilyPropsStorage.data(), (uint32_t)queueFamilyPropsStorage.size(), queueFamilyDesc.queueType, selectedVideoQueueFamilyIndices);
+                for (uint32_t selectedFamilyIndex = 0; selectedFamilyIndex < selectedVideoQueueFamilyNum; selectedFamilyIndex++) {
+                    const uint32_t familyIndex = selectedVideoQueueFamilyIndices[selectedFamilyIndex];
+                    const uint32_t queueNum = std::min(queueFamilyDesc.queueNum, queueFamilyPropsStorage[familyIndex].queueCount);
+                    for (uint32_t j = 0; j < queueNum; j++) {
+                        VkDeviceQueueInfo2 queueInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2};
+                        queueInfo.queueFamilyIndex = familyIndex;
+                        queueInfo.queueIndex = j;
+
+                        VkQueue handle = VK_NULL_HANDLE;
+                        m_VK.GetDeviceQueue2(m_Device, &queueInfo, &handle);
+
+                        QueueVK* queue;
+                        Result result = CreateImplementation<QueueVK>(queue, queueFamilyDesc.queueType, queueInfo.queueFamilyIndex, handle, queueFamilyPropsStorage[familyIndex].videoCodecOperations);
+                        if (result == Result::SUCCESS)
+                            queueFamily.push_back(queue);
+                    }
+                    totalQueueNum += queueNum;
+                    if (queueNum)
+                        AddActiveQueueFamilyIndex(familyIndex);
+                }
+
+                m_Desc.adapterDesc.queueNum[(size_t)queueFamilyDesc.queueType] = totalQueueNum;
+            } else if (queueFamilyIndex != INVALID_FAMILY_INDEX) {
                 for (uint32_t j = 0; j < queueFamilyDesc.queueNum; j++) {
                     VkDeviceQueueInfo2 queueInfo = {VK_STRUCTURE_TYPE_DEVICE_QUEUE_INFO_2};
                     queueInfo.queueFamilyIndex = queueFamilyIndices[(size_t)queueFamilyDesc.queueType];
@@ -1206,25 +1270,25 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
 
         // Estimate shader model last since it depends on many "m_Desc" fields
         // Based on https://docs.vulkan.org/guide/latest/hlsl.html#_shader_model_coverage // TODO: code below needs to be improved
-        m_Desc.shaderModel = 51;
+        m_Desc.shaderModel = NriShaderModel(5, 1);
         if (m_Desc.shaderFeatures.nativeI64)
-            m_Desc.shaderModel = 60;
+            m_Desc.shaderModel = NriShaderModel(6, 0);
         if (m_Desc.other.viewMaxNum > 1 || m_Desc.shaderFeatures.barycentric)
-            m_Desc.shaderModel = 61;
+            m_Desc.shaderModel = NriShaderModel(6, 1);
         if (m_Desc.shaderFeatures.nativeF16 || m_Desc.shaderFeatures.nativeI16)
-            m_Desc.shaderModel = 62;
+            m_Desc.shaderModel = NriShaderModel(6, 2);
         if (m_Desc.tiers.rayTracing)
-            m_Desc.shaderModel = 63;
+            m_Desc.shaderModel = NriShaderModel(6, 3);
         if (m_Desc.tiers.shadingRate >= 2)
-            m_Desc.shaderModel = 64;
+            m_Desc.shaderModel = NriShaderModel(6, 4);
         if (m_Desc.features.meshShader || m_Desc.tiers.rayTracing >= 2)
-            m_Desc.shaderModel = 65;
+            m_Desc.shaderModel = NriShaderModel(6, 5);
         // TODO: "m_Desc.features.mutableDescriptorType" is an optional feature, despite that it's needed to emulate SM 6.6 "ultimate" bindless
         if (m_Desc.shaderFeatures.atomicsI64)
-            m_Desc.shaderModel = 66;
+            m_Desc.shaderModel = NriShaderModel(6, 6);
         if (features.features.shaderStorageImageMultisample)
-            m_Desc.shaderModel = 67;
-        // TODO: add SM 6.8 and 6.9 detection
+            m_Desc.shaderModel = NriShaderModel(6, 7);
+        // TODO: add SM 6.8+ detection
     }
 
     // Create VMA
@@ -1261,6 +1325,8 @@ void DeviceVK::FillCreateInfo(const TextureDesc& textureDesc, VkImageCreateInfo&
         flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT; // allow 3D demotion to a set of layers // TODO: hook up "VK_EXT_image_2d_view_of_3d"?
     if (m_Desc.tiers.sampleLocations && formatProps.isDepth)
         flags |= VK_IMAGE_CREATE_SAMPLE_LOCATIONS_COMPATIBLE_DEPTH_BIT_EXT;
+    if (textureDesc.usage & (TextureUsageBits::VIDEO_DECODE | TextureUsageBits::VIDEO_ENCODE | TextureUsageBits::VIDEO_REFERENCE_ONLY))
+        flags |= VK_IMAGE_CREATE_VIDEO_PROFILE_INDEPENDENT_BIT_KHR;
 
     info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO}; // should be already set
     info.flags = flags;
@@ -1914,6 +1980,26 @@ Result DeviceVK::ResolveDispatchTable(const Vector<const char*>& desiredDeviceEx
         GET_DEVICE_FUNC(CmdDrawMeshTasksIndirectCountEXT);
     }
 
+    if (IsExtensionSupported(VK_KHR_VIDEO_QUEUE_EXTENSION_NAME, desiredDeviceExts)) {
+        GET_INSTANCE_FUNC(GetPhysicalDeviceVideoCapabilitiesKHR);
+        GET_INSTANCE_FUNC(GetPhysicalDeviceVideoFormatPropertiesKHR);
+        GET_DEVICE_FUNC(CreateVideoSessionKHR);
+        GET_DEVICE_FUNC(DestroyVideoSessionKHR);
+        GET_DEVICE_FUNC(GetVideoSessionMemoryRequirementsKHR);
+        GET_DEVICE_FUNC(BindVideoSessionMemoryKHR);
+        GET_DEVICE_FUNC(CreateVideoSessionParametersKHR);
+        GET_DEVICE_FUNC(DestroyVideoSessionParametersKHR);
+        GET_DEVICE_FUNC(CmdBeginVideoCodingKHR);
+        GET_DEVICE_FUNC(CmdControlVideoCodingKHR);
+        GET_DEVICE_FUNC(CmdEndVideoCodingKHR);
+    }
+
+    if (IsExtensionSupported(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME, desiredDeviceExts))
+        GET_DEVICE_FUNC(CmdDecodeVideoKHR);
+
+    if (IsExtensionSupported(VK_KHR_VIDEO_ENCODE_QUEUE_EXTENSION_NAME, desiredDeviceExts))
+        GET_DEVICE_FUNC(CmdEncodeVideoKHR);
+
     if (IsExtensionSupported(VK_NV_LOW_LATENCY_2_EXTENSION_NAME, desiredDeviceExts)) {
         GET_DEVICE_FUNC(GetLatencyTimingsNV);
         GET_DEVICE_FUNC(LatencySleepNV);
@@ -1950,21 +2036,87 @@ NRI_INLINE Result DeviceVK::GetQueue(QueueType queueType, uint32_t queueIndex, Q
 
         { // Update active family indices
             ExclusiveScope lock(m_Lock);
-
-            uint32_t i = 0;
-            for (; i < m_NumActiveFamilyIndices; i++) {
-                if (m_ActiveQueueFamilyIndices[i] == queueVK->GetFamilyIndex())
-                    break;
-            }
-
-            if (i == m_NumActiveFamilyIndices)
-                m_ActiveQueueFamilyIndices[m_NumActiveFamilyIndices++] = queueVK->GetFamilyIndex();
+            AddActiveQueueFamilyIndex(queueVK->GetFamilyIndex());
         }
 
         return Result::SUCCESS;
     }
 
     return Result::FAILURE;
+}
+
+NRI_INLINE void DeviceVK::AddActiveQueueFamilyIndex(uint32_t familyIndex) {
+    for (uint32_t i = 0; i < m_NumActiveFamilyIndices; i++) {
+        if (m_ActiveQueueFamilyIndices[i] == familyIndex)
+            return;
+    }
+
+    m_ActiveQueueFamilyIndices.push_back(familyIndex);
+    m_NumActiveFamilyIndices = (uint32_t)m_ActiveQueueFamilyIndices.size();
+}
+
+NRI_INLINE Result DeviceVK::GetVideoQueue(VkVideoCodecOperationFlagBitsKHR operation, Queue*& queue) {
+    const QueueType queueType = (operation & VIDEO_DECODE_CODEC_OPERATION_MASK) != 0 ? QueueType::VIDEO_DECODE : QueueType::VIDEO_ENCODE;
+    const auto& queueFamily = m_QueueFamilies[(uint32_t)queueType];
+    if (queueFamily.empty())
+        return Result::UNSUPPORTED;
+
+    QueueVK* bestQueue = nullptr;
+    uint32_t bestScore = 0;
+    for (QueueVK* queueVK : queueFamily) {
+        if (!queueVK->SupportsVideoCodecOperation(operation))
+            continue;
+
+        uint32_t score = 1;
+        if (queueVK->GetFamilyIndex() < m_QueueFamilyProps.size())
+            score = GetVideoQueueFamilyScoreVK(m_QueueFamilyProps[queueVK->GetFamilyIndex()], operation);
+
+        if (score > bestScore) {
+            bestQueue = queueVK;
+            bestScore = score;
+        }
+    }
+
+    if (!bestQueue)
+        return Result::UNSUPPORTED;
+
+    queue = (Queue*)bestQueue;
+
+    { // Update active family indices
+        ExclusiveScope lock(m_Lock);
+        AddActiveQueueFamilyIndex(bestQueue->GetFamilyIndex());
+    }
+
+    return Result::SUCCESS;
+}
+
+NRI_INLINE VkVideoCodecOperationFlagsKHR DeviceVK::GetVideoCodecOperations(bool decode, bool encode) const {
+    VkVideoCodecOperationFlagsKHR operations = 0;
+    bool hasUnknownOperations = false;
+
+    if (decode) {
+        for (const QueueVK* queue : m_QueueFamilies[(uint32_t)QueueType::VIDEO_DECODE]) {
+            const VkVideoCodecOperationFlagsKHR queueOperations = queue->GetVideoCodecOperations();
+            operations |= queueOperations;
+            hasUnknownOperations |= queueOperations == 0;
+        }
+    }
+
+    if (encode) {
+        for (const QueueVK* queue : m_QueueFamilies[(uint32_t)QueueType::VIDEO_ENCODE]) {
+            const VkVideoCodecOperationFlagsKHR queueOperations = queue->GetVideoCodecOperations();
+            operations |= queueOperations;
+            hasUnknownOperations |= queueOperations == 0;
+        }
+    }
+
+    // Wrapped queues do not expose per-family codec-operation metadata through NRI.
+    if (hasUnknownOperations) {
+        operations |= decode ? VIDEO_DECODE_CODEC_OPERATION_MASK : 0;
+        operations |= encode ? VIDEO_ENCODE_CODEC_OPERATION_MASK : 0;
+    }
+
+    return operations;
 }
 
 NRI_INLINE Result DeviceVK::WaitIdle() {

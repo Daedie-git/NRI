@@ -92,6 +92,26 @@ NRI_INLINE Result CommandBufferVK::End() {
     return Result::SUCCESS;
 }
 
+NRI_INLINE void CommandBufferVK::DecodeVideo(const VideoDecodeVKDesc& videoDecodeVKDesc) {
+    const auto& vk = m_Device.GetDispatchTable();
+    if (!vk.CmdDecodeVideoKHR) {
+        NRI_REPORT_ERROR(&m_Device, "vkCmdDecodeVideoKHR is not available");
+        return;
+    }
+
+    vk.CmdDecodeVideoKHR(m_Handle, (const VkVideoDecodeInfoKHR*)videoDecodeVKDesc.vkDecodeInfo);
+}
+
+NRI_INLINE void CommandBufferVK::EncodeVideo(const VideoEncodeVKDesc& videoEncodeVKDesc) {
+    const auto& vk = m_Device.GetDispatchTable();
+    if (!vk.CmdEncodeVideoKHR) {
+        NRI_REPORT_ERROR(&m_Device, "vkCmdEncodeVideoKHR is not available");
+        return;
+    }
+
+    vk.CmdEncodeVideoKHR(m_Handle, (const VkVideoEncodeInfoKHR*)videoEncodeVKDesc.vkEncodeInfo);
+}
+
 NRI_INLINE void CommandBufferVK::SetViewports(const Viewport* viewports, uint32_t viewportNum) {
     Scratch<VkViewport> vkViewports = NRI_ALLOCATE_SCRATCH(m_Device, VkViewport, viewportNum);
     for (uint32_t i = 0; i < viewportNum; i++) {
@@ -256,7 +276,7 @@ NRI_INLINE void CommandBufferVK::ClearStorage(const ClearStorageDesc& clearStora
             VkImage image = texViewDesc.texture->GetHandle();
 
             VkImageSubresourceRange subresourceRange = {};
-            subresourceRange.aspectMask = GetImageAspectFlags(descriptorVK.GetFormat());
+            subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT; // TODO: looks like other aspects are unsupported for storage
             subresourceRange.baseMipLevel = texViewDesc.mipOffset;
             subresourceRange.levelCount = texViewDesc.mipNum;
             subresourceRange.baseArrayLayer = texViewDesc.layerOrSliceOffset;
@@ -608,9 +628,9 @@ NRI_INLINE void CommandBufferVK::CopyTexture(Texture& dstTexture, const TextureR
     if (isWholeResource) {
         for (Dim_t i = 0; i < dstDesc.mipNum; i++) {
             regions[i] = {VK_STRUCTURE_TYPE_IMAGE_COPY_2};
-            regions[i].srcSubresource = {src.GetImageAspectFlags(), i, 0, srcDesc.layerNum};
+            regions[i].srcSubresource = {GetImageAspectFlags(PlaneBits::ALL, srcDesc.format), i, 0, srcDesc.layerNum};
             regions[i].srcOffset = {};
-            regions[i].dstSubresource = {dst.GetImageAspectFlags(), i, 0, dstDesc.layerNum};
+            regions[i].dstSubresource = {GetImageAspectFlags(PlaneBits::ALL, dstDesc.format), i, 0, dstDesc.layerNum};
             regions[i].dstOffset = {};
             regions[i].extent = dst.GetExtent();
         }
@@ -621,13 +641,8 @@ NRI_INLINE void CommandBufferVK::CopyTexture(Texture& dstTexture, const TextureR
         if (!dstRegion)
             dstRegion = &wholeResource;
 
-        VkImageAspectFlags srcAspectFlags = GetImageAspectFlags(srcRegion->planes);
-        if (srcRegion->planes == PlaneBits::ALL)
-            srcAspectFlags = src.GetImageAspectFlags();
-
-        VkImageAspectFlags dstAspectFlags = GetImageAspectFlags(dstRegion->planes);
-        if (dstRegion->planes == PlaneBits::ALL)
-            dstAspectFlags = dst.GetImageAspectFlags();
+        VkImageAspectFlags srcAspectFlags = GetImageAspectFlags(srcRegion->planes, srcDesc.format);
+        VkImageAspectFlags dstAspectFlags = GetImageAspectFlags(dstRegion->planes, dstDesc.format);
 
         regions[0] = {VK_STRUCTURE_TYPE_IMAGE_COPY_2};
         regions[0].srcSubresource = {
@@ -684,9 +699,9 @@ NRI_INLINE void CommandBufferVK::ResolveTexture(Texture& dstTexture, const Textu
     if (isWholeResource) {
         for (Dim_t i = 0; i < dstDesc.mipNum; i++) {
             regions[i] = {VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2};
-            regions[i].srcSubresource = {src.GetImageAspectFlags(), i, 0, srcDesc.layerNum};
+            regions[i].srcSubresource = {GetImageAspectFlags(PlaneBits::ALL, srcDesc.format), i, 0, srcDesc.layerNum};
             regions[i].srcOffset = {};
-            regions[i].dstSubresource = {dst.GetImageAspectFlags(), i, 0, dstDesc.layerNum};
+            regions[i].dstSubresource = {GetImageAspectFlags(PlaneBits::ALL, dstDesc.format), i, 0, dstDesc.layerNum};
             regions[i].dstOffset = {};
             regions[i].extent = dst.GetExtent();
         }
@@ -697,13 +712,8 @@ NRI_INLINE void CommandBufferVK::ResolveTexture(Texture& dstTexture, const Textu
         if (!dstRegion)
             dstRegion = &wholeResource;
 
-        VkImageAspectFlags srcAspectFlags = GetImageAspectFlags(srcRegion->planes);
-        if (srcRegion->planes == PlaneBits::ALL)
-            srcAspectFlags = src.GetImageAspectFlags();
-
-        VkImageAspectFlags dstAspectFlags = GetImageAspectFlags(dstRegion->planes);
-        if (dstRegion->planes == PlaneBits::ALL)
-            dstAspectFlags = dst.GetImageAspectFlags();
+        VkImageAspectFlags srcAspectFlags = GetImageAspectFlags(srcRegion->planes, srcDesc.format);
+        VkImageAspectFlags dstAspectFlags = GetImageAspectFlags(dstRegion->planes, dstDesc.format);
 
         regions[0] = {VK_STRUCTURE_TYPE_IMAGE_RESOLVE_2};
         regions[0].srcSubresource = {
@@ -759,7 +769,8 @@ NRI_INLINE void CommandBufferVK::ResolveTexture(Texture& dstTexture, const Textu
 NRI_INLINE void CommandBufferVK::UploadBufferToTexture(Texture& dstTexture, const TextureRegionDesc& dstRegion, const Buffer& srcBuffer, const TextureDataLayoutDesc& srcDataLayout) {
     const BufferVK& src = (BufferVK&)srcBuffer;
     const TextureVK& dst = (TextureVK&)dstTexture;
-    const FormatProps& formatProps = GetFormatProps(dst.GetDesc().format);
+    const TextureDesc& dstDesc = dst.GetDesc();
+    const FormatProps& formatProps = GetFormatProps(dstDesc.format);
 
     uint32_t rowBlockNum = srcDataLayout.rowPitch / formatProps.stride;
     uint32_t bufferRowLength = rowBlockNum * formatProps.blockWidth;
@@ -767,9 +778,7 @@ NRI_INLINE void CommandBufferVK::UploadBufferToTexture(Texture& dstTexture, cons
     uint32_t sliceRowNum = srcDataLayout.slicePitch / srcDataLayout.rowPitch;
     uint32_t bufferImageHeight = sliceRowNum * formatProps.blockWidth;
 
-    VkImageAspectFlags dstAspectFlags = GetImageAspectFlags(dstRegion.planes);
-    if (dstRegion.planes == PlaneBits::ALL)
-        dstAspectFlags = dst.GetImageAspectFlags();
+    VkImageAspectFlags dstAspectFlags = GetImageAspectFlags(dstRegion.planes, dstDesc.format);
 
     VkBufferImageCopy2 region = {VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
     region.bufferOffset = srcDataLayout.offset;
@@ -806,7 +815,8 @@ NRI_INLINE void CommandBufferVK::UploadBufferToTexture(Texture& dstTexture, cons
 NRI_INLINE void CommandBufferVK::ReadbackTextureToBuffer(Buffer& dstBuffer, const TextureDataLayoutDesc& dstDataLayout, const Texture& srcTexture, const TextureRegionDesc& srcRegion) {
     const TextureVK& src = (TextureVK&)srcTexture;
     const BufferVK& dst = (BufferVK&)dstBuffer;
-    const FormatProps& formatProps = GetFormatProps(src.GetDesc().format);
+    const TextureDesc& srcDesc = src.GetDesc();
+    const FormatProps& formatProps = GetFormatProps(srcDesc.format);
 
     uint32_t rowBlockNum = dstDataLayout.rowPitch / formatProps.stride;
     uint32_t bufferRowLength = rowBlockNum * formatProps.blockWidth;
@@ -814,9 +824,7 @@ NRI_INLINE void CommandBufferVK::ReadbackTextureToBuffer(Buffer& dstBuffer, cons
     uint32_t sliceRowNum = dstDataLayout.slicePitch / dstDataLayout.rowPitch;
     uint32_t bufferImageHeight = sliceRowNum * formatProps.blockWidth;
 
-    VkImageAspectFlags srcAspectFlags = GetImageAspectFlags(srcRegion.planes);
-    if (srcRegion.planes == PlaneBits::ALL)
-        srcAspectFlags = src.GetImageAspectFlags();
+    VkImageAspectFlags srcAspectFlags = GetImageAspectFlags(srcRegion.planes, srcDesc.format);
 
     VkBufferImageCopy2 region = {VK_STRUCTURE_TYPE_BUFFER_IMAGE_COPY_2};
     region.bufferOffset = dstDataLayout.offset;
@@ -936,6 +944,18 @@ static inline VkAccessFlags2 GetAccessFlags(AccessBits accessBits) {
     if (accessBits & (AccessBits::COPY_DESTINATION | AccessBits::RESOLVE_DESTINATION | AccessBits::CLEAR_STORAGE))
         flags |= VK_ACCESS_2_TRANSFER_WRITE_BIT;
 
+    if (accessBits & AccessBits::VIDEO_DECODE_READ)
+        flags |= VK_ACCESS_2_VIDEO_DECODE_READ_BIT_KHR;
+
+    if (accessBits & AccessBits::VIDEO_DECODE_WRITE)
+        flags |= VK_ACCESS_2_VIDEO_DECODE_WRITE_BIT_KHR;
+
+    if (accessBits & AccessBits::VIDEO_ENCODE_READ)
+        flags |= VK_ACCESS_2_VIDEO_ENCODE_READ_BIT_KHR;
+
+    if (accessBits & AccessBits::VIDEO_ENCODE_WRITE)
+        flags |= VK_ACCESS_2_VIDEO_ENCODE_WRITE_BIT_KHR;
+
     return flags;
 }
 
@@ -981,9 +1001,7 @@ NRI_INLINE void CommandBufferVK::Barrier(const BarrierDesc& barrierDesc) {
         const QueueVK& srcQueue = *(QueueVK*)in.srcQueue;
         const QueueVK& dstQueue = *(QueueVK*)in.dstQueue;
 
-        VkImageAspectFlags aspectFlags = GetImageAspectFlags(in.planes);
-        if (in.planes == PlaneBits::ALL)
-            aspectFlags = textureVK.GetImageAspectFlags();
+        VkImageAspectFlags aspectFlags = GetImageAspectFlags(in.planes, textureVK.GetDesc().format);
 
         VkImageMemoryBarrier2& out = textureBarriers[i];
         out = {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};

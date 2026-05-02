@@ -72,6 +72,10 @@ constexpr std::array<VkImageLayout, (size_t)Layout::MAX_NUM> g_ImageLayouts = {
     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,                         // COPY_DESTINATION
     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,                         // RESOLVE_SOURCE
     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,                         // RESOLVE_DESTINATION
+    VK_IMAGE_LAYOUT_VIDEO_DECODE_DST_KHR,                         // VIDEO_DECODE_DST
+    VK_IMAGE_LAYOUT_VIDEO_DECODE_DPB_KHR,                         // VIDEO_DECODE_DPB
+    VK_IMAGE_LAYOUT_VIDEO_ENCODE_SRC_KHR,                         // VIDEO_ENCODE_SRC
+    VK_IMAGE_LAYOUT_VIDEO_ENCODE_DPB_KHR,                         // VIDEO_ENCODE_DPB
 };
 NRI_VALIDATE_ARRAY(g_ImageLayouts);
 
@@ -420,6 +424,12 @@ constexpr VkPipelineStageFlags2 GetPipelineStageFlags(StageBits stageBits) {
     if (stageBits & StageBits::CLEAR_STORAGE)
         flags |= VK_PIPELINE_STAGE_2_CLEAR_BIT;
 
+    if (stageBits & StageBits::VIDEO_DECODE)
+        flags |= VK_PIPELINE_STAGE_2_VIDEO_DECODE_BIT_KHR;
+
+    if (stageBits & StageBits::VIDEO_ENCODE)
+        flags |= VK_PIPELINE_STAGE_2_VIDEO_ENCODE_BIT_KHR;
+
     if (stageBits & StageBits::ACCELERATION_STRUCTURE)
         flags |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR; // already includes "VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_COPY_BIT_KHR" (more strict according to the spec)
 
@@ -485,28 +495,23 @@ constexpr VkShaderStageFlags GetShaderStageFlags(StageBits stage) {
     return stageFlags;
 }
 
-constexpr VkImageAspectFlags GetImageAspectFlags(Format format) {
-    switch (format) {
-        case Format::D16_UNORM:
-        case Format::D32_SFLOAT:
-        case Format::R24_UNORM_X8:
-        case Format::R32_SFLOAT_X8_X24:
-            return VK_IMAGE_ASPECT_DEPTH_BIT;
+constexpr VkImageAspectFlags GetImageAspectFlags(PlaneBits planes, Format format) {
+    if (planes == PlaneBits::ALL) {
+        switch (format) {
+            case Format::D16_UNORM:
+            case Format::D32_SFLOAT:
+                return VK_IMAGE_ASPECT_DEPTH_BIT;
 
-        case Format::D24_UNORM_S8_UINT:
-        case Format::D32_SFLOAT_S8_UINT_X24:
-            return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+            case Format::D24_UNORM_S8_UINT:
+            case Format::D32_SFLOAT_S8_UINT:
+                return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
 
-        case Format::X32_G8_UINT_X24:
-        case Format::X24_G8_UINT:
-            return VK_IMAGE_ASPECT_STENCIL_BIT;
-
-        default:
-            return VK_IMAGE_ASPECT_COLOR_BIT;
+            default:
+                return VK_IMAGE_ASPECT_COLOR_BIT;
+        }
     }
-}
 
-constexpr VkImageAspectFlags GetImageAspectFlags(PlaneBits planes) {
+    // I don't think we should filter out format-incompatible aspects...
     VkImageAspectFlags aspectFlags = 0;
     if (planes & PlaneBits::COLOR)
         aspectFlags |= VK_IMAGE_ASPECT_COLOR_BIT;
@@ -514,6 +519,12 @@ constexpr VkImageAspectFlags GetImageAspectFlags(PlaneBits planes) {
         aspectFlags |= VK_IMAGE_ASPECT_DEPTH_BIT;
     if (planes & PlaneBits::STENCIL)
         aspectFlags |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    if (planes & PlaneBits::PLANE_0)
+        aspectFlags |= VK_IMAGE_ASPECT_PLANE_0_BIT;
+    if (planes & PlaneBits::PLANE_1)
+        aspectFlags |= VK_IMAGE_ASPECT_PLANE_1_BIT;
+    if (planes & PlaneBits::PLANE_2)
+        aspectFlags |= VK_IMAGE_ASPECT_PLANE_2_BIT;
 
     return aspectFlags;
 }

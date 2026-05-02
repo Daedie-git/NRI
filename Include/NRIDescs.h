@@ -267,6 +267,11 @@ NriEnum(Format, uint8_t,                // |      FormatSupportBits      |
     R11_G11_B10_UFLOAT,                 // + + . + . + + + + + + + . + + +
     R9_G9_B9_E5_UFLOAT,                 // + . . . . . . . . . . . . . . .
 
+    // Multi-planar: 4:2:0
+    NV12_UNORM,                         // + . . . . . . . . . . . . . . .
+    P010_UNORM,                         // + . . . . . . . . . . . . . . .
+    P016_UNORM,                         // + . . . . . . . . . . . . . . .
+
     // Block-compressed (requires "features.textureCompressionBC")
     // https://learn.microsoft.com/en-us/windows/win32/direct3d11/texture-block-compression-in-direct3d-11?source=recommendations
     // https://registry.khronos.org/DataFormat/specs/1.4/dataformat.1.4.html#S3TC
@@ -331,28 +336,31 @@ NriEnum(Format, uint8_t,                // |      FormatSupportBits      |
     ASTC_12X12_UNORM,                   // + . . . . . . . . . . . . . . .
     ASTC_12X12_SRGB,                    // + . . . . . . . . . . . . . . .
 
-    // Depth-stencil
-    D16_UNORM,                          // . . . . + . + + + . . . . . . .
-    D24_UNORM_S8_UINT,                  // . . . . + . + + + . . . . . . .
-    D32_SFLOAT,                         // . . . . + . + + + . . . . . . .
-    D32_SFLOAT_S8_UINT_X24,             // . . . . + . + + + . . . . . . .
+    // Depth
+    D16_UNORM,                          // + . . . + . + + + . . . . . . .
+    D32_SFLOAT,                         // + . . . + . + + + . . . . . . .
 
-    // Depth-stencil (as a shader resource view)
-    R24_UNORM_X8,       // .x - depth   // + . . . . . . . . . . . . . . .
-    X24_G8_UINT,        // .y - stencil // + . . . . . . . . . . . . . . .
-    R32_SFLOAT_X8_X24,  // .x - depth   // + . . . . . . . . . . . . . . .
-    X32_G8_UINT_X24     // .y - stencil // + . . . . . . . . . . . . . . .
+    // Depth-stencil
+    D24_UNORM_S8_UINT,                  // + . . . + . + + + . . . . . . .
+    D32_SFLOAT_S8_UINT                  // + . . . + . + + + . . . . . . .
 );
 
 // https://learn.microsoft.com/en-us/windows/win32/direct3d12/subresources#plane-slice
 // https://docs.vulkan.org/refpages/latest/refpages/source/VkImageAspectFlagBits.html
 NriBits(PlaneBits, uint8_t,
-    ALL                             = 0,
+    ALL                             = 0,            // lazy default
+    NONE                            = NriBit(7),    // no accessible planes (needed for a read-only depth-stencil attachment)
+
     COLOR                           = NriBit(0),    // indicates "color" plane (same as "ALL" for color formats)
 
     // D3D11: can't be addressed individually in "copy" and "resolve" operations
     DEPTH                           = NriBit(1),    // indicates "depth" plane (same as "ALL" for depth-only formats)
-    STENCIL                         = NriBit(2)     // indicates "stencil" plane in depth-stencil formats
+    STENCIL                         = NriBit(2),    // indicates "stencil" plane in depth-stencil formats
+
+    // Vulkan: multi-planar YUV images
+    PLANE_0                         = NriBit(3),
+    PLANE_1                         = NriBit(4),
+    PLANE_2                         = NriBit(5)
 );
 
 // A bit represents a feature, supported by a format
@@ -442,9 +450,11 @@ NriBits(StageBits, uint32_t,
     COPY                            = NriBit(19),   // Invoked by "CmdCopy*", "CmdUpload*" and "CmdReadback*"
     RESOLVE                         = NriBit(20),   // Invoked by "CmdResolveTexture"
     CLEAR_STORAGE                   = NriBit(21),   // Invoked by "CmdClearStorage"
+    VIDEO_DECODE                    = NriBit(22),   // Invoked by "CmdDecodeVideo"
+    VIDEO_ENCODE                    = NriBit(23),   // Invoked by "CmdEncodeVideo"
 
     // Modifiers
-    INDIRECT                        = NriBit(22),   // Invoked by "Indirect" commands (used in addition to other bits)
+    INDIRECT                        = NriBit(24),   // Invoked by "Indirect" commands (used in addition to other bits)
 
     // Umbrella stages
     TESSELLATION_SHADERS            = NriMember(StageBits, TESS_CONTROL_SHADER)
@@ -520,6 +530,12 @@ NriBits(AccessBits, uint32_t,
     // Clear storage
     CLEAR_STORAGE                   = NriBit(22),   //  W       CLEAR_STORAGE
 
+    // Video
+    VIDEO_DECODE_READ               = NriBit(23),   // R        VIDEO_DECODE
+    VIDEO_DECODE_WRITE              = NriBit(24),   //  W       VIDEO_DECODE
+    VIDEO_ENCODE_READ               = NriBit(25),   // R        VIDEO_ENCODE
+    VIDEO_ENCODE_WRITE              = NriBit(26),   //  W       VIDEO_ENCODE
+
     // Umbrella access
     COLOR_ATTACHMENT                = NriMember(AccessBits, COLOR_ATTACHMENT_READ)
                                     | NriMember(AccessBits, COLOR_ATTACHMENT_WRITE),
@@ -531,7 +547,13 @@ NriBits(AccessBits, uint32_t,
                                     | NriMember(AccessBits, ACCELERATION_STRUCTURE_WRITE),
 
     MICROMAP                        = NriMember(AccessBits, MICROMAP_READ)
-                                    | NriMember(AccessBits, MICROMAP_WRITE)
+                                    | NriMember(AccessBits, MICROMAP_WRITE),
+
+    VIDEO_DECODE                    = NriMember(AccessBits, VIDEO_DECODE_READ)
+                                    | NriMember(AccessBits, VIDEO_DECODE_WRITE),
+
+    VIDEO_ENCODE                    = NriMember(AccessBits, VIDEO_ENCODE_READ)
+                                    | NriMember(AccessBits, VIDEO_ENCODE_WRITE)
 );
 
 // "Layout" is ignored if "features.enhancedBarriers" is not supported
@@ -546,9 +568,9 @@ NriEnum(Layout, uint8_t,            // Compatible "AccessBits":
     // Attachment
     COLOR_ATTACHMENT,                   // COLOR_ATTACHMENT_READ/WRITE
     DEPTH_STENCIL_ATTACHMENT,           // DEPTH_STENCIL_ATTACHMENT_READ/WRITE
-    DEPTH_READONLY_STENCIL_ATTACHMENT,  // DEPTH_STENCIL_ATTACHMENT_READ/WRITE, SHADER_RESOURCE (readonlyPlanes = "DEPTH")
-    DEPTH_ATTACHMENT_STENCIL_READONLY,  // DEPTH_STENCIL_ATTACHMENT_READ/WRITE, SHADER_RESOURCE (readonlyPlanes = "STENCIL")
-    DEPTH_STENCIL_READONLY,             // DEPTH_STENCIL_ATTACHMENT_READ, SHADER_RESOURCE (readonlyPlanes = "DEPTH|STENCIL")
+    DEPTH_READONLY_STENCIL_ATTACHMENT,  // DEPTH_STENCIL_ATTACHMENT_READ/WRITE (accessible "planes" = "STENCIL"), SHADER_RESOURCE (accessible "planes" = "DEPTH")
+    DEPTH_ATTACHMENT_STENCIL_READONLY,  // DEPTH_STENCIL_ATTACHMENT_READ/WRITE (accessible "planes" = "DEPTH"), SHADER_RESOURCE (accessible "planes" = "STENCIL")
+    DEPTH_STENCIL_READONLY,             // DEPTH_STENCIL_ATTACHMENT_READ  (accessible "planes" = "NONE")
     SHADING_RATE_ATTACHMENT,            // SHADING_RATE_ATTACHMENT
     INPUT_ATTACHMENT,                   // COLOR_ATTACHMENT, INPUT_ATTACHMENT
 
@@ -562,7 +584,13 @@ NriEnum(Layout, uint8_t,            // Compatible "AccessBits":
 
     // Resolve
     RESOLVE_SOURCE,                     // RESOLVE_SOURCE
-    RESOLVE_DESTINATION                 // RESOLVE_DESTINATION
+    RESOLVE_DESTINATION,                // RESOLVE_DESTINATION
+
+    // Video
+    VIDEO_DECODE_DST,                   // VIDEO_DECODE_WRITE
+    VIDEO_DECODE_DPB,                   // VIDEO_DECODE_READ/WRITE
+    VIDEO_ENCODE_SRC,                   // VIDEO_ENCODE_READ
+    VIDEO_ENCODE_DPB                    // VIDEO_ENCODE_READ/WRITE
 );
 
 NriStruct(AccessStage) {
@@ -643,14 +671,17 @@ NriEnum(SharingMode, uint8_t,
 
 // https://docs.vulkan.org/refpages/latest/refpages/source/VkImageUsageFlagBits.html
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_resource_flags
-NriBits(TextureUsageBits, uint8_t,                  // Min compatible access:                   Usage:
+NriBits(TextureUsageBits, uint16_t,                 // Min compatible access:                   Usage:
     NONE                                = 0,
     SHADER_RESOURCE                     = NriBit(0),    // SHADER_RESOURCE                          Read-only shader resource view (SRV)
     SHADER_RESOURCE_STORAGE             = NriBit(1),    // SHADER_RESOURCE_STORAGE                  Read/write shader resource view (UAV)
     COLOR_ATTACHMENT                    = NriBit(2),    // COLOR_ATTACHMENT                         Color attachment (render target)
     DEPTH_STENCIL_ATTACHMENT            = NriBit(3),    // DEPTH_STENCIL_ATTACHMENT_READ/WRITE      Depth-stencil attachment (depth-stencil target)
     SHADING_RATE_ATTACHMENT             = NriBit(4),    // SHADING_RATE_ATTACHMENT                  Shading rate attachment (source)
-    INPUT_ATTACHMENT                    = NriBit(5)     // INPUT_ATTACHMENT                         Subpass input (read on-chip tile cache)
+    INPUT_ATTACHMENT                    = NriBit(5),    // INPUT_ATTACHMENT                         Subpass input (read on-chip tile cache)
+    VIDEO_DECODE                        = NriBit(6),    // VIDEO_DECODE                             Video decode output / DPB picture
+    VIDEO_ENCODE                        = NriBit(7),    // VIDEO_ENCODE                             Video encode input / DPB picture
+    VIDEO_REFERENCE_ONLY                = NriBit(8)     // VIDEO_*                                  Video DPB/reference-only allocation
 );
 
 // https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferUsageFlagBits.html
@@ -667,7 +698,9 @@ NriBits(BufferUsageBits, uint16_t,                  // Min compatible access:   
     ACCELERATION_STRUCTURE_BUILD_INPUT  = NriBit(8),    // SHADER_RESOURCE                          Read-only input in "CmdBuildAccelerationStructures" command
     ACCELERATION_STRUCTURE_STORAGE      = NriBit(9),    // ACCELERATION_STRUCTURE_READ/WRITE        (INTERNAL) acceleration structure storage
     MICROMAP_BUILD_INPUT                = NriBit(10),   // SHADER_RESOURCE                          Read-only input in "CmdBuildMicromaps" command
-    MICROMAP_STORAGE                    = NriBit(11)    // MICROMAP_READ/WRITE                      (INTERNAL) micromap storage
+    MICROMAP_STORAGE                    = NriBit(11),   // MICROMAP_READ/WRITE                      (INTERNAL) micromap storage
+    VIDEO_DECODE                        = NriBit(12),   // VIDEO_DECODE                             Video decode bitstream input
+    VIDEO_ENCODE                        = NriBit(13)    // VIDEO_ENCODE                             Video encode bitstream output
 );
 
 NriStruct(TextureDesc) {
@@ -868,7 +901,7 @@ NriStruct(TextureViewDesc) {
     Nri(Dim_t) layerNum;                    // can be "REMAINING"
     Nri(Dim_t) sliceOffset;
     Nri(Dim_t) sliceNum;                    // can be "REMAINING"
-    Nri(PlaneBits) readonlyPlanes;          // "DEPTH" and/or "STENCIL"
+    Nri(PlaneBits) planes;                  // accessible planes (missing planes for a "DEPTH_STENCIL_ATTACHMENT" are considered read-only)
     Nri(ComponentMapping) components;
 };
 
@@ -1742,7 +1775,9 @@ NriEnum(Architecture, uint8_t,
 NriEnum(QueueType, uint8_t,
     GRAPHICS,
     COMPUTE,
-    COPY
+    COPY,
+    VIDEO_DECODE,
+    VIDEO_ENCODE
 );
 
 NriStruct(AdapterDesc) {
@@ -1751,10 +1786,13 @@ NriStruct(AdapterDesc) {
     uint64_t videoMemorySize;
     uint64_t sharedSystemMemorySize;
     uint32_t deviceId;
+    uint32_t driverVersion; // GAPI and OS dependent
     uint32_t queueNum[(uint32_t)NriScopedMember(QueueType, MAX_NUM)];
     Nri(Vendor) vendor;
     Nri(Architecture) architecture;
 };
+
+#define NriShaderModel(major, minor) (major * 100 + minor)
 
 // Feature support coverage: https://vulkan.gpuinfo.org/ and https://d3d12infodb.boolka.dev/
 NriStruct(DeviceDesc) {
@@ -1762,7 +1800,7 @@ NriStruct(DeviceDesc) {
     Nri(AdapterDesc) adapterDesc; // "queueNum" reflects available number of queues per "QueueType"
     Nri(GraphicsAPI) graphicsAPI;
     uint16_t nriVersion;
-    uint8_t shaderModel; // major * 10 + minor
+    uint16_t shaderModel; // see "NriShaderModel"
 
     // Viewport
     struct {

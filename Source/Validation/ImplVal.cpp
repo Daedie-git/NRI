@@ -1181,6 +1181,163 @@ Result DeviceVal::FillFunctionTable(RayTracingInterface& table) const {
 #pragma endregion
 
 //============================================================================================================================================================================================
+#pragma region[  Video  ]
+
+struct VideoSessionVal final : public ObjectVal {
+    inline VideoSessionVal(DeviceVal& device, VideoSession* impl)
+        : ObjectVal(device, (Object*)impl) {
+    }
+
+    inline VideoSession* GetImpl() const {
+        return (VideoSession*)m_Impl;
+    }
+};
+
+struct VideoSessionParametersVal final : public ObjectVal {
+    inline VideoSessionParametersVal(DeviceVal& device, VideoSessionParameters* impl)
+        : ObjectVal(device, (Object*)impl) {
+    }
+
+    inline VideoSessionParameters* GetImpl() const {
+        return (VideoSessionParameters*)m_Impl;
+    }
+};
+
+struct VideoPictureVal final : public ObjectVal {
+    inline VideoPictureVal(DeviceVal& device, VideoPicture* impl)
+        : ObjectVal(device, (Object*)impl) {
+    }
+
+    inline VideoPicture* GetImpl() const {
+        return (VideoPicture*)m_Impl;
+    }
+};
+
+static Result NRI_CALL CreateVideoSession(Device& device, const VideoSessionDesc& videoSessionDesc, VideoSession*& videoSession) {
+    DeviceVal& deviceVal = (DeviceVal&)device;
+    VideoSession* videoSessionImpl = nullptr;
+    Result result = deviceVal.GetVideoInterfaceImpl().CreateVideoSession(deviceVal.GetImpl(), videoSessionDesc, videoSessionImpl);
+    if (result != Result::SUCCESS)
+        return result;
+
+    videoSession = (VideoSession*)Allocate<VideoSessionVal>(deviceVal.GetAllocationCallbacks(), deviceVal, videoSessionImpl);
+    return Result::SUCCESS;
+}
+
+static void NRI_CALL DestroyVideoSession(VideoSession& videoSession) {
+    VideoSessionVal& videoSessionVal = (VideoSessionVal&)videoSession;
+    videoSessionVal.GetVideoInterfaceImpl().DestroyVideoSession(*videoSessionVal.GetImpl());
+    Destroy(&videoSessionVal);
+}
+
+static Result NRI_CALL CreateVideoSessionParameters(Device& device, const VideoSessionParametersDesc& videoSessionParametersDesc, VideoSessionParameters*& videoSessionParameters) {
+    DeviceVal& deviceVal = (DeviceVal&)device;
+
+    VideoSessionParametersDesc descImpl = videoSessionParametersDesc;
+    descImpl.session = videoSessionParametersDesc.session ? ((VideoSessionVal*)videoSessionParametersDesc.session)->GetImpl() : nullptr;
+
+    VideoSessionParameters* impl = nullptr;
+    Result result = deviceVal.GetVideoInterfaceImpl().CreateVideoSessionParameters(deviceVal.GetImpl(), descImpl, impl);
+    if (result != Result::SUCCESS)
+        return result;
+
+    videoSessionParameters = (VideoSessionParameters*)Allocate<VideoSessionParametersVal>(deviceVal.GetAllocationCallbacks(), deviceVal, impl);
+    return Result::SUCCESS;
+}
+
+static void NRI_CALL DestroyVideoSessionParameters(VideoSessionParameters& videoSessionParameters) {
+    VideoSessionParametersVal& videoSessionParametersVal = (VideoSessionParametersVal&)videoSessionParameters;
+    videoSessionParametersVal.GetVideoInterfaceImpl().DestroyVideoSessionParameters(*videoSessionParametersVal.GetImpl());
+    Destroy(&videoSessionParametersVal);
+}
+
+static Result NRI_CALL CreateVideoPicture(Device& device, const VideoPictureDesc& videoPictureDesc, VideoPicture*& videoPicture) {
+    DeviceVal& deviceVal = (DeviceVal&)device;
+
+    VideoPictureDesc descImpl = videoPictureDesc;
+    descImpl.texture = NRI_GET_IMPL(Texture, videoPictureDesc.texture);
+
+    VideoPicture* impl = nullptr;
+    Result result = deviceVal.GetVideoInterfaceImpl().CreateVideoPicture(deviceVal.GetImpl(), descImpl, impl);
+    if (result != Result::SUCCESS)
+        return result;
+
+    videoPicture = (VideoPicture*)Allocate<VideoPictureVal>(deviceVal.GetAllocationCallbacks(), deviceVal, impl);
+    return Result::SUCCESS;
+}
+
+static void NRI_CALL DestroyVideoPicture(VideoPicture& videoPicture) {
+    VideoPictureVal& videoPictureVal = (VideoPictureVal&)videoPicture;
+    videoPictureVal.GetVideoInterfaceImpl().DestroyVideoPicture(*videoPictureVal.GetImpl());
+    Destroy(&videoPictureVal);
+}
+
+static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDecodeDesc& videoDecodeDesc) {
+    CommandBufferVal& commandBufferVal = (CommandBufferVal&)commandBuffer;
+
+    VideoDecodeDesc videoDecodeDescImpl = videoDecodeDesc;
+    videoDecodeDescImpl.session = videoDecodeDesc.session ? ((VideoSessionVal*)videoDecodeDesc.session)->GetImpl() : nullptr;
+    videoDecodeDescImpl.parameters = videoDecodeDesc.parameters ? ((VideoSessionParametersVal*)videoDecodeDesc.parameters)->GetImpl() : nullptr;
+    videoDecodeDescImpl.bitstream = NRI_GET_IMPL(Buffer, videoDecodeDesc.bitstream);
+    videoDecodeDescImpl.dstPicture = videoDecodeDesc.dstPicture ? ((VideoPictureVal*)videoDecodeDesc.dstPicture)->GetImpl() : nullptr;
+
+    Scratch<VideoReference> references = NRI_ALLOCATE_SCRATCH(commandBufferVal.GetDevice(), VideoReference, videoDecodeDesc.references ? videoDecodeDesc.referenceNum : 0);
+    if (videoDecodeDesc.references) {
+        for (uint32_t i = 0; i < videoDecodeDesc.referenceNum; i++) {
+            references[i] = videoDecodeDesc.references[i];
+            references[i].picture = references[i].picture ? ((VideoPictureVal*)references[i].picture)->GetImpl() : nullptr;
+        }
+
+        videoDecodeDescImpl.references = references;
+    }
+
+    commandBufferVal.GetVideoInterfaceImpl().CmdDecodeVideo(*commandBufferVal.GetImpl(), videoDecodeDescImpl);
+}
+
+static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEncodeDesc& videoEncodeDesc) {
+    CommandBufferVal& commandBufferVal = (CommandBufferVal&)commandBuffer;
+
+    VideoEncodeDesc videoEncodeDescImpl = videoEncodeDesc;
+    videoEncodeDescImpl.session = videoEncodeDesc.session ? ((VideoSessionVal*)videoEncodeDesc.session)->GetImpl() : nullptr;
+    videoEncodeDescImpl.parameters = videoEncodeDesc.parameters ? ((VideoSessionParametersVal*)videoEncodeDesc.parameters)->GetImpl() : nullptr;
+    videoEncodeDescImpl.srcPicture = videoEncodeDesc.srcPicture ? ((VideoPictureVal*)videoEncodeDesc.srcPicture)->GetImpl() : nullptr;
+    videoEncodeDescImpl.dstBitstream = NRI_GET_IMPL(Buffer, videoEncodeDesc.dstBitstream);
+    videoEncodeDescImpl.reconstructedPicture = videoEncodeDesc.reconstructedPicture ? ((VideoPictureVal*)videoEncodeDesc.reconstructedPicture)->GetImpl() : nullptr;
+    videoEncodeDescImpl.metadata = NRI_GET_IMPL(Buffer, videoEncodeDesc.metadata);
+    videoEncodeDescImpl.resolvedMetadata = NRI_GET_IMPL(Buffer, videoEncodeDesc.resolvedMetadata);
+
+    Scratch<VideoReference> references = NRI_ALLOCATE_SCRATCH(commandBufferVal.GetDevice(), VideoReference, videoEncodeDesc.references ? videoEncodeDesc.referenceNum : 0);
+    if (videoEncodeDesc.references) {
+        for (uint32_t i = 0; i < videoEncodeDesc.referenceNum; i++) {
+            references[i] = videoEncodeDesc.references[i];
+            references[i].picture = references[i].picture ? ((VideoPictureVal*)references[i].picture)->GetImpl() : nullptr;
+        }
+
+        videoEncodeDescImpl.references = references;
+    }
+
+    commandBufferVal.GetVideoInterfaceImpl().CmdEncodeVideo(*commandBufferVal.GetImpl(), videoEncodeDescImpl);
+}
+
+Result DeviceVal::FillFunctionTable(VideoInterface& table) const {
+    if (!m_IsExtSupported.video)
+        return Result::UNSUPPORTED;
+
+    table.CreateVideoSession = ::CreateVideoSession;
+    table.DestroyVideoSession = ::DestroyVideoSession;
+    table.CreateVideoSessionParameters = ::CreateVideoSessionParameters;
+    table.DestroyVideoSessionParameters = ::DestroyVideoSessionParameters;
+    table.CreateVideoPicture = ::CreateVideoPicture;
+    table.DestroyVideoPicture = ::DestroyVideoPicture;
+    table.CmdDecodeVideo = ::CmdDecodeVideo;
+    table.CmdEncodeVideo = ::CmdEncodeVideo;
+
+    return Result::SUCCESS;
+}
+
+#pragma endregion
+
+//============================================================================================================================================================================================
 #pragma region[  Streamer  ]
 
 struct StreamerVal final : public ObjectVal {
@@ -1500,6 +1657,16 @@ static Result NRI_CALL CreateAccelerationStructureD3D12(Device& device, const Ac
     return ((DeviceVal&)device).CreateAccelerationStructure(accelerationStructureD3D12Desc, accelerationStructure);
 }
 
+static void NRI_CALL CmdDecodeVideoD3D12(CommandBuffer& commandBuffer, const VideoDecodeD3D12Desc& videoDecodeD3D12Desc) {
+    CommandBufferVal& commandBufferVal = (CommandBufferVal&)commandBuffer;
+    commandBufferVal.GetWrapperD3D12InterfaceImpl().CmdDecodeVideoD3D12(*commandBufferVal.GetImpl(), videoDecodeD3D12Desc);
+}
+
+static void NRI_CALL CmdEncodeVideoD3D12(CommandBuffer& commandBuffer, const VideoEncodeD3D12Desc& videoEncodeD3D12Desc) {
+    CommandBufferVal& commandBufferVal = (CommandBufferVal&)commandBuffer;
+    commandBufferVal.GetWrapperD3D12InterfaceImpl().CmdEncodeVideoD3D12(*commandBufferVal.GetImpl(), videoEncodeD3D12Desc);
+}
+
 #endif
 
 Result DeviceVal::FillFunctionTable(WrapperD3D12Interface& table) const {
@@ -1514,6 +1681,8 @@ Result DeviceVal::FillFunctionTable(WrapperD3D12Interface& table) const {
     table.CreateMemoryD3D12 = ::CreateMemoryD3D12;
     table.CreateFenceD3D12 = ::CreateFenceD3D12;
     table.CreateAccelerationStructureD3D12 = ::CreateAccelerationStructureD3D12;
+    table.CmdDecodeVideoD3D12 = ::CmdDecodeVideoD3D12;
+    table.CmdEncodeVideoD3D12 = ::CmdEncodeVideoD3D12;
 
     return Result::SUCCESS;
 #else
@@ -1571,6 +1740,42 @@ static Result NRI_CALL CreateAccelerationStructureVK(Device& device, const Accel
     return ((DeviceVal&)device).CreateAccelerationStructure(accelerationStructureVKDesc, accelerationStructure);
 }
 
+static void NRI_CALL CmdDecodeVideoVK(CommandBuffer& commandBuffer, const VideoDecodeVKDesc& videoDecodeVKDesc) {
+    CommandBufferVal& commandBufferVal = (CommandBufferVal&)commandBuffer;
+    commandBufferVal.GetWrapperVKInterfaceImpl().CmdDecodeVideoVK(*commandBufferVal.GetImpl(), videoDecodeVKDesc);
+}
+
+static void NRI_CALL CmdEncodeVideoVK(CommandBuffer& commandBuffer, const VideoEncodeVKDesc& videoEncodeVKDesc) {
+    CommandBufferVal& commandBufferVal = (CommandBufferVal&)commandBuffer;
+    commandBufferVal.GetWrapperVKInterfaceImpl().CmdEncodeVideoVK(*commandBufferVal.GetImpl(), videoEncodeVKDesc);
+}
+
+static Result NRI_CALL CreateVideoSessionParametersVK(Device& device, const VideoSessionParametersVKDesc& videoSessionParametersVKDesc, VideoSessionParameters*& videoSessionParameters) {
+    DeviceVal& deviceVal = (DeviceVal&)device;
+
+    VideoSessionParametersVKDesc descImpl = videoSessionParametersVKDesc;
+    descImpl.session = videoSessionParametersVKDesc.session ? ((VideoSessionVal*)videoSessionParametersVKDesc.session)->GetImpl() : nullptr;
+
+    VideoSessionParameters* impl = nullptr;
+    Result result = deviceVal.GetWrapperVKInterfaceImpl().CreateVideoSessionParametersVK(deviceVal.GetImpl(), descImpl, impl);
+
+    videoSessionParameters = nullptr;
+    if (result == Result::SUCCESS)
+        videoSessionParameters = (VideoSessionParameters*)Allocate<VideoSessionParametersVal>(deviceVal.GetAllocationCallbacks(), deviceVal, impl);
+
+    return result;
+}
+
+static VKNonDispatchableHandle NRI_CALL GetVideoSessionVK(const VideoSession& videoSession) {
+    const VideoSessionVal& videoSessionVal = (const VideoSessionVal&)videoSession;
+    return videoSessionVal.GetWrapperVKInterfaceImpl().GetVideoSessionVK(*videoSessionVal.GetImpl());
+}
+
+static VKNonDispatchableHandle NRI_CALL GetVideoSessionParametersVK(const VideoSessionParameters& videoSessionParameters) {
+    const VideoSessionParametersVal& videoSessionParametersVal = (const VideoSessionParametersVal&)videoSessionParameters;
+    return videoSessionParametersVal.GetWrapperVKInterfaceImpl().GetVideoSessionParametersVK(*videoSessionParametersVal.GetImpl());
+}
+
 static VKHandle NRI_CALL GetPhysicalDeviceVK(const Device& device) {
     return ((DeviceVal&)device).GetWrapperVKInterfaceImpl().GetPhysicalDeviceVK(((DeviceVal&)device).GetImpl());
 }
@@ -1609,8 +1814,13 @@ Result DeviceVal::FillFunctionTable(WrapperVKInterface& table) const {
     table.CreateQueryPoolVK = ::CreateQueryPoolVK;
     table.CreateFenceVK = ::CreateFenceVK;
     table.CreateAccelerationStructureVK = ::CreateAccelerationStructureVK;
+    table.CmdDecodeVideoVK = ::CmdDecodeVideoVK;
+    table.CmdEncodeVideoVK = ::CmdEncodeVideoVK;
+    table.CreateVideoSessionParametersVK = ::CreateVideoSessionParametersVK;
     table.GetPhysicalDeviceVK = ::GetPhysicalDeviceVK;
     table.GetQueueFamilyIndexVK = ::GetQueueFamilyIndexVK;
+    table.GetVideoSessionVK = ::GetVideoSessionVK;
+    table.GetVideoSessionParametersVK = ::GetVideoSessionParametersVK;
     table.GetInstanceVK = ::GetInstanceVK;
     table.GetDeviceProcAddrVK = ::GetDeviceProcAddrVK;
     table.GetInstanceProcAddrVK = ::GetInstanceProcAddrVK;
