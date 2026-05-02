@@ -138,10 +138,21 @@ inline bool BuildVideoEncodeHEVCReferenceListsVK(const VideoReference* reference
             return false;
         }
 
-        if (referenceDesc->pictureOrderCount < currentPictureOrderCount)
+        if (referenceDesc->listIndex == 0) {
+            if (referenceDesc->pictureOrderCount >= currentPictureOrderCount) {
+                lists.failingReference = i;
+                lists.invalidPictureOrderCount = true;
+                return false;
+            }
+
             lists.list0[lists.list0Num++] = i;
-        else if (referenceDesc->pictureOrderCount > currentPictureOrderCount) {
+        } else if (referenceDesc->listIndex == 1) {
             if (frameType != VideoEncodeFrameType::B) {
+                lists.failingReference = i;
+                lists.invalidPictureOrderCount = true;
+                return false;
+            }
+            if (referenceDesc->pictureOrderCount <= currentPictureOrderCount) {
                 lists.failingReference = i;
                 lists.invalidPictureOrderCount = true;
                 return false;

@@ -204,7 +204,7 @@ NriStruct(VideoH265ReferenceDesc) {
     uint8_t temporalLayer;
     Nri(VideoEncodeFrameType) frameType;
     uint8_t longTerm;
-    uint8_t reserved;
+    uint8_t listIndex;
 };
 
 NriStruct(VideoH265DecodePictureDesc) {
