@@ -1174,6 +1174,23 @@ struct VideoSessionParametersD3D12 final {
     const VideoH264SessionParametersDesc* m_H264Parameters = nullptr;
 };
 
+// Older Windows SDK headers used by some builds do not name this newer support bit yet.
+static constexpr D3D12_VIDEO_ENCODER_SUPPORT_FLAGS D3D12_VIDEO_ENCODER_SUPPORT_FLAG_READABLE_RECONSTRUCTED_PICTURE_LAYOUT_AVAILABLE_COMPAT =
+    (D3D12_VIDEO_ENCODER_SUPPORT_FLAGS)0x8000;
+
+static bool IsVideoEncodeAV1RequiredFeatureSetSupportedD3D12(D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAGS featureFlags) {
+    constexpr D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAGS supportedFeatureFlags =
+        D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_ORDER_HINT_TOOLS |
+        D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_LOOP_RESTORATION_FILTER |
+        D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_FORCED_INTEGER_MOTION_VECTORS |
+        D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_AUTO_SEGMENTATION |
+        D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_CDEF_FILTERING |
+        D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_QUANTIZATION_DELTAS |
+        D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_LOOP_FILTER_DELTAS;
+
+    return (featureFlags & ~supportedFeatureFlags) == D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_NONE;
+}
+
 struct VideoPictureD3D12 final : public DebugNameBase {
     inline VideoPictureD3D12(DeviceD3D12& device)
         : m_Device(device) {
@@ -1257,6 +1274,10 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
         if ((decodeSupport.SupportFlags & D3D12_VIDEO_DECODE_SUPPORT_FLAG_SUPPORTED) == 0) {
             NRI_REPORT_WARNING(&m_Device, "D3D12 video decode support rejected: supportFlags=0x%X configurationFlags=0x%X decodeTier=0x%X", decodeSupport.SupportFlags,
                 decodeSupport.ConfigurationFlags, decodeSupport.DecodeTier);
+            return Result::UNSUPPORTED;
+        }
+        if (decodeSupport.ConfigurationFlags & D3D12_VIDEO_DECODE_CONFIGURATION_FLAG_REFERENCE_ONLY_ALLOCATIONS_REQUIRED) {
+            NRI_REPORT_WARNING(&m_Device, "D3D12 video decode support requires reference-only allocations, which are not exposed by the current NRIVideo texture usage flags");
             return Result::UNSUPPORTED;
         }
 
@@ -1354,6 +1375,11 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
             NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12VideoDevice3::CheckFeatureSupport(D3D12_FEATURE_VIDEO_ENCODER_CODEC_CONFIGURATION_SUPPORT)");
             if (!av1ConfigSupport.IsSupported)
                 return Result::UNSUPPORTED;
+
+            if (!IsVideoEncodeAV1RequiredFeatureSetSupportedD3D12(av1Caps.RequiredFeatureFlags)) {
+                NRI_REPORT_WARNING(&m_Device, "D3D12 AV1 encoder requires unsupported feature flags: required=0x%X", av1Caps.RequiredFeatureFlags);
+                return Result::UNSUPPORTED;
+            }
 
             av1Config.FeatureFlags = av1Caps.RequiredFeatureFlags;
             m_AV1FeatureFlags = av1Config.FeatureFlags;
@@ -1454,6 +1480,10 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
                 NRI_REPORT_WARNING(&m_Device, "D3D12 video encoder support rejected: validationFlags=0x%X supportFlags=0x%X", encoderSupport.ValidationFlags, encoderSupport.SupportFlags);
                 return Result::UNSUPPORTED;
             }
+            if ((encoderSupport.SupportFlags & D3D12_VIDEO_ENCODER_SUPPORT_FLAG_READABLE_RECONSTRUCTED_PICTURE_LAYOUT_AVAILABLE_COMPAT) == 0) {
+                NRI_REPORT_WARNING(&m_Device, "D3D12 video encoder support requires reference-only reconstructed pictures, which are not exposed by the current NRIVideo texture usage flags");
+                return Result::UNSUPPORTED;
+            }
         } else {
             D3D12_FEATURE_DATA_VIDEO_ENCODER_SUPPORT encoderSupport = {};
             encoderSupport.Codec = codec;
@@ -1473,6 +1503,10 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
             NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12VideoDevice3::CheckFeatureSupport(D3D12_FEATURE_VIDEO_ENCODER_SUPPORT)");
             if ((encoderSupport.SupportFlags & D3D12_VIDEO_ENCODER_SUPPORT_FLAG_GENERAL_SUPPORT_OK) == 0) {
                 NRI_REPORT_WARNING(&m_Device, "D3D12 video encoder support rejected: validationFlags=0x%X supportFlags=0x%X", encoderSupport.ValidationFlags, encoderSupport.SupportFlags);
+                return Result::UNSUPPORTED;
+            }
+            if ((encoderSupport.SupportFlags & D3D12_VIDEO_ENCODER_SUPPORT_FLAG_READABLE_RECONSTRUCTED_PICTURE_LAYOUT_AVAILABLE_COMPAT) == 0) {
+                NRI_REPORT_WARNING(&m_Device, "D3D12 video encoder support requires reference-only reconstructed pictures, which are not exposed by the current NRIVideo texture usage flags");
                 return Result::UNSUPPORTED;
             }
         }
@@ -1577,8 +1611,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
     CommandBufferD3D12& commandBufferD3D12 = (CommandBufferD3D12&)commandBuffer;
     DeviceD3D12& device = commandBufferD3D12.GetDevice();
 
-    if (!videoDecodeDesc.session || !videoDecodeDesc.parameters || !videoDecodeDesc.bitstream || !videoDecodeDesc.dstPicture) {
-        NRI_REPORT_ERROR(&device, "'session', 'parameters', 'bitstream' and 'dstPicture' must be valid");
+    if (!videoDecodeDesc.session || !videoDecodeDesc.bitstream || !videoDecodeDesc.dstPicture) {
+        NRI_REPORT_ERROR(&device, "'session', 'bitstream' and 'dstPicture' must be valid");
         return;
     }
 
@@ -1598,10 +1632,12 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
     }
 
     VideoSessionD3D12& session = *(VideoSessionD3D12*)videoDecodeDesc.session;
-    VideoSessionParametersD3D12& parameters = *(VideoSessionParametersD3D12*)videoDecodeDesc.parameters;
-    if (parameters.m_Session != &session) {
-        NRI_REPORT_ERROR(&device, "'parameters' must belong to 'session'");
-        return;
+    if (videoDecodeDesc.parameters) {
+        VideoSessionParametersD3D12& parameters = *(VideoSessionParametersD3D12*)videoDecodeDesc.parameters;
+        if (parameters.m_Session != &session) {
+            NRI_REPORT_ERROR(&device, "'parameters' must belong to 'session'");
+            return;
+        }
     }
 
     D3D12_VIDEO_DECODE_INPUT_STREAM_ARGUMENTS input = {};
@@ -1727,8 +1763,8 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     CommandBufferD3D12& commandBufferD3D12 = (CommandBufferD3D12&)commandBuffer;
     DeviceD3D12& device = commandBufferD3D12.GetDevice();
 
-    if (!videoEncodeDesc.session || !videoEncodeDesc.parameters || !videoEncodeDesc.srcPicture || !videoEncodeDesc.dstBitstream || !videoEncodeDesc.reconstructedPicture || !videoEncodeDesc.metadata) {
-        NRI_REPORT_ERROR(&device, "'session', 'parameters', 'srcPicture', 'dstBitstream', 'reconstructedPicture' and 'metadata' must be valid");
+    if (!videoEncodeDesc.session || !videoEncodeDesc.srcPicture || !videoEncodeDesc.dstBitstream || !videoEncodeDesc.reconstructedPicture || !videoEncodeDesc.metadata) {
+        NRI_REPORT_ERROR(&device, "'session', 'srcPicture', 'dstBitstream', 'reconstructedPicture' and 'metadata' must be valid");
         return;
     }
 
@@ -1759,10 +1795,12 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         return;
     }
 
-    VideoSessionParametersD3D12& parameters = *(VideoSessionParametersD3D12*)videoEncodeDesc.parameters;
-    if (parameters.m_Session != &session) {
-        NRI_REPORT_ERROR(&device, "'parameters' must belong to 'session'");
-        return;
+    if (videoEncodeDesc.parameters) {
+        VideoSessionParametersD3D12& parameters = *(VideoSessionParametersD3D12*)videoEncodeDesc.parameters;
+        if (parameters.m_Session != &session) {
+            NRI_REPORT_ERROR(&device, "'parameters' must belong to 'session'");
+            return;
+        }
     }
 
     if (videoEncodeDesc.h265ReferenceDescs && session.m_Desc.codec != VideoCodec::H265) {
@@ -1989,6 +2027,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         std::array<uint32_t, 7> referenceNameSlots = {};
         for (uint32_t& slot : referenceNameSlots)
             slot = UINT32_MAX;
+        std::array<bool, 7> av1ReferenceNameSpecified = {};
         std::array<uint32_t, 8> av1DPBSlotResourceIndices = {};
         for (uint32_t& resourceIndex : av1DPBSlotResourceIndices)
             resourceIndex = UINT32_MAX;
@@ -2078,8 +2117,29 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
 
                     av1Picture.ReferenceIndices[referenceNameIndex] = reference.refFrameIndex;
                     activeReferenceNames[referenceNameIndex] = true;
+                    av1ReferenceNameSpecified[referenceNameIndex] = true;
                     referenceNameSlots[referenceNameIndex] = reference.slot;
                 }
+            }
+
+            // Unspecified AV1 reference names must resolve to an invalid DPB descriptor, otherwise D3D12 treats them as active references.
+            uint32_t invalidReferenceIndex = UINT32_MAX;
+            for (uint32_t i = 0; i < 8; i++) {
+                if (av1Picture.ReferenceFramesReconPictureDescriptors[i].ReconstructedPictureResourceIndex == 0xFF) {
+                    invalidReferenceIndex = i;
+                    break;
+                }
+            }
+            for (uint32_t i = 0; i < 7; i++) {
+                if (av1ReferenceNameSpecified[i])
+                    continue;
+
+                if (invalidReferenceIndex == UINT32_MAX) {
+                    NRI_REPORT_ERROR(&device, "AV1 DPB snapshot has no invalid slot for unused reference names");
+                    return;
+                }
+
+                av1Picture.ReferenceIndices[i] = invalidReferenceIndex;
             }
 
             for (uint32_t i = 0; i < videoEncodeDesc.referenceNum; i++) {
