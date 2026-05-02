@@ -97,6 +97,50 @@ inline const VideoH264ReferenceDesc* FindVideoH264ReferenceDescD3D12(const Video
     return nullptr;
 }
 
+inline const VideoH265SequenceParameterSetDesc* FindVideoH265SequenceParameterSetD3D12(const VideoH265SessionParametersDesc& parameters, uint8_t id) {
+    if (!parameters.sequenceParameterSets)
+        return nullptr;
+
+    for (uint32_t i = 0; i < parameters.sequenceParameterSetNum; i++) {
+        if (parameters.sequenceParameterSets[i].sequenceParameterSetId == id)
+            return &parameters.sequenceParameterSets[i];
+    }
+
+    return nullptr;
+}
+
+inline const VideoH265PictureParameterSetDesc* FindVideoH265PictureParameterSetD3D12(const VideoH265SessionParametersDesc& parameters, uint8_t id) {
+    if (!parameters.pictureParameterSets)
+        return nullptr;
+
+    for (uint32_t i = 0; i < parameters.pictureParameterSetNum; i++) {
+        if (parameters.pictureParameterSets[i].pictureParameterSetId == id)
+            return &parameters.pictureParameterSets[i];
+    }
+
+    return nullptr;
+}
+
+inline void FillVideoH265ScalingListsD3D12(DXVA_Qmatrix_HEVC& matrix, const VideoH265ScalingListsDesc* scalingLists) {
+    matrix = {};
+    if (scalingLists) {
+        std::memcpy(matrix.ucScalingLists0, scalingLists->scalingList4x4, sizeof(matrix.ucScalingLists0));
+        std::memcpy(matrix.ucScalingLists1, scalingLists->scalingList8x8, sizeof(matrix.ucScalingLists1));
+        std::memcpy(matrix.ucScalingLists2, scalingLists->scalingList16x16, sizeof(matrix.ucScalingLists2));
+        std::memcpy(matrix.ucScalingLists3, scalingLists->scalingList32x32, sizeof(matrix.ucScalingLists3));
+        std::memcpy(matrix.ucScalingListDCCoefSizeID2, scalingLists->scalingListDCCoef16x16, sizeof(matrix.ucScalingListDCCoefSizeID2));
+        std::memcpy(matrix.ucScalingListDCCoefSizeID3, scalingLists->scalingListDCCoef32x32, sizeof(matrix.ucScalingListDCCoefSizeID3));
+        return;
+    }
+
+    std::memset(matrix.ucScalingLists0, 16, sizeof(matrix.ucScalingLists0));
+    std::memset(matrix.ucScalingLists1, 16, sizeof(matrix.ucScalingLists1));
+    std::memset(matrix.ucScalingLists2, 16, sizeof(matrix.ucScalingLists2));
+    std::memset(matrix.ucScalingLists3, 16, sizeof(matrix.ucScalingLists3));
+    std::memset(matrix.ucScalingListDCCoefSizeID2, 16, sizeof(matrix.ucScalingListDCCoefSizeID2));
+    std::memset(matrix.ucScalingListDCCoefSizeID3, 16, sizeof(matrix.ucScalingListDCCoefSizeID3));
+}
+
 inline bool BuildVideoDecodeH264ArgumentsD3D12(const VideoH264SessionParametersDesc& parameters, const VideoH264DecodePictureDesc& pictureDesc, uint64_t bitstreamSize,
     uint32_t dstSlot, DXVA_PicParams_H264& pictureParameters, DXVA_Qmatrix_H264& inverseQuantizationMatrix, DXVA_Slice_H264_Short* slices, uint32_t sliceNum) {
     if (sliceNum == 0 || sliceNum != pictureDesc.sliceOffsetNum || !pictureDesc.sliceOffsets || !slices)
@@ -190,6 +234,156 @@ inline bool BuildVideoDecodeH264ArgumentsD3D12(const VideoH264SessionParametersD
             return false;
 
         const uint64_t nextOffset = i + 1 < sliceNum ? pictureDesc.sliceOffsets[i + 1] : bitstreamSize;
+        const uint64_t size = nextOffset - offset;
+        if (size > UINT32_MAX)
+            return false;
+
+        slices[i] = {};
+        slices[i].BSNALunitDataLocation = offset;
+        slices[i].SliceBytesInBuffer = (UINT)size;
+    }
+
+    return true;
+}
+
+inline bool BuildVideoDecodeH265ArgumentsD3D12(const VideoH265SessionParametersDesc& parameters, const VideoH265DecodePictureDesc& pictureDesc, uint64_t bitstreamSize,
+    uint32_t dstSlot, DXVA_PicParams_HEVC& pictureParameters, DXVA_Qmatrix_HEVC& inverseQuantizationMatrix, DXVA_Slice_HEVC_Short* slices, uint32_t sliceNum) {
+    if (sliceNum == 0 || sliceNum != pictureDesc.sliceSegmentOffsetNum || !pictureDesc.sliceSegmentOffsets || !slices)
+        return false;
+
+    if (pictureDesc.referenceNum > VIDEO_D3D12_HEVC_MAX_REFERENCE_NUM || (pictureDesc.referenceNum && !pictureDesc.references))
+        return false;
+
+    if (dstSlot > VIDEO_D3D12_DECODE_MAX_PIC_ENTRY_SLOT || bitstreamSize > UINT32_MAX)
+        return false;
+
+    const VideoH265PictureParameterSetDesc* pps = FindVideoH265PictureParameterSetD3D12(parameters, pictureDesc.pictureParameterSetId);
+    if (!pps)
+        return false;
+
+    const VideoH265SequenceParameterSetDesc* sps = FindVideoH265SequenceParameterSetD3D12(parameters, pictureDesc.sequenceParameterSetId);
+    if (!sps || pps->sequenceParameterSetId != sps->sequenceParameterSetId || pps->videoParameterSetId != sps->videoParameterSetId)
+        return false;
+
+    const uint32_t log2MinCbSize = sps->log2MinLumaCodingBlockSizeMinus3 + 3u;
+    if (log2MinCbSize >= 16 || sps->pictureWidthInLumaSamples == 0 || sps->pictureHeightInLumaSamples == 0)
+        return false;
+
+    pictureParameters = {};
+    pictureParameters.PicWidthInMinCbsY = (USHORT)((sps->pictureWidthInLumaSamples + (1u << log2MinCbSize) - 1u) >> log2MinCbSize);
+    pictureParameters.PicHeightInMinCbsY = (USHORT)((sps->pictureHeightInLumaSamples + (1u << log2MinCbSize) - 1u) >> log2MinCbSize);
+    pictureParameters.CurrPic.Index7Bits = (UCHAR)dstSlot;
+    pictureParameters.CurrPic.AssociatedFlag = 0;
+    pictureParameters.chroma_format_idc = sps->chromaFormatIdc;
+    pictureParameters.separate_colour_plane_flag = !!(sps->flags & VideoH265SequenceParameterSetBits::SEPARATE_COLOUR_PLANE);
+    pictureParameters.bit_depth_luma_minus8 = sps->bitDepthLumaMinus8;
+    pictureParameters.bit_depth_chroma_minus8 = sps->bitDepthChromaMinus8;
+    pictureParameters.log2_max_pic_order_cnt_lsb_minus4 = sps->log2MaxPictureOrderCountLsbMinus4;
+    pictureParameters.NoPicReorderingFlag = sps->decPicBufMgr.maxNumReorderPics[0] == 0;
+    pictureParameters.sps_max_dec_pic_buffering_minus1 = sps->decPicBufMgr.maxDecPicBufferingMinus1[0];
+    pictureParameters.log2_min_luma_coding_block_size_minus3 = sps->log2MinLumaCodingBlockSizeMinus3;
+    pictureParameters.log2_diff_max_min_luma_coding_block_size = sps->log2DiffMaxMinLumaCodingBlockSize;
+    pictureParameters.log2_min_transform_block_size_minus2 = sps->log2MinLumaTransformBlockSizeMinus2;
+    pictureParameters.log2_diff_max_min_transform_block_size = sps->log2DiffMaxMinLumaTransformBlockSize;
+    pictureParameters.max_transform_hierarchy_depth_inter = sps->maxTransformHierarchyDepthInter;
+    pictureParameters.max_transform_hierarchy_depth_intra = sps->maxTransformHierarchyDepthIntra;
+    pictureParameters.num_short_term_ref_pic_sets = sps->numShortTermRefPicSets;
+    pictureParameters.num_long_term_ref_pics_sps = sps->numLongTermRefPicsSps;
+    pictureParameters.num_ref_idx_l0_default_active_minus1 = pps->refIndexL0DefaultActiveMinus1;
+    pictureParameters.num_ref_idx_l1_default_active_minus1 = pps->refIndexL1DefaultActiveMinus1;
+    pictureParameters.init_qp_minus26 = pps->initQpMinus26;
+    pictureParameters.ucNumDeltaPocsOfRefRpsIdx = pictureDesc.numDeltaPocsOfRefRpsIdx;
+    pictureParameters.wNumBitsForShortTermRPSInSlice = pictureDesc.numBitsForShortTermRefPicSetInSlice;
+    pictureParameters.scaling_list_enabled_flag = !!(sps->flags & VideoH265SequenceParameterSetBits::SCALING_LIST_ENABLED);
+    pictureParameters.amp_enabled_flag = !!(sps->flags & VideoH265SequenceParameterSetBits::AMP_ENABLED);
+    pictureParameters.sample_adaptive_offset_enabled_flag = !!(sps->flags & VideoH265SequenceParameterSetBits::SAMPLE_ADAPTIVE_OFFSET_ENABLED);
+    pictureParameters.pcm_enabled_flag = !!(sps->flags & VideoH265SequenceParameterSetBits::PCM_ENABLED);
+    pictureParameters.pcm_sample_bit_depth_luma_minus1 = sps->pcmSampleBitDepthLumaMinus1;
+    pictureParameters.pcm_sample_bit_depth_chroma_minus1 = sps->pcmSampleBitDepthChromaMinus1;
+    pictureParameters.log2_min_pcm_luma_coding_block_size_minus3 = sps->log2MinPcmLumaCodingBlockSizeMinus3;
+    pictureParameters.log2_diff_max_min_pcm_luma_coding_block_size = sps->log2DiffMaxMinPcmLumaCodingBlockSize;
+    pictureParameters.pcm_loop_filter_disabled_flag = !!(sps->flags & VideoH265SequenceParameterSetBits::PCM_LOOP_FILTER_DISABLED);
+    pictureParameters.long_term_ref_pics_present_flag = !!(sps->flags & VideoH265SequenceParameterSetBits::LONG_TERM_REF_PICS_PRESENT);
+    pictureParameters.sps_temporal_mvp_enabled_flag = !!(sps->flags & VideoH265SequenceParameterSetBits::TEMPORAL_MVP_ENABLED);
+    pictureParameters.strong_intra_smoothing_enabled_flag = !!(sps->flags & VideoH265SequenceParameterSetBits::STRONG_INTRA_SMOOTHING_ENABLED);
+    pictureParameters.dependent_slice_segments_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::DEPENDENT_SLICE_SEGMENTS_ENABLED);
+    pictureParameters.output_flag_present_flag = !!(pps->flags & VideoH265PictureParameterSetBits::OUTPUT_FLAG_PRESENT);
+    pictureParameters.num_extra_slice_header_bits = pps->numExtraSliceHeaderBits;
+    pictureParameters.sign_data_hiding_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::SIGN_DATA_HIDING_ENABLED);
+    pictureParameters.cabac_init_present_flag = !!(pps->flags & VideoH265PictureParameterSetBits::CABAC_INIT_PRESENT);
+    pictureParameters.constrained_intra_pred_flag = !!(pps->flags & VideoH265PictureParameterSetBits::CONSTRAINED_INTRA_PRED);
+    pictureParameters.transform_skip_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::TRANSFORM_SKIP_ENABLED);
+    pictureParameters.cu_qp_delta_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::CU_QP_DELTA_ENABLED);
+    pictureParameters.pps_slice_chroma_qp_offsets_present_flag = !!(pps->flags & VideoH265PictureParameterSetBits::SLICE_CHROMA_QP_OFFSETS_PRESENT);
+    pictureParameters.weighted_pred_flag = !!(pps->flags & VideoH265PictureParameterSetBits::WEIGHTED_PRED);
+    pictureParameters.weighted_bipred_flag = !!(pps->flags & VideoH265PictureParameterSetBits::WEIGHTED_BIPRED);
+    pictureParameters.transquant_bypass_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::TRANSQUANT_BYPASS_ENABLED);
+    pictureParameters.tiles_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::TILES_ENABLED);
+    pictureParameters.entropy_coding_sync_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::ENTROPY_CODING_SYNC_ENABLED);
+    pictureParameters.uniform_spacing_flag = !!(pps->flags & VideoH265PictureParameterSetBits::UNIFORM_SPACING);
+    pictureParameters.loop_filter_across_tiles_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::LOOP_FILTER_ACROSS_TILES_ENABLED);
+    pictureParameters.pps_loop_filter_across_slices_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::LOOP_FILTER_ACROSS_SLICES_ENABLED);
+    pictureParameters.deblocking_filter_override_enabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::DEBLOCKING_FILTER_OVERRIDE_ENABLED);
+    pictureParameters.pps_deblocking_filter_disabled_flag = !!(pps->flags & VideoH265PictureParameterSetBits::DEBLOCKING_FILTER_DISABLED);
+    pictureParameters.lists_modification_present_flag = !!(pps->flags & VideoH265PictureParameterSetBits::LISTS_MODIFICATION_PRESENT);
+    pictureParameters.slice_segment_header_extension_present_flag = !!(pps->flags & VideoH265PictureParameterSetBits::SLICE_SEGMENT_HEADER_EXTENSION_PRESENT);
+    pictureParameters.IrapPicFlag = !!(pictureDesc.flags & VideoH265DecodePictureBits::IRAP);
+    pictureParameters.IdrPicFlag = !!(pictureDesc.flags & VideoH265DecodePictureBits::IDR);
+    pictureParameters.IntraPicFlag = pictureDesc.referenceNum == 0;
+    pictureParameters.pps_cb_qp_offset = pps->cbQpOffset;
+    pictureParameters.pps_cr_qp_offset = pps->crQpOffset;
+    pictureParameters.num_tile_columns_minus1 = pps->tileColumnNumMinus1;
+    pictureParameters.num_tile_rows_minus1 = pps->tileRowNumMinus1;
+    std::memcpy(pictureParameters.column_width_minus1, pps->columnWidthMinus1, sizeof(pictureParameters.column_width_minus1));
+    std::memcpy(pictureParameters.row_height_minus1, pps->rowHeightMinus1, sizeof(pictureParameters.row_height_minus1));
+    pictureParameters.diff_cu_qp_delta_depth = pps->diffCuQpDeltaDepth;
+    pictureParameters.pps_beta_offset_div2 = pps->betaOffsetDiv2;
+    pictureParameters.pps_tc_offset_div2 = pps->tcOffsetDiv2;
+    pictureParameters.log2_parallel_merge_level_minus2 = pps->log2ParallelMergeLevelMinus2;
+    pictureParameters.CurrPicOrderCntVal = pictureDesc.pictureOrderCount;
+    pictureParameters.StatusReportFeedbackNumber = 1;
+
+    for (DXVA_PicEntry_HEVC& entry : pictureParameters.RefPicList)
+        entry.bPicEntry = 0xFF;
+    std::memset(pictureParameters.RefPicSetStCurrBefore, 0xFF, sizeof(pictureParameters.RefPicSetStCurrBefore));
+    std::memset(pictureParameters.RefPicSetStCurrAfter, 0xFF, sizeof(pictureParameters.RefPicSetStCurrAfter));
+    std::memset(pictureParameters.RefPicSetLtCurr, 0xFF, sizeof(pictureParameters.RefPicSetLtCurr));
+
+    uint32_t beforeNum = 0;
+    uint32_t afterNum = 0;
+    uint32_t longTermNum = 0;
+    for (uint32_t i = 0; i < pictureDesc.referenceNum; i++) {
+        const VideoH265ReferenceDesc& reference = pictureDesc.references[i];
+        if (reference.slot > VIDEO_D3D12_DECODE_MAX_PIC_ENTRY_SLOT)
+            return false;
+
+        pictureParameters.RefPicList[i].Index7Bits = (UCHAR)reference.slot;
+        pictureParameters.RefPicList[i].AssociatedFlag = reference.longTerm != 0;
+        pictureParameters.PicOrderCntValList[i] = reference.pictureOrderCount;
+
+        if (reference.longTerm) {
+            if (longTermNum >= sizeof(pictureParameters.RefPicSetLtCurr))
+                return false;
+            pictureParameters.RefPicSetLtCurr[longTermNum++] = (UCHAR)i;
+        } else if (reference.pictureOrderCount < pictureDesc.pictureOrderCount) {
+            if (beforeNum >= sizeof(pictureParameters.RefPicSetStCurrBefore))
+                return false;
+            pictureParameters.RefPicSetStCurrBefore[beforeNum++] = (UCHAR)i;
+        } else {
+            if (afterNum >= sizeof(pictureParameters.RefPicSetStCurrAfter))
+                return false;
+            pictureParameters.RefPicSetStCurrAfter[afterNum++] = (UCHAR)i;
+        }
+    }
+
+    FillVideoH265ScalingListsD3D12(inverseQuantizationMatrix, pps->scalingLists ? pps->scalingLists : sps->scalingLists);
+
+    for (uint32_t i = 0; i < sliceNum; i++) {
+        const uint32_t offset = pictureDesc.sliceSegmentOffsets[i];
+        if (offset >= bitstreamSize || (i + 1 < sliceNum && pictureDesc.sliceSegmentOffsets[i + 1] <= offset))
+            return false;
+
+        const uint64_t nextOffset = i + 1 < sliceNum ? pictureDesc.sliceSegmentOffsets[i + 1] : bitstreamSize;
         const uint64_t size = nextOffset - offset;
         if (size > UINT32_MAX)
             return false;

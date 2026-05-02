@@ -1156,7 +1156,12 @@ struct VideoSessionParametersD3D12 final {
     inline VideoSessionParametersD3D12(DeviceD3D12& device)
         : m_Device(device)
         , m_H264SequenceParameterSets(device.GetStdAllocator())
-        , m_H264PictureParameterSets(device.GetStdAllocator()) {
+        , m_H264PictureParameterSets(device.GetStdAllocator())
+        , m_H265VideoParameterSets(device.GetStdAllocator())
+        , m_H265SequenceParameterSets(device.GetStdAllocator())
+        , m_H265PictureParameterSets(device.GetStdAllocator())
+        , m_H265SequenceScalingLists(device.GetStdAllocator())
+        , m_H265PictureScalingLists(device.GetStdAllocator()) {
     }
 
     inline DeviceD3D12& GetDevice() const {
@@ -1169,6 +1174,7 @@ struct VideoSessionParametersD3D12 final {
 
         m_Session = (VideoSessionD3D12*)videoSessionParametersDesc.session;
         m_H264Parameters = videoSessionParametersDesc.h264Parameters;
+        m_H265Parameters = videoSessionParametersDesc.h265Parameters;
         m_AV1Parameters = videoSessionParametersDesc.av1Parameters;
         if (m_H264Parameters) {
             if ((m_H264Parameters->sequenceParameterSetNum && !m_H264Parameters->sequenceParameterSets) ||
@@ -1186,6 +1192,43 @@ struct VideoSessionParametersD3D12 final {
             m_H264ParametersStorage.pictureParameterSets = m_H264PictureParameterSets.data();
             m_H264Parameters = &m_H264ParametersStorage;
         }
+        if (m_H265Parameters) {
+            if ((m_H265Parameters->videoParameterSetNum && !m_H265Parameters->videoParameterSets) ||
+                (m_H265Parameters->sequenceParameterSetNum && !m_H265Parameters->sequenceParameterSets) ||
+                (m_H265Parameters->pictureParameterSetNum && !m_H265Parameters->pictureParameterSets))
+                return Result::INVALID_ARGUMENT;
+
+            m_H265VideoParameterSets.clear();
+            m_H265SequenceParameterSets.clear();
+            m_H265PictureParameterSets.clear();
+            m_H265SequenceScalingLists.clear();
+            m_H265PictureScalingLists.clear();
+            if (m_H265Parameters->videoParameterSetNum)
+                m_H265VideoParameterSets.assign(m_H265Parameters->videoParameterSets, m_H265Parameters->videoParameterSets + m_H265Parameters->videoParameterSetNum);
+            if (m_H265Parameters->sequenceParameterSetNum)
+                m_H265SequenceParameterSets.assign(m_H265Parameters->sequenceParameterSets, m_H265Parameters->sequenceParameterSets + m_H265Parameters->sequenceParameterSetNum);
+            if (m_H265Parameters->pictureParameterSetNum)
+                m_H265PictureParameterSets.assign(m_H265Parameters->pictureParameterSets, m_H265Parameters->pictureParameterSets + m_H265Parameters->pictureParameterSetNum);
+            m_H265SequenceScalingLists.resize(m_H265SequenceParameterSets.size());
+            for (size_t i = 0; i < m_H265SequenceParameterSets.size(); i++) {
+                if (m_H265SequenceParameterSets[i].scalingLists) {
+                    m_H265SequenceScalingLists[i] = *m_H265SequenceParameterSets[i].scalingLists;
+                    m_H265SequenceParameterSets[i].scalingLists = &m_H265SequenceScalingLists[i];
+                }
+            }
+            m_H265PictureScalingLists.resize(m_H265PictureParameterSets.size());
+            for (size_t i = 0; i < m_H265PictureParameterSets.size(); i++) {
+                if (m_H265PictureParameterSets[i].scalingLists) {
+                    m_H265PictureScalingLists[i] = *m_H265PictureParameterSets[i].scalingLists;
+                    m_H265PictureParameterSets[i].scalingLists = &m_H265PictureScalingLists[i];
+                }
+            }
+            m_H265ParametersStorage = *m_H265Parameters;
+            m_H265ParametersStorage.videoParameterSets = m_H265VideoParameterSets.data();
+            m_H265ParametersStorage.sequenceParameterSets = m_H265SequenceParameterSets.data();
+            m_H265ParametersStorage.pictureParameterSets = m_H265PictureParameterSets.data();
+            m_H265Parameters = &m_H265ParametersStorage;
+        }
         if (m_AV1Parameters) {
             m_AV1ParametersStorage = *m_AV1Parameters;
             m_AV1Parameters = &m_AV1ParametersStorage;
@@ -1199,6 +1242,13 @@ struct VideoSessionParametersD3D12 final {
     Vector<VideoH264SequenceParameterSetDesc> m_H264SequenceParameterSets;
     Vector<VideoH264PictureParameterSetDesc> m_H264PictureParameterSets;
     const VideoH264SessionParametersDesc* m_H264Parameters = nullptr;
+    VideoH265SessionParametersDesc m_H265ParametersStorage = {};
+    Vector<VideoH265VideoParameterSetDesc> m_H265VideoParameterSets;
+    Vector<VideoH265SequenceParameterSetDesc> m_H265SequenceParameterSets;
+    Vector<VideoH265PictureParameterSetDesc> m_H265PictureParameterSets;
+    Vector<VideoH265ScalingListsDesc> m_H265SequenceScalingLists;
+    Vector<VideoH265ScalingListsDesc> m_H265PictureScalingLists;
+    const VideoH265SessionParametersDesc* m_H265Parameters = nullptr;
     VideoAV1SessionParametersDesc m_AV1ParametersStorage = {};
     const VideoAV1SessionParametersDesc* m_AV1Parameters = nullptr;
 };
@@ -1676,6 +1726,10 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
     DXVA_Qmatrix_H264 h264InverseQuantizationMatrix = {};
     Scratch<DXVA_Slice_H264_Short> h264Slices =
         NRI_ALLOCATE_SCRATCH(device, DXVA_Slice_H264_Short, videoDecodeDesc.h264PictureDesc ? std::max(videoDecodeDesc.h264PictureDesc->sliceOffsetNum, 1u) : 1u);
+    DXVA_PicParams_HEVC h265PictureParameters = {};
+    DXVA_Qmatrix_HEVC h265InverseQuantizationMatrix = {};
+    Scratch<DXVA_Slice_HEVC_Short> h265Slices =
+        NRI_ALLOCATE_SCRATCH(device, DXVA_Slice_HEVC_Short, videoDecodeDesc.h265PictureDesc ? std::max(videoDecodeDesc.h265PictureDesc->sliceSegmentOffsetNum, 1u) : 1u);
     DXVA_PicParams_AV1 av1PictureParameters = {};
     Scratch<DXVA_Tile_AV1> av1Tiles = NRI_ALLOCATE_SCRATCH(device, DXVA_Tile_AV1, videoDecodeDesc.av1PictureDesc ? std::max(videoDecodeDesc.av1PictureDesc->tileNum, 1u) : 1u);
     if (videoDecodeDesc.h264PictureDesc) {
@@ -1717,6 +1771,46 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         input.FrameArguments[2].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_SLICE_CONTROL;
         input.FrameArguments[2].Size = sizeof(DXVA_Slice_H264_Short) * videoDecodeDesc.h264PictureDesc->sliceOffsetNum;
         input.FrameArguments[2].pData = h264Slices;
+    } else if (videoDecodeDesc.h265PictureDesc) {
+        if (session.m_Desc.codec != VideoCodec::H265) {
+            NRI_REPORT_ERROR(&device, "'h265PictureDesc' can only be used with H.265 decode sessions");
+            return;
+        }
+
+        if (!parameters || !parameters->m_H265Parameters) {
+            NRI_REPORT_ERROR(&device, "'parameters' with H.265 VPS/SPS/PPS data must be valid for neutral H.265 D3D12 decode");
+            return;
+        }
+
+        const VideoH265DecodePictureDesc& desc = *videoDecodeDesc.h265PictureDesc;
+        if (desc.referenceNum != 0 && !desc.references) {
+            NRI_REPORT_ERROR(&device, "'h265PictureDesc->references' is NULL");
+            return;
+        }
+
+        for (uint32_t i = 0; i < videoDecodeDesc.referenceNum; i++) {
+            if (!FindVideoH265ReferenceDescD3D12(desc.references, desc.referenceNum, videoDecodeDesc.references[i].slot)) {
+                NRI_REPORT_ERROR(&device, "'h265PictureDesc->references' must include metadata for each H.265 reference");
+                return;
+            }
+        }
+
+        if (!BuildVideoDecodeH265ArgumentsD3D12(*parameters->m_H265Parameters, desc, videoDecodeDesc.bitstreamSize, videoDecodeDesc.dstSlot,
+                h265PictureParameters, h265InverseQuantizationMatrix, h265Slices, desc.sliceSegmentOffsetNum)) {
+            NRI_REPORT_ERROR(&device, "Failed to build D3D12 H.265 decode arguments from neutral descriptors");
+            return;
+        }
+
+        input.NumFrameArguments = 3;
+        input.FrameArguments[0].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_PICTURE_PARAMETERS;
+        input.FrameArguments[0].Size = sizeof(h265PictureParameters);
+        input.FrameArguments[0].pData = &h265PictureParameters;
+        input.FrameArguments[1].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_INVERSE_QUANTIZATION_MATRIX;
+        input.FrameArguments[1].Size = sizeof(h265InverseQuantizationMatrix);
+        input.FrameArguments[1].pData = &h265InverseQuantizationMatrix;
+        input.FrameArguments[2].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_SLICE_CONTROL;
+        input.FrameArguments[2].Size = sizeof(DXVA_Slice_HEVC_Short) * desc.sliceSegmentOffsetNum;
+        input.FrameArguments[2].pData = h265Slices;
     } else if (videoDecodeDesc.av1PictureDesc) {
         if (session.m_Desc.codec != VideoCodec::AV1) {
             NRI_REPORT_ERROR(&device, "'av1PictureDesc' can only be used with AV1 decode sessions");
@@ -1790,9 +1884,9 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         av1PictureParameters.format.subsampling_x = sequence.subsamplingX;
         av1PictureParameters.format.subsampling_y = sequence.subsamplingY;
         av1PictureParameters.format.mono_chrome = !!(sequence.flags & VideoAV1SequenceBits::MONO_CHROME);
-        av1PictureParameters.primary_ref_frame = GetVideoDecodeAV1ReferenceNameIndexD3D12(desc.primaryReferenceName);
+        av1PictureParameters.primary_ref_frame = (UCHAR)GetVideoDecodeAV1ReferenceNameIndexD3D12(desc.primaryReferenceName);
         av1PictureParameters.order_hint = desc.orderHint;
-        av1PictureParameters.order_hint_bits = sequence.orderHintBitsMinus1 + 1;
+        av1PictureParameters.order_hint_bits = (UCHAR)(sequence.orderHintBitsMinus1 + 1);
         std::memset(av1PictureParameters.RefFrameMapTextureIndex, 0xFF, sizeof(av1PictureParameters.RefFrameMapTextureIndex));
         for (uint32_t i = 0; i < 7; i++)
             av1PictureParameters.frame_refs[i].Index = 0xFF;
@@ -1845,11 +1939,6 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         input.FrameArguments[1].Size = sizeof(DXVA_Tile_AV1) * desc.tileNum;
         input.FrameArguments[1].pData = av1Tiles;
     } else {
-        if (videoDecodeDesc.h265PictureDesc) {
-            NRI_REPORT_ERROR(&device, "D3D12 neutral H.265 decode is not supported yet; provide native 'arguments'");
-            return;
-        }
-
         input.NumFrameArguments = videoDecodeDesc.argumentNum;
         for (uint32_t i = 0; i < videoDecodeDesc.argumentNum; i++) {
             if (!videoDecodeDesc.arguments[i].data || videoDecodeDesc.arguments[i].size == 0) {
@@ -1865,6 +1954,7 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
 
     VideoPictureD3D12& dstPicture = *(VideoPictureD3D12*)videoDecodeDesc.dstPicture;
     const bool h264NeutralDecode = videoDecodeDesc.h264PictureDesc != nullptr;
+    const bool h265NeutralDecode = videoDecodeDesc.h265PictureDesc != nullptr;
     const bool av1NeutralDecode = videoDecodeDesc.av1PictureDesc != nullptr;
 
     VideoDecodeReferenceLayoutD3D12 referenceLayout = {};
@@ -1876,6 +1966,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         return;
     }
     if (h264NeutralDecode)
+        referenceLayout.slotCount = std::max(referenceLayout.slotCount, videoDecodeDesc.dstSlot + 1);
+    if (h265NeutralDecode)
         referenceLayout.slotCount = std::max(referenceLayout.slotCount, videoDecodeDesc.dstSlot + 1);
     if (av1NeutralDecode)
         referenceLayout.slotCount = std::max(referenceLayout.slotCount, videoDecodeDesc.dstSlot + 1);
@@ -1902,14 +1994,18 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         referenceResources[videoDecodeDesc.dstSlot] = (ID3D12Resource*)(*dstPicture.m_Texture);
         referenceSubresources[videoDecodeDesc.dstSlot] = dstPicture.m_Subresource;
     }
+    if (h265NeutralDecode) {
+        referenceResources[videoDecodeDesc.dstSlot] = (ID3D12Resource*)(*dstPicture.m_Texture);
+        referenceSubresources[videoDecodeDesc.dstSlot] = dstPicture.m_Subresource;
+    }
     if (av1NeutralDecode) {
         referenceResources[videoDecodeDesc.dstSlot] = (ID3D12Resource*)(*dstPicture.m_Texture);
         referenceSubresources[videoDecodeDesc.dstSlot] = dstPicture.m_Subresource;
     }
 
     input.ReferenceFrames.NumTexture2Ds = referenceLayout.slotCount;
-    input.ReferenceFrames.ppTexture2Ds = referenceLayout.slotCount ? referenceResources : nullptr;
-    input.ReferenceFrames.pSubresources = referenceLayout.slotCount ? referenceSubresources : nullptr;
+    input.ReferenceFrames.ppTexture2Ds = referenceLayout.slotCount ? (ID3D12Resource**)referenceResources : nullptr;
+    input.ReferenceFrames.pSubresources = referenceLayout.slotCount ? (uint32_t*)referenceSubresources : nullptr;
     input.CompressedBitstream.pBuffer = (ID3D12Resource*)(*(BufferD3D12*)videoDecodeDesc.bitstream);
     input.CompressedBitstream.Offset = videoDecodeDesc.bitstreamOffset;
     input.CompressedBitstream.Size = videoDecodeDesc.bitstreamSize;
@@ -2188,11 +2284,11 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     h264Picture.FrameDecodingOrderNumber = pictureDesc.frameIndex;
     h264Picture.TemporalLayerIndex = pictureDesc.temporalLayer;
     h264Picture.List0ReferenceFramesCount = h264List0ReferenceNum;
-    h264Picture.pList0ReferenceFrames = h264List0ReferenceNum ? h264List0References : nullptr;
+    h264Picture.pList0ReferenceFrames = h264List0ReferenceNum ? (UINT*)h264List0References : nullptr;
     h264Picture.List1ReferenceFramesCount = h264List1ReferenceNum;
-    h264Picture.pList1ReferenceFrames = h264List1ReferenceNum ? h264List1References : nullptr;
+    h264Picture.pList1ReferenceFrames = h264List1ReferenceNum ? (UINT*)h264List1References : nullptr;
     h264Picture.ReferenceFramesReconPictureDescriptorsCount = videoEncodeDesc.referenceNum;
-    h264Picture.pReferenceFramesReconPictureDescriptors = videoEncodeDesc.referenceNum ? h264ReferenceDescriptors : nullptr;
+    h264Picture.pReferenceFramesReconPictureDescriptors = videoEncodeDesc.referenceNum ? (D3D12_VIDEO_ENCODER_REFERENCE_PICTURE_DESCRIPTOR_H264*)h264ReferenceDescriptors : nullptr;
 
     D3D12_VIDEO_ENCODER_PICTURE_CONTROL_CODEC_DATA_HEVC hevcPicture = {};
     switch (pictureDesc.frameType) {
@@ -2252,11 +2348,11 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         hevcPicture.PictureOrderCountNumber = (UINT)pictureDesc.pictureOrderCount;
         hevcPicture.TemporalLayerIndex = pictureDesc.temporalLayer;
         hevcPicture.List0ReferenceFramesCount = hevcReferenceLists.list0Num;
-        hevcPicture.pList0ReferenceFrames = hevcReferenceLists.list0Num ? hevcList0References : nullptr;
+        hevcPicture.pList0ReferenceFrames = hevcReferenceLists.list0Num ? (UINT*)hevcList0References : nullptr;
         hevcPicture.List1ReferenceFramesCount = hevcReferenceLists.list1Num;
-        hevcPicture.pList1ReferenceFrames = hevcReferenceLists.list1Num ? hevcList1References : nullptr;
+        hevcPicture.pList1ReferenceFrames = hevcReferenceLists.list1Num ? (UINT*)hevcList1References : nullptr;
         hevcPicture.ReferenceFramesReconPictureDescriptorsCount = videoEncodeDesc.referenceNum;
-        hevcPicture.pReferenceFramesReconPictureDescriptors = videoEncodeDesc.referenceNum ? hevcReferenceDescriptors : nullptr;
+        hevcPicture.pReferenceFramesReconPictureDescriptors = videoEncodeDesc.referenceNum ? (D3D12_VIDEO_ENCODER_REFERENCE_PICTURE_DESCRIPTOR_HEVC*)hevcReferenceDescriptors : nullptr;
     }
 
     D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_CODEC_DATA av1Picture = {};

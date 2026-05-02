@@ -1248,7 +1248,18 @@ struct VideoSessionParametersVK final {
     inline VideoSessionParametersVK(DeviceVK& device)
         : m_Device(device)
         , m_H264Sps(device.GetStdAllocator())
-        , m_H264Pps(device.GetStdAllocator()) {
+        , m_H264Pps(device.GetStdAllocator())
+        , m_H265VpsProfileTierLevels(device.GetStdAllocator())
+        , m_H265SpsProfileTierLevels(device.GetStdAllocator())
+        , m_H265VpsDecPicBufMgrs(device.GetStdAllocator())
+        , m_H265SpsDecPicBufMgrs(device.GetStdAllocator())
+        , m_H265Vps(device.GetStdAllocator())
+        , m_H265Sps(device.GetStdAllocator())
+        , m_H265Pps(device.GetStdAllocator())
+        , m_H265SpsScalingLists(device.GetStdAllocator())
+        , m_H265PpsScalingLists(device.GetStdAllocator())
+        , m_H265ShortTermRefPicSets(device.GetStdAllocator())
+        , m_H265LongTermRefPicsSps(device.GetStdAllocator()) {
         for (auto& list : m_H264DefaultScalingLists.ScalingList4x4) {
             for (uint8_t& entry : list)
                 entry = 16;
@@ -1297,8 +1308,10 @@ struct VideoSessionParametersVK final {
 
         VideoSessionVK& session = *(VideoSessionVK*)videoSessionParametersDesc.session;
         m_Session = &session;
-        if (session.m_Desc.codec == VideoCodec::H265)
+        if (session.m_Desc.codec == VideoCodec::H265) {
+            m_H265Parameters = videoSessionParametersDesc.h265Parameters;
             return CreateH265(session);
+        }
         if (session.m_Desc.codec == VideoCodec::AV1) {
             m_AV1Parameters = videoSessionParametersDesc.av1Parameters;
             return CreateAV1(session);
@@ -1347,62 +1360,144 @@ struct VideoSessionParametersVK final {
     }
 
     Result CreateH265(VideoSessionVK& session) {
-        m_H265DecPicBufMgr.max_dec_pic_buffering_minus1[0] = (uint8_t)std::min(session.m_Desc.maxReferenceNum ? session.m_Desc.maxReferenceNum : 1u, 15u);
-        m_H265ProfileTierLevel.general_profile_idc = session.m_Desc.format == Format::P010_UNORM || session.m_Desc.format == Format::P016_UNORM ? STD_VIDEO_H265_PROFILE_IDC_MAIN_10 : STD_VIDEO_H265_PROFILE_IDC_MAIN;
-        m_H265ProfileTierLevel.general_level_idc = GetVideoH265LevelIdcVK(session.m_Desc.width, session.m_Desc.height);
+        VideoH265VideoParameterSetDesc defaultVps = {};
+        VideoH265SequenceParameterSetDesc defaultSps = {};
+        VideoH265PictureParameterSetDesc defaultPps = {};
+        VideoH265SessionParametersDesc defaultParameters = {};
+        if (!m_H265Parameters) {
+            const uint8_t bitDepthMinus8 = session.m_Desc.format == Format::P010_UNORM || session.m_Desc.format == Format::P016_UNORM ? 2 : 0;
+            defaultVps.flags = VideoH265VideoParameterSetBits::TEMPORAL_ID_NESTING;
+            defaultVps.profileTierLevel.generalProfileIdc = (uint8_t)(session.m_Desc.format == Format::P010_UNORM || session.m_Desc.format == Format::P016_UNORM
+                ? STD_VIDEO_H265_PROFILE_IDC_MAIN_10
+                : STD_VIDEO_H265_PROFILE_IDC_MAIN);
+            defaultVps.profileTierLevel.generalLevelIdc = (uint8_t)GetVideoH265LevelIdcVK(session.m_Desc.width, session.m_Desc.height);
+            defaultVps.decPicBufMgr.maxDecPicBufferingMinus1[0] = (uint8_t)std::min(session.m_Desc.maxReferenceNum ? session.m_Desc.maxReferenceNum : 1u, 15u);
 
-        m_H265Vps.flags.vps_temporal_id_nesting_flag = true;
-        m_H265Vps.vps_max_sub_layers_minus1 = 0;
-        m_H265Vps.pDecPicBufMgr = &m_H265DecPicBufMgr;
-        m_H265Vps.pProfileTierLevel = &m_H265ProfileTierLevel;
+            defaultSps.flags = VideoH265SequenceParameterSetBits::TEMPORAL_ID_NESTING |
+                VideoH265SequenceParameterSetBits::STRONG_INTRA_SMOOTHING_ENABLED;
+            defaultSps.chromaFormatIdc = STD_VIDEO_H265_CHROMA_FORMAT_IDC_420;
+            defaultSps.pictureWidthInLumaSamples = session.m_Desc.width;
+            defaultSps.pictureHeightInLumaSamples = session.m_Desc.height;
+            defaultSps.bitDepthLumaMinus8 = bitDepthMinus8;
+            defaultSps.bitDepthChromaMinus8 = bitDepthMinus8;
+            defaultSps.log2MaxPictureOrderCountLsbMinus4 = 4;
+            defaultSps.log2MinLumaCodingBlockSizeMinus3 = 0;
+            defaultSps.log2DiffMaxMinLumaCodingBlockSize = 2;
+            defaultSps.log2MinLumaTransformBlockSizeMinus2 = 0;
+            defaultSps.log2DiffMaxMinLumaTransformBlockSize = 2;
+            defaultSps.maxTransformHierarchyDepthInter = 2;
+            defaultSps.maxTransformHierarchyDepthIntra = 2;
+            defaultSps.profileTierLevel = defaultVps.profileTierLevel;
+            defaultSps.decPicBufMgr = defaultVps.decPicBufMgr;
 
-        m_H265Sps.flags.sps_temporal_id_nesting_flag = true;
-        m_H265Sps.flags.strong_intra_smoothing_enabled_flag = true;
-        m_H265Sps.chroma_format_idc = STD_VIDEO_H265_CHROMA_FORMAT_IDC_420;
-        m_H265Sps.pic_width_in_luma_samples = session.m_Desc.width;
-        m_H265Sps.pic_height_in_luma_samples = session.m_Desc.height;
-        m_H265Sps.bit_depth_luma_minus8 = session.m_Desc.format == Format::P010_UNORM || session.m_Desc.format == Format::P016_UNORM ? 2 : 0;
-        m_H265Sps.bit_depth_chroma_minus8 = m_H265Sps.bit_depth_luma_minus8;
-        m_H265Sps.log2_max_pic_order_cnt_lsb_minus4 = 4;
-        m_H265Sps.log2_min_luma_coding_block_size_minus3 = 0;
-        m_H265Sps.log2_diff_max_min_luma_coding_block_size = 2;
-        m_H265Sps.log2_min_luma_transform_block_size_minus2 = 0;
-        m_H265Sps.log2_diff_max_min_luma_transform_block_size = 2;
-        m_H265Sps.max_transform_hierarchy_depth_inter = 2;
-        m_H265Sps.max_transform_hierarchy_depth_intra = 2;
-        m_H265Sps.pProfileTierLevel = &m_H265ProfileTierLevel;
-        m_H265Sps.pDecPicBufMgr = &m_H265DecPicBufMgr;
+            defaultPps.flags = VideoH265PictureParameterSetBits::LOOP_FILTER_ACROSS_SLICES_ENABLED;
+            defaultPps.log2ParallelMergeLevelMinus2 = 2;
 
-        m_H265Pps.flags.pps_loop_filter_across_slices_enabled_flag = true;
-        m_H265Pps.log2_parallel_merge_level_minus2 = 2;
+            defaultParameters.videoParameterSets = &defaultVps;
+            defaultParameters.videoParameterSetNum = 1;
+            defaultParameters.sequenceParameterSets = &defaultSps;
+            defaultParameters.sequenceParameterSetNum = 1;
+            defaultParameters.pictureParameterSets = &defaultPps;
+            defaultParameters.pictureParameterSetNum = 1;
+            m_H265Parameters = &defaultParameters;
+        }
+
+        if ((m_H265Parameters->videoParameterSetNum && !m_H265Parameters->videoParameterSets) ||
+            (m_H265Parameters->sequenceParameterSetNum && !m_H265Parameters->sequenceParameterSets) ||
+            (m_H265Parameters->pictureParameterSetNum && !m_H265Parameters->pictureParameterSets))
+            return Result::INVALID_ARGUMENT;
+
+        m_H265VpsProfileTierLevels.resize(m_H265Parameters->videoParameterSetNum);
+        m_H265SpsProfileTierLevels.resize(m_H265Parameters->sequenceParameterSetNum);
+        m_H265VpsDecPicBufMgrs.resize(m_H265Parameters->videoParameterSetNum);
+        m_H265SpsDecPicBufMgrs.resize(m_H265Parameters->sequenceParameterSetNum);
+        m_H265Vps.resize(m_H265Parameters->videoParameterSetNum);
+        m_H265Sps.resize(m_H265Parameters->sequenceParameterSetNum);
+        m_H265Pps.resize(m_H265Parameters->pictureParameterSetNum);
+        m_H265SpsScalingLists.resize(m_H265Parameters->sequenceParameterSetNum);
+        m_H265PpsScalingLists.resize(m_H265Parameters->pictureParameterSetNum);
+        uint32_t shortTermRefPicSetNum = 0;
+        for (uint32_t i = 0; i < m_H265Parameters->sequenceParameterSetNum; i++) {
+            const VideoH265SequenceParameterSetDesc& sps = m_H265Parameters->sequenceParameterSets[i];
+            if (sps.numShortTermRefPicSets && !sps.shortTermRefPicSets)
+                return Result::INVALID_ARGUMENT;
+            shortTermRefPicSetNum += sps.numShortTermRefPicSets;
+        }
+        m_H265ShortTermRefPicSets.resize(shortTermRefPicSetNum);
+        m_H265LongTermRefPicsSps.resize(m_H265Parameters->sequenceParameterSetNum);
+
+        for (uint32_t i = 0; i < m_H265Parameters->videoParameterSetNum; i++) {
+            const VideoH265VideoParameterSetDesc& vps = m_H265Parameters->videoParameterSets[i];
+            FillVideoH265ProfileTierLevelVK(m_H265VpsProfileTierLevels[i], vps.profileTierLevel);
+            FillVideoH265DecPicBufMgrVK(m_H265VpsDecPicBufMgrs[i], vps.decPicBufMgr);
+            m_H265Vps[i] = GetVideoH265VideoParameterSetVK(vps, m_H265VpsProfileTierLevels[i], m_H265VpsDecPicBufMgrs[i]);
+        }
+
+        uint32_t firstShortTermRefPicSet = 0;
+        for (uint32_t i = 0; i < m_H265Parameters->sequenceParameterSetNum; i++) {
+            const VideoH265SequenceParameterSetDesc& sps = m_H265Parameters->sequenceParameterSets[i];
+            for (uint32_t j = 0; j < sps.numShortTermRefPicSets; j++)
+                m_H265ShortTermRefPicSets[firstShortTermRefPicSet + j] = GetVideoH265ShortTermRefPicSetVK(sps.shortTermRefPicSets[j]);
+
+            FillVideoH265ProfileTierLevelVK(m_H265SpsProfileTierLevels[i], sps.profileTierLevel);
+            FillVideoH265DecPicBufMgrVK(m_H265SpsDecPicBufMgrs[i], sps.decPicBufMgr);
+            const StdVideoH265ScalingLists* scalingLists = nullptr;
+            if (sps.scalingLists) {
+                m_H265SpsScalingLists[i] = GetVideoH265ScalingListsVK(*sps.scalingLists);
+                scalingLists = &m_H265SpsScalingLists[i];
+            }
+            const StdVideoH265ShortTermRefPicSet* shortTermRefPicSets = sps.numShortTermRefPicSets ? &m_H265ShortTermRefPicSets[firstShortTermRefPicSet] : nullptr;
+            const StdVideoH265LongTermRefPicsSps* longTermRefPicsSps = nullptr;
+            if (sps.longTermRefPicsSps) {
+                m_H265LongTermRefPicsSps[i] = GetVideoH265LongTermRefPicsSpsVK(*sps.longTermRefPicsSps);
+                longTermRefPicsSps = &m_H265LongTermRefPicsSps[i];
+            }
+            m_H265Sps[i] = GetVideoH265SequenceParameterSetVK(sps, m_H265SpsProfileTierLevels[i], m_H265SpsDecPicBufMgrs[i], scalingLists, shortTermRefPicSets,
+                longTermRefPicsSps);
+            firstShortTermRefPicSet += sps.numShortTermRefPicSets;
+        }
+
+        for (uint32_t i = 0; i < m_H265Parameters->pictureParameterSetNum; i++) {
+            const VideoH265PictureParameterSetDesc& pps = m_H265Parameters->pictureParameterSets[i];
+            const StdVideoH265ScalingLists* scalingLists = nullptr;
+            if (pps.scalingLists) {
+                m_H265PpsScalingLists[i] = GetVideoH265ScalingListsVK(*pps.scalingLists);
+                scalingLists = &m_H265PpsScalingLists[i];
+            }
+            m_H265Pps[i] = GetVideoH265PictureParameterSetVK(pps, scalingLists);
+        }
 
         VkVideoDecodeH265SessionParametersAddInfoKHR decodeAddInfo = {VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_SESSION_PARAMETERS_ADD_INFO_KHR};
-        decodeAddInfo.stdVPSCount = 1;
-        decodeAddInfo.pStdVPSs = &m_H265Vps;
-        decodeAddInfo.stdSPSCount = 1;
-        decodeAddInfo.pStdSPSs = &m_H265Sps;
-        decodeAddInfo.stdPPSCount = 1;
-        decodeAddInfo.pStdPPSs = &m_H265Pps;
+        decodeAddInfo.stdVPSCount = m_H265Parameters->videoParameterSetNum;
+        decodeAddInfo.pStdVPSs = m_H265Vps.data();
+        decodeAddInfo.stdSPSCount = m_H265Parameters->sequenceParameterSetNum;
+        decodeAddInfo.pStdSPSs = m_H265Sps.data();
+        decodeAddInfo.stdPPSCount = m_H265Parameters->pictureParameterSetNum;
+        decodeAddInfo.pStdPPSs = m_H265Pps.data();
 
         VkVideoDecodeH265SessionParametersCreateInfoKHR decodeInfo = {VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_SESSION_PARAMETERS_CREATE_INFO_KHR};
-        decodeInfo.maxStdVPSCount = 1;
-        decodeInfo.maxStdSPSCount = 1;
-        decodeInfo.maxStdPPSCount = 1;
-        decodeInfo.pParametersAddInfo = &decodeAddInfo;
+        decodeInfo.maxStdVPSCount = m_H265Parameters->maxVideoParameterSetNum ? m_H265Parameters->maxVideoParameterSetNum : m_H265Parameters->videoParameterSetNum;
+        decodeInfo.maxStdSPSCount = m_H265Parameters->maxSequenceParameterSetNum ? m_H265Parameters->maxSequenceParameterSetNum : m_H265Parameters->sequenceParameterSetNum;
+        decodeInfo.maxStdPPSCount = m_H265Parameters->maxPictureParameterSetNum ? m_H265Parameters->maxPictureParameterSetNum : m_H265Parameters->pictureParameterSetNum;
+        decodeInfo.pParametersAddInfo = m_H265Parameters->videoParameterSetNum || m_H265Parameters->sequenceParameterSetNum || m_H265Parameters->pictureParameterSetNum
+            ? &decodeAddInfo
+            : nullptr;
 
         VkVideoEncodeH265SessionParametersAddInfoKHR encodeAddInfo = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_SESSION_PARAMETERS_ADD_INFO_KHR};
-        encodeAddInfo.stdVPSCount = 1;
-        encodeAddInfo.pStdVPSs = &m_H265Vps;
-        encodeAddInfo.stdSPSCount = 1;
-        encodeAddInfo.pStdSPSs = &m_H265Sps;
-        encodeAddInfo.stdPPSCount = 1;
-        encodeAddInfo.pStdPPSs = &m_H265Pps;
+        encodeAddInfo.stdVPSCount = m_H265Parameters->videoParameterSetNum;
+        encodeAddInfo.pStdVPSs = m_H265Vps.data();
+        encodeAddInfo.stdSPSCount = m_H265Parameters->sequenceParameterSetNum;
+        encodeAddInfo.pStdSPSs = m_H265Sps.data();
+        encodeAddInfo.stdPPSCount = m_H265Parameters->pictureParameterSetNum;
+        encodeAddInfo.pStdPPSs = m_H265Pps.data();
 
         VkVideoEncodeH265SessionParametersCreateInfoKHR encodeInfo = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_H265_SESSION_PARAMETERS_CREATE_INFO_KHR};
-        encodeInfo.maxStdVPSCount = 1;
-        encodeInfo.maxStdSPSCount = 1;
-        encodeInfo.maxStdPPSCount = 1;
-        encodeInfo.pParametersAddInfo = &encodeAddInfo;
+        encodeInfo.maxStdVPSCount = m_H265Parameters->maxVideoParameterSetNum ? m_H265Parameters->maxVideoParameterSetNum : m_H265Parameters->videoParameterSetNum;
+        encodeInfo.maxStdSPSCount = m_H265Parameters->maxSequenceParameterSetNum ? m_H265Parameters->maxSequenceParameterSetNum : m_H265Parameters->sequenceParameterSetNum;
+        encodeInfo.maxStdPPSCount = m_H265Parameters->maxPictureParameterSetNum ? m_H265Parameters->maxPictureParameterSetNum : m_H265Parameters->pictureParameterSetNum;
+        encodeInfo.pParametersAddInfo = m_H265Parameters->videoParameterSetNum || m_H265Parameters->sequenceParameterSetNum || m_H265Parameters->pictureParameterSetNum
+            ? &encodeAddInfo
+            : nullptr;
 
         return CreateNative(session, session.m_Desc.usage == VideoUsage::DECODE ? (const void*)&decodeInfo : (const void*)&encodeInfo);
     }
@@ -1419,7 +1514,7 @@ struct VideoSessionParametersVK final {
                 timingInfo = &m_AV1TimingInfo;
             }
             FillVideoAV1SequenceHeaderVK(m_AV1SequenceHeader, m_AV1Parameters->sequence, m_AV1ColorConfig, timingInfo);
-            m_AV1OperatingPoint.seq_level_idx = GetVideoAV1LevelVK(m_AV1Parameters->sequence.level, session.m_Desc.width, session.m_Desc.height);
+            m_AV1OperatingPoint.seq_level_idx = (uint8_t)GetVideoAV1LevelVK(m_AV1Parameters->sequence.level, session.m_Desc.width, session.m_Desc.height);
         } else {
             m_AV1ColorConfig.BitDepth = session.m_Desc.format == Format::P010_UNORM || session.m_Desc.format == Format::P016_UNORM ? 10 : 8;
             m_AV1ColorConfig.subsampling_x = 1;
@@ -1439,7 +1534,7 @@ struct VideoSessionParametersVK final {
             m_AV1SequenceHeader.seq_force_integer_mv = STD_VIDEO_AV1_SELECT_INTEGER_MV;
             m_AV1SequenceHeader.seq_force_screen_content_tools = STD_VIDEO_AV1_SELECT_SCREEN_CONTENT_TOOLS;
             m_AV1SequenceHeader.pColorConfig = &m_AV1ColorConfig;
-            m_AV1OperatingPoint.seq_level_idx = GetVideoAV1LevelVK(session.m_Desc.width, session.m_Desc.height);
+            m_AV1OperatingPoint.seq_level_idx = (uint8_t)GetVideoAV1LevelVK(session.m_Desc.width, session.m_Desc.height);
         }
 
         VkVideoDecodeAV1SessionParametersCreateInfoKHR decodeInfo = {VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_SESSION_PARAMETERS_CREATE_INFO_KHR};
@@ -1457,15 +1552,22 @@ struct VideoSessionParametersVK final {
     StdVideoH264ScalingLists m_H264DefaultScalingLists = {};
     Vector<StdVideoH264SequenceParameterSet> m_H264Sps;
     Vector<StdVideoH264PictureParameterSet> m_H264Pps;
-    StdVideoH265ProfileTierLevel m_H265ProfileTierLevel = {};
-    StdVideoH265DecPicBufMgr m_H265DecPicBufMgr = {};
-    StdVideoH265VideoParameterSet m_H265Vps = {};
-    StdVideoH265SequenceParameterSet m_H265Sps = {};
-    StdVideoH265PictureParameterSet m_H265Pps = {};
+    Vector<StdVideoH265ProfileTierLevel> m_H265VpsProfileTierLevels;
+    Vector<StdVideoH265ProfileTierLevel> m_H265SpsProfileTierLevels;
+    Vector<StdVideoH265DecPicBufMgr> m_H265VpsDecPicBufMgrs;
+    Vector<StdVideoH265DecPicBufMgr> m_H265SpsDecPicBufMgrs;
+    Vector<StdVideoH265VideoParameterSet> m_H265Vps;
+    Vector<StdVideoH265SequenceParameterSet> m_H265Sps;
+    Vector<StdVideoH265PictureParameterSet> m_H265Pps;
+    Vector<StdVideoH265ScalingLists> m_H265SpsScalingLists;
+    Vector<StdVideoH265ScalingLists> m_H265PpsScalingLists;
+    Vector<StdVideoH265ShortTermRefPicSet> m_H265ShortTermRefPicSets;
+    Vector<StdVideoH265LongTermRefPicsSps> m_H265LongTermRefPicsSps;
     StdVideoAV1ColorConfig m_AV1ColorConfig = {};
     StdVideoAV1TimingInfo m_AV1TimingInfo = {};
     StdVideoAV1SequenceHeader m_AV1SequenceHeader = {};
     StdVideoEncodeAV1OperatingPointInfo m_AV1OperatingPoint = {};
+    const VideoH265SessionParametersDesc* m_H265Parameters = nullptr;
     const VideoAV1SessionParametersDesc* m_AV1Parameters = nullptr;
 };
 
@@ -2152,11 +2254,11 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         av1TileInfo.TileRows = 1;
         av1TileInfo.tile_size_bytes_minus_1 = 3;
         av1MiColStarts[0] = 0;
-        av1MiColStarts[1] = (session.m_Desc.width + 3) / 4;
+        av1MiColStarts[1] = (uint16_t)((session.m_Desc.width + 3) / 4);
         av1MiRowStarts[0] = 0;
-        av1MiRowStarts[1] = (session.m_Desc.height + 3) / 4;
-        av1WidthInSbsMinus1[0] = (session.m_Desc.width + 63) / 64 - 1;
-        av1HeightInSbsMinus1[0] = (session.m_Desc.height + 63) / 64 - 1;
+        av1MiRowStarts[1] = (uint16_t)((session.m_Desc.height + 3) / 4);
+        av1WidthInSbsMinus1[0] = (uint16_t)((session.m_Desc.width + 63) / 64 - 1);
+        av1HeightInSbsMinus1[0] = (uint16_t)((session.m_Desc.height + 63) / 64 - 1);
         av1TileInfo.pMiColStarts = av1MiColStarts;
         av1TileInfo.pMiRowStarts = av1MiRowStarts;
         av1TileInfo.pWidthInSbsMinus1 = av1WidthInSbsMinus1;
@@ -2189,8 +2291,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         av1Picture.pStdPictureInfo = &av1StdPicture;
         av1Picture.frameHeaderOffset = desc.frameHeaderOffset;
         av1Picture.tileCount = desc.tileNum;
-        av1Picture.pTileOffsets = desc.tileNum ? av1TileOffsets : nullptr;
-        av1Picture.pTileSizes = desc.tileNum ? av1TileSizes : nullptr;
+        av1Picture.pTileOffsets = desc.tileNum ? (uint32_t*)av1TileOffsets : nullptr;
+        av1Picture.pTileSizes = desc.tileNum ? (uint32_t*)av1TileSizes : nullptr;
         codecPictureInfo = &av1Picture;
 
         if (desc.refreshFrameFlags) {

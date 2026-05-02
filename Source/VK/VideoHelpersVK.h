@@ -161,6 +161,195 @@ inline VideoAV1PictureBits GetDefaultVideoAV1PictureFlagsVK() {
         VideoAV1PictureBits::SHOWABLE_FRAME;
 }
 
+inline void FillVideoH265ProfileTierLevelVK(StdVideoH265ProfileTierLevel& profileTierLevel, const VideoH265ProfileTierLevelDesc& desc) {
+    profileTierLevel = {};
+    profileTierLevel.flags.general_tier_flag = !!(desc.flags & VideoH265ProfileTierLevelBits::TIER);
+    profileTierLevel.flags.general_progressive_source_flag = !!(desc.flags & VideoH265ProfileTierLevelBits::PROGRESSIVE_SOURCE);
+    profileTierLevel.flags.general_interlaced_source_flag = !!(desc.flags & VideoH265ProfileTierLevelBits::INTERLACED_SOURCE);
+    profileTierLevel.flags.general_non_packed_constraint_flag = !!(desc.flags & VideoH265ProfileTierLevelBits::NON_PACKED_CONSTRAINT);
+    profileTierLevel.flags.general_frame_only_constraint_flag = !!(desc.flags & VideoH265ProfileTierLevelBits::FRAME_ONLY_CONSTRAINT);
+    profileTierLevel.general_profile_idc = (StdVideoH265ProfileIdc)desc.generalProfileIdc;
+    profileTierLevel.general_level_idc = (StdVideoH265LevelIdc)desc.generalLevelIdc;
+}
+
+inline void FillVideoH265DecPicBufMgrVK(StdVideoH265DecPicBufMgr& decPicBufMgr, const VideoH265DecPicBufMgrDesc& desc) {
+    decPicBufMgr = {};
+    for (uint32_t i = 0; i < STD_VIDEO_H265_SUBLAYERS_LIST_SIZE; i++) {
+        decPicBufMgr.max_dec_pic_buffering_minus1[i] = desc.maxDecPicBufferingMinus1[i];
+        decPicBufMgr.max_num_reorder_pics[i] = desc.maxNumReorderPics[i];
+        decPicBufMgr.max_latency_increase_plus1[i] = desc.maxLatencyIncreasePlus1[i];
+    }
+}
+
+inline StdVideoH265ScalingLists GetVideoH265ScalingListsVK(const VideoH265ScalingListsDesc& desc) {
+    StdVideoH265ScalingLists scalingLists = {};
+    for (uint32_t i = 0; i < STD_VIDEO_H265_SCALING_LIST_4X4_NUM_LISTS; i++)
+        for (uint32_t j = 0; j < STD_VIDEO_H265_SCALING_LIST_4X4_NUM_ELEMENTS; j++)
+            scalingLists.ScalingList4x4[i][j] = desc.scalingList4x4[i][j];
+    for (uint32_t i = 0; i < STD_VIDEO_H265_SCALING_LIST_8X8_NUM_LISTS; i++)
+        for (uint32_t j = 0; j < STD_VIDEO_H265_SCALING_LIST_8X8_NUM_ELEMENTS; j++)
+            scalingLists.ScalingList8x8[i][j] = desc.scalingList8x8[i][j];
+    for (uint32_t i = 0; i < STD_VIDEO_H265_SCALING_LIST_16X16_NUM_LISTS; i++) {
+        for (uint32_t j = 0; j < STD_VIDEO_H265_SCALING_LIST_16X16_NUM_ELEMENTS; j++)
+            scalingLists.ScalingList16x16[i][j] = desc.scalingList16x16[i][j];
+        scalingLists.ScalingListDCCoef16x16[i] = desc.scalingListDCCoef16x16[i];
+    }
+    for (uint32_t i = 0; i < STD_VIDEO_H265_SCALING_LIST_32X32_NUM_LISTS; i++) {
+        for (uint32_t j = 0; j < STD_VIDEO_H265_SCALING_LIST_32X32_NUM_ELEMENTS; j++)
+            scalingLists.ScalingList32x32[i][j] = desc.scalingList32x32[i][j];
+        scalingLists.ScalingListDCCoef32x32[i] = desc.scalingListDCCoef32x32[i];
+    }
+
+    return scalingLists;
+}
+
+inline StdVideoH265ShortTermRefPicSet GetVideoH265ShortTermRefPicSetVK(const VideoH265ShortTermRefPicSetDesc& desc) {
+    StdVideoH265ShortTermRefPicSet refPicSet = {};
+    refPicSet.flags.inter_ref_pic_set_prediction_flag = !!(desc.flags & VideoH265ShortTermRefPicSetBits::INTER_REF_PIC_SET_PREDICTION);
+    refPicSet.flags.delta_rps_sign = !!(desc.flags & VideoH265ShortTermRefPicSetBits::DELTA_RPS_SIGN);
+    refPicSet.delta_idx_minus1 = desc.deltaIdxMinus1;
+    refPicSet.use_delta_flag = desc.useDeltaFlag;
+    refPicSet.abs_delta_rps_minus1 = desc.absDeltaRpsMinus1;
+    refPicSet.used_by_curr_pic_flag = desc.usedByCurrPicFlag;
+    refPicSet.used_by_curr_pic_s0_flag = desc.usedByCurrPicS0Flag;
+    refPicSet.used_by_curr_pic_s1_flag = desc.usedByCurrPicS1Flag;
+    refPicSet.num_negative_pics = desc.numNegativePics;
+    refPicSet.num_positive_pics = desc.numPositivePics;
+    for (uint32_t i = 0; i < STD_VIDEO_H265_MAX_DPB_SIZE; i++) {
+        refPicSet.delta_poc_s0_minus1[i] = desc.deltaPocS0Minus1[i];
+        refPicSet.delta_poc_s1_minus1[i] = desc.deltaPocS1Minus1[i];
+    }
+
+    return refPicSet;
+}
+
+inline StdVideoH265LongTermRefPicsSps GetVideoH265LongTermRefPicsSpsVK(const VideoH265LongTermRefPicsSpsDesc& desc) {
+    StdVideoH265LongTermRefPicsSps longTermRefPics = {};
+    longTermRefPics.used_by_curr_pic_lt_sps_flag = desc.usedByCurrPicLtSpsFlag;
+    for (uint32_t i = 0; i < STD_VIDEO_H265_MAX_LONG_TERM_REF_PICS_SPS; i++)
+        longTermRefPics.lt_ref_pic_poc_lsb_sps[i] = desc.ltRefPicPocLsbSps[i];
+
+    return longTermRefPics;
+}
+
+inline StdVideoH265VideoParameterSet GetVideoH265VideoParameterSetVK(const VideoH265VideoParameterSetDesc& desc, const StdVideoH265ProfileTierLevel& profileTierLevel,
+    const StdVideoH265DecPicBufMgr& decPicBufMgr) {
+    StdVideoH265VideoParameterSet vps = {};
+    vps.flags.vps_temporal_id_nesting_flag = !!(desc.flags & VideoH265VideoParameterSetBits::TEMPORAL_ID_NESTING);
+    vps.flags.vps_sub_layer_ordering_info_present_flag = !!(desc.flags & VideoH265VideoParameterSetBits::SUB_LAYER_ORDERING_INFO_PRESENT);
+    vps.flags.vps_timing_info_present_flag = !!(desc.flags & VideoH265VideoParameterSetBits::TIMING_INFO_PRESENT);
+    vps.flags.vps_poc_proportional_to_timing_flag = !!(desc.flags & VideoH265VideoParameterSetBits::POC_PROPORTIONAL_TO_TIMING);
+    vps.vps_video_parameter_set_id = desc.videoParameterSetId;
+    vps.vps_max_sub_layers_minus1 = desc.maxSubLayersMinus1;
+    vps.vps_num_units_in_tick = desc.numUnitsInTick;
+    vps.vps_time_scale = desc.timeScale;
+    vps.vps_num_ticks_poc_diff_one_minus1 = desc.numTicksPocDiffOneMinus1;
+    vps.pDecPicBufMgr = &decPicBufMgr;
+    vps.pProfileTierLevel = &profileTierLevel;
+
+    return vps;
+}
+
+inline StdVideoH265SequenceParameterSet GetVideoH265SequenceParameterSetVK(const VideoH265SequenceParameterSetDesc& desc,
+    const StdVideoH265ProfileTierLevel& profileTierLevel, const StdVideoH265DecPicBufMgr& decPicBufMgr, const StdVideoH265ScalingLists* scalingLists,
+    const StdVideoH265ShortTermRefPicSet* shortTermRefPicSets, const StdVideoH265LongTermRefPicsSps* longTermRefPicsSps) {
+    StdVideoH265SequenceParameterSet sps = {};
+    sps.flags.sps_temporal_id_nesting_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::TEMPORAL_ID_NESTING);
+    sps.flags.separate_colour_plane_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::SEPARATE_COLOUR_PLANE);
+    sps.flags.conformance_window_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::CONFORMANCE_WINDOW);
+    sps.flags.sps_sub_layer_ordering_info_present_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::SUB_LAYER_ORDERING_INFO_PRESENT);
+    sps.flags.scaling_list_enabled_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::SCALING_LIST_ENABLED);
+    sps.flags.sps_scaling_list_data_present_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::SCALING_LIST_DATA_PRESENT);
+    sps.flags.amp_enabled_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::AMP_ENABLED);
+    sps.flags.sample_adaptive_offset_enabled_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::SAMPLE_ADAPTIVE_OFFSET_ENABLED);
+    sps.flags.pcm_enabled_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::PCM_ENABLED);
+    sps.flags.pcm_loop_filter_disabled_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::PCM_LOOP_FILTER_DISABLED);
+    sps.flags.long_term_ref_pics_present_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::LONG_TERM_REF_PICS_PRESENT);
+    sps.flags.sps_temporal_mvp_enabled_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::TEMPORAL_MVP_ENABLED);
+    sps.flags.strong_intra_smoothing_enabled_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::STRONG_INTRA_SMOOTHING_ENABLED);
+    sps.flags.vui_parameters_present_flag = !!(desc.flags & VideoH265SequenceParameterSetBits::VUI_PARAMETERS_PRESENT);
+    sps.chroma_format_idc = (StdVideoH265ChromaFormatIdc)desc.chromaFormatIdc;
+    sps.pic_width_in_luma_samples = desc.pictureWidthInLumaSamples;
+    sps.pic_height_in_luma_samples = desc.pictureHeightInLumaSamples;
+    sps.sps_video_parameter_set_id = desc.videoParameterSetId;
+    sps.sps_max_sub_layers_minus1 = desc.maxSubLayersMinus1;
+    sps.sps_seq_parameter_set_id = desc.sequenceParameterSetId;
+    sps.bit_depth_luma_minus8 = desc.bitDepthLumaMinus8;
+    sps.bit_depth_chroma_minus8 = desc.bitDepthChromaMinus8;
+    sps.log2_max_pic_order_cnt_lsb_minus4 = desc.log2MaxPictureOrderCountLsbMinus4;
+    sps.log2_min_luma_coding_block_size_minus3 = desc.log2MinLumaCodingBlockSizeMinus3;
+    sps.log2_diff_max_min_luma_coding_block_size = desc.log2DiffMaxMinLumaCodingBlockSize;
+    sps.log2_min_luma_transform_block_size_minus2 = desc.log2MinLumaTransformBlockSizeMinus2;
+    sps.log2_diff_max_min_luma_transform_block_size = desc.log2DiffMaxMinLumaTransformBlockSize;
+    sps.max_transform_hierarchy_depth_inter = desc.maxTransformHierarchyDepthInter;
+    sps.max_transform_hierarchy_depth_intra = desc.maxTransformHierarchyDepthIntra;
+    sps.num_short_term_ref_pic_sets = desc.numShortTermRefPicSets;
+    sps.num_long_term_ref_pics_sps = desc.numLongTermRefPicsSps;
+    sps.pcm_sample_bit_depth_luma_minus1 = desc.pcmSampleBitDepthLumaMinus1;
+    sps.pcm_sample_bit_depth_chroma_minus1 = desc.pcmSampleBitDepthChromaMinus1;
+    sps.log2_min_pcm_luma_coding_block_size_minus3 = desc.log2MinPcmLumaCodingBlockSizeMinus3;
+    sps.log2_diff_max_min_pcm_luma_coding_block_size = desc.log2DiffMaxMinPcmLumaCodingBlockSize;
+    sps.conf_win_left_offset = desc.confWinLeftOffset;
+    sps.conf_win_right_offset = desc.confWinRightOffset;
+    sps.conf_win_top_offset = desc.confWinTopOffset;
+    sps.conf_win_bottom_offset = desc.confWinBottomOffset;
+    sps.pProfileTierLevel = &profileTierLevel;
+    sps.pDecPicBufMgr = &decPicBufMgr;
+    sps.pScalingLists = scalingLists;
+    sps.pShortTermRefPicSet = shortTermRefPicSets;
+    sps.pLongTermRefPicsSps = longTermRefPicsSps;
+
+    return sps;
+}
+
+inline StdVideoH265PictureParameterSet GetVideoH265PictureParameterSetVK(const VideoH265PictureParameterSetDesc& desc, const StdVideoH265ScalingLists* scalingLists) {
+    StdVideoH265PictureParameterSet pps = {};
+    pps.flags.dependent_slice_segments_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::DEPENDENT_SLICE_SEGMENTS_ENABLED);
+    pps.flags.output_flag_present_flag = !!(desc.flags & VideoH265PictureParameterSetBits::OUTPUT_FLAG_PRESENT);
+    pps.flags.sign_data_hiding_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::SIGN_DATA_HIDING_ENABLED);
+    pps.flags.cabac_init_present_flag = !!(desc.flags & VideoH265PictureParameterSetBits::CABAC_INIT_PRESENT);
+    pps.flags.constrained_intra_pred_flag = !!(desc.flags & VideoH265PictureParameterSetBits::CONSTRAINED_INTRA_PRED);
+    pps.flags.transform_skip_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::TRANSFORM_SKIP_ENABLED);
+    pps.flags.cu_qp_delta_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::CU_QP_DELTA_ENABLED);
+    pps.flags.pps_slice_chroma_qp_offsets_present_flag = !!(desc.flags & VideoH265PictureParameterSetBits::SLICE_CHROMA_QP_OFFSETS_PRESENT);
+    pps.flags.weighted_pred_flag = !!(desc.flags & VideoH265PictureParameterSetBits::WEIGHTED_PRED);
+    pps.flags.weighted_bipred_flag = !!(desc.flags & VideoH265PictureParameterSetBits::WEIGHTED_BIPRED);
+    pps.flags.transquant_bypass_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::TRANSQUANT_BYPASS_ENABLED);
+    pps.flags.tiles_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::TILES_ENABLED);
+    pps.flags.entropy_coding_sync_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::ENTROPY_CODING_SYNC_ENABLED);
+    pps.flags.uniform_spacing_flag = !!(desc.flags & VideoH265PictureParameterSetBits::UNIFORM_SPACING);
+    pps.flags.loop_filter_across_tiles_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::LOOP_FILTER_ACROSS_TILES_ENABLED);
+    pps.flags.pps_loop_filter_across_slices_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::LOOP_FILTER_ACROSS_SLICES_ENABLED);
+    pps.flags.deblocking_filter_control_present_flag = !!(desc.flags & VideoH265PictureParameterSetBits::DEBLOCKING_FILTER_CONTROL_PRESENT);
+    pps.flags.deblocking_filter_override_enabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::DEBLOCKING_FILTER_OVERRIDE_ENABLED);
+    pps.flags.pps_deblocking_filter_disabled_flag = !!(desc.flags & VideoH265PictureParameterSetBits::DEBLOCKING_FILTER_DISABLED);
+    pps.flags.pps_scaling_list_data_present_flag = !!(desc.flags & VideoH265PictureParameterSetBits::SCALING_LIST_DATA_PRESENT);
+    pps.flags.lists_modification_present_flag = !!(desc.flags & VideoH265PictureParameterSetBits::LISTS_MODIFICATION_PRESENT);
+    pps.flags.slice_segment_header_extension_present_flag = !!(desc.flags & VideoH265PictureParameterSetBits::SLICE_SEGMENT_HEADER_EXTENSION_PRESENT);
+    pps.pps_pic_parameter_set_id = desc.pictureParameterSetId;
+    pps.pps_seq_parameter_set_id = desc.sequenceParameterSetId;
+    pps.sps_video_parameter_set_id = desc.videoParameterSetId;
+    pps.num_extra_slice_header_bits = desc.numExtraSliceHeaderBits;
+    pps.num_ref_idx_l0_default_active_minus1 = desc.refIndexL0DefaultActiveMinus1;
+    pps.num_ref_idx_l1_default_active_minus1 = desc.refIndexL1DefaultActiveMinus1;
+    pps.init_qp_minus26 = desc.initQpMinus26;
+    pps.diff_cu_qp_delta_depth = desc.diffCuQpDeltaDepth;
+    pps.pps_cb_qp_offset = desc.cbQpOffset;
+    pps.pps_cr_qp_offset = desc.crQpOffset;
+    pps.pps_beta_offset_div2 = desc.betaOffsetDiv2;
+    pps.pps_tc_offset_div2 = desc.tcOffsetDiv2;
+    pps.log2_parallel_merge_level_minus2 = desc.log2ParallelMergeLevelMinus2;
+    pps.num_tile_columns_minus1 = desc.tileColumnNumMinus1;
+    pps.num_tile_rows_minus1 = desc.tileRowNumMinus1;
+    for (uint32_t i = 0; i < STD_VIDEO_H265_CHROMA_QP_OFFSET_TILE_COLS_LIST_SIZE; i++)
+        pps.column_width_minus1[i] = desc.columnWidthMinus1[i];
+    for (uint32_t i = 0; i < STD_VIDEO_H265_CHROMA_QP_OFFSET_TILE_ROWS_LIST_SIZE; i++)
+        pps.row_height_minus1[i] = desc.rowHeightMinus1[i];
+    pps.pScalingLists = scalingLists;
+
+    return pps;
+}
+
 inline void FillVideoAV1ColorConfigVK(StdVideoAV1ColorConfig& colorConfig, const VideoAV1SequenceDesc& desc) {
     colorConfig = {};
     colorConfig.flags.mono_chrome = !!(desc.flags & VideoAV1SequenceBits::MONO_CHROME);
