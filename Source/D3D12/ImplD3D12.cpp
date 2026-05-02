@@ -1652,8 +1652,15 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         }
 
         if (!CanBuildVideoDecodeH264ArgumentsD3D12(videoDecodeDesc)) {
-            NRI_REPORT_ERROR(&device, "D3D12 neutral H.264 decode currently supports IDR/intra pictures without native 'arguments' or references");
+            NRI_REPORT_ERROR(&device, "D3D12 neutral H.264 decode requires matching H.264 reference descriptors for inter pictures");
             return;
+        }
+
+        for (uint32_t i = 0; i < videoDecodeDesc.referenceNum; i++) {
+            if (!FindVideoH264ReferenceDescD3D12(videoDecodeDesc.h264PictureDesc->references, videoDecodeDesc.h264PictureDesc->referenceNum, videoDecodeDesc.references[i].slot)) {
+                NRI_REPORT_ERROR(&device, "'h264PictureDesc->references' must include metadata for each H.264 reference");
+                return;
+            }
         }
 
         if (!BuildVideoDecodeH264ArgumentsD3D12(*parameters->m_H264Parameters, *videoDecodeDesc.h264PictureDesc, videoDecodeDesc.bitstreamSize, videoDecodeDesc.dstSlot,

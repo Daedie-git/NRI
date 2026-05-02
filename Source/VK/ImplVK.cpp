@@ -1911,6 +1911,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
 
     const uint32_t referenceScratchNum = videoDecodeDesc.referenceNum ? videoDecodeDesc.referenceNum : 1;
     Scratch<VkVideoReferenceSlotInfoKHR> referenceSlots = NRI_ALLOCATE_SCRATCH(device, VkVideoReferenceSlotInfoKHR, videoDecodeDesc.referenceNum + 1);
+    Scratch<StdVideoDecodeH264ReferenceInfo> h264StdReferences = NRI_ALLOCATE_SCRATCH(device, StdVideoDecodeH264ReferenceInfo, referenceScratchNum);
+    Scratch<VkVideoDecodeH264DpbSlotInfoKHR> h264References = NRI_ALLOCATE_SCRATCH(device, VkVideoDecodeH264DpbSlotInfoKHR, referenceScratchNum);
     Scratch<StdVideoDecodeH265ReferenceInfo> h265StdReferences = NRI_ALLOCATE_SCRATCH(device, StdVideoDecodeH265ReferenceInfo, referenceScratchNum);
     Scratch<VkVideoDecodeH265DpbSlotInfoKHR> h265References = NRI_ALLOCATE_SCRATCH(device, VkVideoDecodeH265DpbSlotInfoKHR, referenceScratchNum);
     for (uint32_t i = 0; i < videoDecodeDesc.referenceNum; i++) {
@@ -1923,7 +1925,25 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         referenceSlots[i] = {VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
         referenceSlots[i].slotIndex = videoDecodeDesc.references[i].slot;
         referenceSlots[i].pPictureResource = &picture.m_Resource;
-        if (session.m_Desc.codec == VideoCodec::H265) {
+        if (session.m_Desc.codec == VideoCodec::H264) {
+            const VideoH264DecodePictureDesc* h264PictureDesc = videoDecodeDesc.h264PictureDesc;
+            const VideoH264ReferenceDesc* referenceDesc = h264PictureDesc ? FindVideoH264ReferenceDescVK(h264PictureDesc->references, h264PictureDesc->referenceNum, videoDecodeDesc.references[i].slot) : nullptr;
+            if (!referenceDesc) {
+                NRI_REPORT_ERROR(&device, "'h264PictureDesc->references' must include metadata for each H.264 reference");
+                return;
+            }
+
+            h264StdReferences[i] = {};
+            h264StdReferences[i].flags.top_field_flag = true;
+            h264StdReferences[i].flags.bottom_field_flag = true;
+            h264StdReferences[i].flags.used_for_long_term_reference = referenceDesc->longTermReference != 0;
+            h264StdReferences[i].FrameNum = (uint16_t)referenceDesc->frameNum;
+            h264StdReferences[i].PicOrderCnt[0] = referenceDesc->pictureOrderCount;
+            h264StdReferences[i].PicOrderCnt[1] = referenceDesc->pictureOrderCount;
+            h264References[i] = {VK_STRUCTURE_TYPE_VIDEO_DECODE_H264_DPB_SLOT_INFO_KHR};
+            h264References[i].pStdReferenceInfo = &h264StdReferences[i];
+            referenceSlots[i].pNext = &h264References[i];
+        } else if (session.m_Desc.codec == VideoCodec::H265) {
             const VideoH265DecodePictureDesc* h265PictureDesc = videoDecodeDesc.h265PictureDesc;
             const VideoH265ReferenceDesc* referenceDesc = h265PictureDesc ? FindVideoH265ReferenceDescVK(h265PictureDesc->references, h265PictureDesc->referenceNum, videoDecodeDesc.references[i].slot) : nullptr;
             h265StdReferences[i] = {};

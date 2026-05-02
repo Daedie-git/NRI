@@ -172,6 +172,18 @@ NriStruct(VideoDecodeArgument) {
     const void* data;
 };
 
+NriStruct(VideoH264ReferenceDesc) {
+    Nri(VideoEncodeFrameType) frameType;
+    uint8_t temporalLayer;
+    uint8_t listIndex;
+    uint8_t longTermReference;
+    uint32_t frameNum;
+    int32_t pictureOrderCount;
+    uint32_t slot;
+    uint16_t longTermPictureIndex;
+    uint16_t longTermFrameIndex;
+};
+
 NriStruct(VideoH264DecodePictureDesc) {
     Nri(VideoH264DecodePictureBits) flags;
     uint8_t sequenceParameterSetId;
@@ -182,6 +194,8 @@ NriStruct(VideoH264DecodePictureDesc) {
     int32_t bottomFieldOrderCount;
     NriOptional const uint32_t* sliceOffsets; // if provided, must include "sliceOffsetNum" entries
     uint32_t sliceOffsetNum;
+    NriOptional const NriPtr(VideoH264ReferenceDesc) references; // if provided, must include "referenceNum" entries
+    uint32_t referenceNum;
 };
 
 NriStruct(VideoH265ReferenceDesc) {
@@ -223,18 +237,6 @@ NriStruct(VideoEncodePictureDesc) {
     uint16_t idrPictureId;
     uint32_t frameIndex;
     int32_t pictureOrderCount;
-};
-
-NriStruct(VideoH264ReferenceDesc) {
-    Nri(VideoEncodeFrameType) frameType;
-    uint8_t temporalLayer;
-    uint8_t listIndex;
-    uint8_t longTermReference;
-    uint32_t frameNum;
-    int32_t pictureOrderCount;
-    uint32_t slot;
-    uint16_t longTermPictureIndex;
-    uint16_t longTermFrameIndex;
 };
 
 NriStruct(VideoH264PictureDesc) {

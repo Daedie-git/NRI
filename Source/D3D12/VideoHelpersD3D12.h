@@ -81,8 +81,20 @@ inline const VideoH264PictureParameterSetDesc* FindVideoH264PictureParameterSetD
 }
 
 inline bool CanBuildVideoDecodeH264ArgumentsD3D12(const VideoDecodeDesc& desc) {
-    return desc.h264PictureDesc && !desc.h265PictureDesc && desc.argumentNum == 0 && desc.referenceNum == 0 &&
-        (desc.h264PictureDesc->flags & VideoH264DecodePictureBits::INTRA);
+    return desc.h264PictureDesc && !desc.h265PictureDesc && desc.argumentNum == 0 &&
+        (desc.referenceNum == 0 || (desc.h264PictureDesc->references && desc.h264PictureDesc->referenceNum == desc.referenceNum));
+}
+
+inline const VideoH264ReferenceDesc* FindVideoH264ReferenceDescD3D12(const VideoH264ReferenceDesc* references, uint32_t referenceNum, uint32_t slot) {
+    if (!references)
+        return nullptr;
+
+    for (uint32_t i = 0; i < referenceNum; i++) {
+        if (references[i].slot == slot)
+            return &references[i];
+    }
+
+    return nullptr;
 }
 
 inline bool BuildVideoDecodeH264ArgumentsD3D12(const VideoH264SessionParametersDesc& parameters, const VideoH264DecodePictureDesc& pictureDesc, uint64_t bitstreamSize,
@@ -90,8 +102,16 @@ inline bool BuildVideoDecodeH264ArgumentsD3D12(const VideoH264SessionParametersD
     if (sliceNum == 0 || sliceNum != pictureDesc.sliceOffsetNum || !pictureDesc.sliceOffsets || !slices)
         return false;
 
-    if (!(pictureDesc.flags & VideoH264DecodePictureBits::INTRA))
+    if (pictureDesc.referenceNum > 16 || (pictureDesc.referenceNum && !pictureDesc.references))
         return false;
+
+    uint16_t usedReferenceSlots = 0;
+    for (uint32_t i = 0; i < pictureDesc.referenceNum; i++) {
+        const VideoH264ReferenceDesc& reference = pictureDesc.references[i];
+        if (reference.slot >= 16 || (usedReferenceSlots & (1u << reference.slot)))
+            return false;
+        usedReferenceSlots |= 1u << reference.slot;
+    }
 
     const VideoH264PictureParameterSetDesc* pps = FindVideoH264PictureParameterSetD3D12(parameters, pictureDesc.pictureParameterSetId);
     if (!pps)
@@ -131,6 +151,15 @@ inline bool BuildVideoDecodeH264ArgumentsD3D12(const VideoH264SessionParametersD
     pictureParameters.StatusReportFeedbackNumber = 1;
     for (uint32_t i = 0; i < 16; i++)
         pictureParameters.RefFrameList[i].bPicEntry = 0xff;
+    for (uint32_t i = 0; i < pictureDesc.referenceNum; i++) {
+        const VideoH264ReferenceDesc& reference = pictureDesc.references[i];
+        pictureParameters.RefFrameList[reference.slot].Index7Bits = (UCHAR)reference.slot;
+        pictureParameters.RefFrameList[reference.slot].AssociatedFlag = reference.longTermReference != 0;
+        pictureParameters.FieldOrderCntList[reference.slot][0] = reference.pictureOrderCount;
+        pictureParameters.FieldOrderCntList[reference.slot][1] = reference.pictureOrderCount;
+        pictureParameters.FrameNumList[reference.slot] = (USHORT)reference.frameNum;
+        pictureParameters.UsedForReferenceFlags |= 3u << (reference.slot * 2);
+    }
     pictureParameters.CurrFieldOrderCnt[0] = pictureDesc.topFieldOrderCount;
     pictureParameters.CurrFieldOrderCnt[1] = pictureDesc.bottomFieldOrderCount;
     pictureParameters.pic_init_qs_minus26 = pps->pictureInitQsMinus26;

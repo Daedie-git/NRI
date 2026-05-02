@@ -62,6 +62,18 @@ inline const VideoH265ReferenceDesc* FindVideoH265ReferenceDescVK(const VideoH26
     return nullptr;
 }
 
+inline const VideoH264ReferenceDesc* FindVideoH264ReferenceDescVK(const VideoH264ReferenceDesc* references, uint32_t referenceNum, uint32_t slot) {
+    if (!references)
+        return nullptr;
+
+    for (uint32_t i = 0; i < referenceNum; i++) {
+        if (references[i].slot == slot)
+            return &references[i];
+    }
+
+    return nullptr;
+}
+
 inline bool BuildVideoEncodeHEVCReferenceListsVK(const VideoReference* references, const VideoH265ReferenceDesc* referenceDescs, uint32_t referenceNum,
     VideoEncodeFrameType frameType, int32_t currentPictureOrderCount, VideoEncodeHEVCReferenceListsVK& lists) {
     lists = {};
