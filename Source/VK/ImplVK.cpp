@@ -1435,7 +1435,7 @@ struct VideoSessionParametersVK final {
         m_AV1SequenceHeader.seq_force_integer_mv = STD_VIDEO_AV1_SELECT_INTEGER_MV;
         m_AV1SequenceHeader.seq_force_screen_content_tools = STD_VIDEO_AV1_SELECT_SCREEN_CONTENT_TOOLS;
         m_AV1SequenceHeader.pColorConfig = &m_AV1ColorConfig;
-        m_AV1OperatingPoint.seq_level_idx = STD_VIDEO_AV1_LEVEL_2_1;
+        m_AV1OperatingPoint.seq_level_idx = GetVideoAV1LevelVK(session.m_Desc.width, session.m_Desc.height);
 
         VkVideoDecodeAV1SessionParametersCreateInfoKHR decodeInfo = {VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_SESSION_PARAMETERS_CREATE_INFO_KHR};
         decodeInfo.pStdSequenceHeader = &m_AV1SequenceHeader;
@@ -1767,7 +1767,7 @@ Result VideoSessionVK::Create(const VideoSessionDesc& videoSessionDesc) {
             break;
         case VideoCodec::AV1:
             encodeAV1SessionCreateInfo.useMaxLevel = true;
-            encodeAV1SessionCreateInfo.maxLevel = STD_VIDEO_AV1_LEVEL_2_1;
+            encodeAV1SessionCreateInfo.maxLevel = GetVideoAV1LevelVK(videoSessionDesc.width, videoSessionDesc.height);
             createInfo.pNext = &encodeAV1SessionCreateInfo;
             break;
         case VideoCodec::MAX_NUM:

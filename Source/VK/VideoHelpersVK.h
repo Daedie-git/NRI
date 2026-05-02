@@ -47,6 +47,24 @@ inline bool IsVideoEncodePictureUsedAsReferenceVK(VideoCodec codec, uint32_t max
     return codec != VideoCodec::AV1 || av1RefreshFrameFlags != 0;
 }
 
+inline StdVideoAV1Level GetVideoAV1LevelVK(uint32_t width, uint32_t height) {
+    const uint64_t samples = uint64_t(width) * height;
+    if (samples <= 512ull * 288ull)
+        return STD_VIDEO_AV1_LEVEL_2_0;
+    if (samples <= 704ull * 396ull)
+        return STD_VIDEO_AV1_LEVEL_2_1;
+    if (samples <= 1088ull * 612ull)
+        return STD_VIDEO_AV1_LEVEL_3_0;
+    if (samples <= 1376ull * 774ull)
+        return STD_VIDEO_AV1_LEVEL_3_1;
+    if (samples <= 2048ull * 1152ull)
+        return STD_VIDEO_AV1_LEVEL_4_0;
+    if (samples <= 4096ull * 2176ull)
+        return STD_VIDEO_AV1_LEVEL_5_0;
+
+    return STD_VIDEO_AV1_LEVEL_5_1;
+}
+
 inline StdVideoAV1FrameType GetVideoAV1FrameTypeVK(VideoEncodeFrameType frameType) {
     switch (frameType) {
     case VideoEncodeFrameType::IDR:
