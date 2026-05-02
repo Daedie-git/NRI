@@ -397,7 +397,7 @@ inline bool BuildVideoDecodeH265ArgumentsD3D12(const VideoH265SessionParametersD
 }
 
 inline bool IsVideoEncodeFrameTypeSupportedByD3D12NoBGop(VideoCodec codec, VideoEncodeFrameType frameType) {
-    return frameType != VideoEncodeFrameType::B || (codec != VideoCodec::H264 && codec != VideoCodec::H265);
+    return frameType != VideoEncodeFrameType::B || codec != VideoCodec::H264;
 }
 
 inline bool IsVideoEncodePictureUsedAsReferenceD3D12(VideoCodec codec, uint32_t maxReferenceNum, bool hasReconstructedPicture, uint8_t av1RefreshFrameFlags) {

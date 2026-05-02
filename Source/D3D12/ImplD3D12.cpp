@@ -1484,7 +1484,7 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
 
         D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_HEVC hevcGop = {};
         hevcGop.GOPLength = videoSessionDesc.maxReferenceNum ? 0 : 1;
-        hevcGop.PPicturePeriod = videoSessionDesc.maxReferenceNum ? 1 : 0;
+        hevcGop.PPicturePeriod = videoSessionDesc.maxReferenceNum > 1 ? 2 : (videoSessionDesc.maxReferenceNum ? 1 : 0);
 
         D3D12_VIDEO_ENCODER_AV1_SEQUENCE_STRUCTURE av1Sequence = {};
         av1Sequence.IntraDistance = videoSessionDesc.maxReferenceNum ? 60 : 1;
@@ -2211,7 +2211,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
 
     D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_HEVC hevcGop = {};
     hevcGop.GOPLength = session.m_Desc.maxReferenceNum ? 0 : 1;
-    hevcGop.PPicturePeriod = session.m_Desc.maxReferenceNum ? 1 : 0;
+    hevcGop.PPicturePeriod = session.m_Desc.maxReferenceNum > 1 ? 2 : (session.m_Desc.maxReferenceNum ? 1 : 0);
 
     D3D12_VIDEO_ENCODER_AV1_SEQUENCE_STRUCTURE av1Sequence = {};
     av1Sequence.IntraDistance = session.m_Desc.maxReferenceNum ? 60 : 1;
@@ -2256,7 +2256,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     const VideoEncodePictureDesc defaultPicture = {VideoEncodeFrameType::IDR, 0, 0, 0, 0};
     const VideoEncodePictureDesc& pictureDesc = videoEncodeDesc.pictureDesc ? *videoEncodeDesc.pictureDesc : defaultPicture;
     if (!IsVideoEncodeFrameTypeSupportedByD3D12NoBGop(session.m_Desc.codec, pictureDesc.frameType)) {
-        NRI_REPORT_ERROR(&device, "D3D12 H.264/H.265 encode sessions are configured without B-frame GOP support");
+        NRI_REPORT_ERROR(&device, "D3D12 H.264 encode sessions are configured without B-frame GOP support");
         return;
     }
 
