@@ -40,6 +40,21 @@ inline uint8_t GetVideoEncodeQPByFrameTypeVK(const VideoEncodeRateControlDesc& r
     return frameType == VideoEncodeFrameType::B ? rateControlDesc.qpB : (frameType == VideoEncodeFrameType::P ? rateControlDesc.qpP : rateControlDesc.qpI);
 }
 
+inline StdVideoAV1FrameType GetVideoAV1FrameTypeVK(VideoEncodeFrameType frameType) {
+    switch (frameType) {
+    case VideoEncodeFrameType::IDR:
+    case VideoEncodeFrameType::I:
+        return STD_VIDEO_AV1_FRAME_TYPE_KEY;
+    case VideoEncodeFrameType::P:
+    case VideoEncodeFrameType::B:
+        return STD_VIDEO_AV1_FRAME_TYPE_INTER;
+    case VideoEncodeFrameType::MAX_NUM:
+        return STD_VIDEO_AV1_FRAME_TYPE_INVALID;
+    }
+
+    return STD_VIDEO_AV1_FRAME_TYPE_INVALID;
+}
+
 struct VideoEncodeHEVCReferenceListsVK {
     std::array<uint32_t, STD_VIDEO_H265_MAX_NUM_LIST_REF> list0 = {};
     std::array<uint32_t, STD_VIDEO_H265_MAX_NUM_LIST_REF> list1 = {};
@@ -72,6 +87,26 @@ inline const VideoH264ReferenceDesc* FindVideoH264ReferenceDescVK(const VideoH26
     }
 
     return nullptr;
+}
+
+inline const VideoAV1ReferenceDesc* FindVideoAV1ReferenceDescVK(const VideoAV1ReferenceDesc* references, uint32_t referenceNum, uint32_t slot) {
+    if (!references)
+        return nullptr;
+
+    for (uint32_t i = 0; i < referenceNum; i++) {
+        if (references[i].slot == slot)
+            return &references[i];
+    }
+
+    return nullptr;
+}
+
+inline void FillVideoDecodeAV1ReferenceInfoVK(StdVideoDecodeAV1ReferenceInfo& info, VideoEncodeFrameType frameType, uint8_t orderHint) {
+    info = {};
+    info.frame_type = (uint8_t)GetVideoAV1FrameTypeVK(frameType);
+    info.OrderHint = orderHint;
+    for (uint8_t& savedOrderHint : info.SavedOrderHints)
+        savedOrderHint = orderHint;
 }
 
 inline bool BuildVideoEncodeHEVCReferenceListsVK(const VideoReference* references, const VideoH265ReferenceDesc* referenceDescs, uint32_t referenceNum,

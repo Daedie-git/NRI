@@ -1601,6 +1601,35 @@ static void NRI_CALL DestroyVideoPicture(VideoPicture& videoPicture) {
     Destroy((VideoPictureD3D12*)&videoPicture);
 }
 
+static uint32_t GetVideoDecodeAV1ReferenceNameIndexD3D12(VideoAV1ReferenceName name) {
+    switch (name) {
+    case VideoAV1ReferenceName::NONE:
+        return 7;
+    case VideoAV1ReferenceName::LAST:
+        return 0;
+    case VideoAV1ReferenceName::LAST2:
+        return 1;
+    case VideoAV1ReferenceName::LAST3:
+        return 2;
+    case VideoAV1ReferenceName::GOLDEN:
+        return 3;
+    case VideoAV1ReferenceName::BWDREF:
+        return 4;
+    case VideoAV1ReferenceName::ALTREF2:
+        return 5;
+    case VideoAV1ReferenceName::ALTREF:
+        return 6;
+    case VideoAV1ReferenceName::MAX_NUM:
+        return 7;
+    }
+
+    return 7;
+}
+
+static uint8_t GetVideoDecodeAV1FrameTypeD3D12(VideoEncodeFrameType frameType) {
+    return frameType == VideoEncodeFrameType::IDR || frameType == VideoEncodeFrameType::I ? 0 : 1;
+}
+
 static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDecodeDesc& videoDecodeDesc) {
     CommandBufferD3D12& commandBufferD3D12 = (CommandBufferD3D12&)commandBuffer;
     DeviceD3D12& device = commandBufferD3D12.GetDevice();
@@ -1640,6 +1669,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
     DXVA_Qmatrix_H264 h264InverseQuantizationMatrix = {};
     Scratch<DXVA_Slice_H264_Short> h264Slices =
         NRI_ALLOCATE_SCRATCH(device, DXVA_Slice_H264_Short, videoDecodeDesc.h264PictureDesc ? std::max(videoDecodeDesc.h264PictureDesc->sliceOffsetNum, 1u) : 1u);
+    DXVA_PicParams_AV1 av1PictureParameters = {};
+    Scratch<DXVA_Tile_AV1> av1Tiles = NRI_ALLOCATE_SCRATCH(device, DXVA_Tile_AV1, videoDecodeDesc.av1PictureDesc ? std::max(videoDecodeDesc.av1PictureDesc->tileNum, 1u) : 1u);
     if (videoDecodeDesc.h264PictureDesc) {
         if (session.m_Desc.codec != VideoCodec::H264) {
             NRI_REPORT_ERROR(&device, "'h264PictureDesc' can only be used with H.264 decode sessions");
@@ -1679,6 +1710,85 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         input.FrameArguments[2].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_SLICE_CONTROL;
         input.FrameArguments[2].Size = sizeof(DXVA_Slice_H264_Short) * videoDecodeDesc.h264PictureDesc->sliceOffsetNum;
         input.FrameArguments[2].pData = h264Slices;
+    } else if (videoDecodeDesc.av1PictureDesc) {
+        if (session.m_Desc.codec != VideoCodec::AV1) {
+            NRI_REPORT_ERROR(&device, "'av1PictureDesc' can only be used with AV1 decode sessions");
+            return;
+        }
+
+        const VideoAV1DecodePictureDesc& desc = *videoDecodeDesc.av1PictureDesc;
+        if ((desc.tileNum != 0 && !desc.tiles) || desc.tileNum > 256 || desc.referenceNum > 8 || (desc.referenceNum != 0 && !desc.references)) {
+            NRI_REPORT_ERROR(&device, "'av1PictureDesc' contains invalid tile or reference data");
+            return;
+        }
+
+        av1PictureParameters.width = session.m_Desc.width;
+        av1PictureParameters.height = session.m_Desc.height;
+        av1PictureParameters.max_width = session.m_Desc.width;
+        av1PictureParameters.max_height = session.m_Desc.height;
+        av1PictureParameters.CurrPicTextureIndex = (UCHAR)videoDecodeDesc.dstSlot;
+        av1PictureParameters.superres_denom = 8;
+        av1PictureParameters.bitdepth = session.m_Desc.format == Format::P010_UNORM || session.m_Desc.format == Format::P016_UNORM ? 10 : 8;
+        av1PictureParameters.seq_profile = 0;
+        av1PictureParameters.tiles.cols = 1;
+        av1PictureParameters.tiles.rows = 1;
+        av1PictureParameters.tiles.widths[0] = (USHORT)((session.m_Desc.width + 63) / 64);
+        av1PictureParameters.tiles.heights[0] = (USHORT)((session.m_Desc.height + 63) / 64);
+        av1PictureParameters.coding.screen_content_tools = 1;
+        av1PictureParameters.coding.integer_mv = 1;
+        av1PictureParameters.coding.cdef = 1;
+        av1PictureParameters.coding.restoration = 1;
+        av1PictureParameters.coding.tx_mode = 2;
+        av1PictureParameters.coding.reference_frame_update = desc.refreshFrameFlags != 0;
+        av1PictureParameters.format.frame_type = GetVideoDecodeAV1FrameTypeD3D12(desc.frameType);
+        av1PictureParameters.format.show_frame = 1;
+        av1PictureParameters.format.showable_frame = 1;
+        av1PictureParameters.format.subsampling_x = 1;
+        av1PictureParameters.format.subsampling_y = 1;
+        av1PictureParameters.primary_ref_frame = GetVideoDecodeAV1ReferenceNameIndexD3D12(desc.primaryReferenceName);
+        av1PictureParameters.order_hint = desc.orderHint;
+        av1PictureParameters.order_hint_bits = 8;
+        std::memset(av1PictureParameters.RefFrameMapTextureIndex, 0xFF, sizeof(av1PictureParameters.RefFrameMapTextureIndex));
+        for (uint32_t i = 0; i < 7; i++)
+            av1PictureParameters.frame_refs[i].Index = 0xFF;
+        for (uint32_t i = 0; i < desc.referenceNum; i++) {
+            const VideoAV1ReferenceDesc& reference = desc.references[i];
+            if (reference.refFrameIndex >= 8 || reference.slot > 0xFE) {
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u]' is invalid", i);
+                return;
+            }
+
+            av1PictureParameters.RefFrameMapTextureIndex[reference.refFrameIndex] = (UCHAR)reference.slot;
+            const uint32_t referenceNameIndex = GetVideoDecodeAV1ReferenceNameIndexD3D12(reference.name);
+            if (referenceNameIndex < 7) {
+                av1PictureParameters.frame_refs[referenceNameIndex].Index = reference.refFrameIndex;
+                av1PictureParameters.frame_refs[referenceNameIndex].width = session.m_Desc.width;
+                av1PictureParameters.frame_refs[referenceNameIndex].height = session.m_Desc.height;
+            }
+        }
+        av1PictureParameters.quantization.base_qindex = desc.baseQIndex;
+        av1PictureParameters.cdef.damping = 3;
+        av1PictureParameters.interp_filter = 4;
+        av1PictureParameters.StatusReportFeedbackNumber = 1;
+
+        for (uint32_t i = 0; i < desc.tileNum; i++) {
+            av1Tiles[i] = {};
+            av1Tiles[i].DataOffset = desc.tiles[i].offset;
+            av1Tiles[i].DataSize = desc.tiles[i].size;
+            av1Tiles[i].row = desc.tiles[i].row;
+            av1Tiles[i].column = desc.tiles[i].column;
+            av1Tiles[i].anchor_frame = desc.tiles[i].anchorFrame ? desc.tiles[i].anchorFrame : 0xFF;
+            av1PictureParameters.tiles.cols = std::max<UCHAR>(av1PictureParameters.tiles.cols, (UCHAR)(desc.tiles[i].column + 1));
+            av1PictureParameters.tiles.rows = std::max<UCHAR>(av1PictureParameters.tiles.rows, (UCHAR)(desc.tiles[i].row + 1));
+        }
+
+        input.NumFrameArguments = 2;
+        input.FrameArguments[0].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_PICTURE_PARAMETERS;
+        input.FrameArguments[0].Size = sizeof(av1PictureParameters);
+        input.FrameArguments[0].pData = &av1PictureParameters;
+        input.FrameArguments[1].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_SLICE_CONTROL;
+        input.FrameArguments[1].Size = sizeof(DXVA_Tile_AV1) * desc.tileNum;
+        input.FrameArguments[1].pData = av1Tiles;
     } else {
         if (videoDecodeDesc.h265PictureDesc) {
             NRI_REPORT_ERROR(&device, "D3D12 neutral H.265 decode is not supported yet; provide native 'arguments'");
@@ -1700,6 +1810,7 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
 
     VideoPictureD3D12& dstPicture = *(VideoPictureD3D12*)videoDecodeDesc.dstPicture;
     const bool h264NeutralDecode = videoDecodeDesc.h264PictureDesc != nullptr;
+    const bool av1NeutralDecode = videoDecodeDesc.av1PictureDesc != nullptr;
 
     VideoDecodeReferenceLayoutD3D12 referenceLayout = {};
     if (!GetVideoDecodeReferenceLayoutD3D12(videoDecodeDesc.references, videoDecodeDesc.referenceNum, referenceLayout)) {
@@ -1710,6 +1821,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         return;
     }
     if (h264NeutralDecode)
+        referenceLayout.slotCount = std::max(referenceLayout.slotCount, videoDecodeDesc.dstSlot + 1);
+    if (av1NeutralDecode)
         referenceLayout.slotCount = std::max(referenceLayout.slotCount, videoDecodeDesc.dstSlot + 1);
 
     Scratch<ID3D12Resource*> referenceResources = NRI_ALLOCATE_SCRATCH(device, ID3D12Resource*, referenceLayout.slotCount);
@@ -1731,6 +1844,10 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         referenceSubresources[slot] = reference.m_Subresource;
     }
     if (h264NeutralDecode) {
+        referenceResources[videoDecodeDesc.dstSlot] = (ID3D12Resource*)(*dstPicture.m_Texture);
+        referenceSubresources[videoDecodeDesc.dstSlot] = dstPicture.m_Subresource;
+    }
+    if (av1NeutralDecode) {
         referenceResources[videoDecodeDesc.dstSlot] = (ID3D12Resource*)(*dstPicture.m_Texture);
         referenceSubresources[videoDecodeDesc.dstSlot] = dstPicture.m_Subresource;
     }

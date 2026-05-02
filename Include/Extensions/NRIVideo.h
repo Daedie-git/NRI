@@ -266,6 +266,30 @@ NriStruct(VideoAV1PictureDesc) {
     uint32_t referenceNum;
 };
 
+NriStruct(VideoAV1DecodeTileDesc) {
+    uint32_t offset;
+    uint32_t size;
+    uint16_t row;
+    uint16_t column;
+    uint8_t anchorFrame;
+    uint8_t reserved[3];
+};
+
+NriStruct(VideoAV1DecodePictureDesc) {
+    Nri(VideoEncodeFrameType) frameType;
+    uint8_t orderHint;
+    uint8_t refreshFrameFlags;
+    Nri(VideoAV1ReferenceName) primaryReferenceName;
+    uint32_t currentFrameId;
+    uint32_t frameHeaderOffset;
+    uint8_t baseQIndex;
+    uint8_t reserved[3];
+    NriOptional const NriPtr(VideoAV1DecodeTileDesc) tiles; // if provided, must include "tileNum" entries
+    uint32_t tileNum;
+    NriOptional const NriPtr(VideoAV1ReferenceDesc) references; // if provided, must include "referenceNum" DPB snapshot entries
+    uint32_t referenceNum;
+};
+
 NriStruct(VideoDecodeDesc) {
     NriPtr(VideoSession) session;
     NriOptional NriPtr(VideoSessionParameters) parameters;
@@ -280,6 +304,7 @@ NriStruct(VideoDecodeDesc) {
     uint32_t argumentNum;
     NriOptional const NriPtr(VideoH264DecodePictureDesc) h264PictureDesc;
     NriOptional const NriPtr(VideoH265DecodePictureDesc) h265PictureDesc;
+    NriOptional const NriPtr(VideoAV1DecodePictureDesc) av1PictureDesc;
 };
 
 NriStruct(VideoEncodeDesc) {

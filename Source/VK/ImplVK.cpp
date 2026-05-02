@@ -1915,6 +1915,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
     Scratch<VkVideoDecodeH264DpbSlotInfoKHR> h264References = NRI_ALLOCATE_SCRATCH(device, VkVideoDecodeH264DpbSlotInfoKHR, referenceScratchNum);
     Scratch<StdVideoDecodeH265ReferenceInfo> h265StdReferences = NRI_ALLOCATE_SCRATCH(device, StdVideoDecodeH265ReferenceInfo, referenceScratchNum);
     Scratch<VkVideoDecodeH265DpbSlotInfoKHR> h265References = NRI_ALLOCATE_SCRATCH(device, VkVideoDecodeH265DpbSlotInfoKHR, referenceScratchNum);
+    Scratch<StdVideoDecodeAV1ReferenceInfo> av1StdReferences = NRI_ALLOCATE_SCRATCH(device, StdVideoDecodeAV1ReferenceInfo, referenceScratchNum);
+    Scratch<VkVideoDecodeAV1DpbSlotInfoKHR> av1References = NRI_ALLOCATE_SCRATCH(device, VkVideoDecodeAV1DpbSlotInfoKHR, referenceScratchNum);
     for (uint32_t i = 0; i < videoDecodeDesc.referenceNum; i++) {
         if (!videoDecodeDesc.references[i].picture) {
             NRI_REPORT_ERROR(&device, "'references[%u].picture' is NULL", i);
@@ -1952,6 +1954,18 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
             h265References[i] = {VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_DPB_SLOT_INFO_KHR};
             h265References[i].pStdReferenceInfo = &h265StdReferences[i];
             referenceSlots[i].pNext = &h265References[i];
+        } else if (session.m_Desc.codec == VideoCodec::AV1) {
+            const VideoAV1DecodePictureDesc* av1PictureDesc = videoDecodeDesc.av1PictureDesc;
+            const VideoAV1ReferenceDesc* referenceDesc = av1PictureDesc ? FindVideoAV1ReferenceDescVK(av1PictureDesc->references, av1PictureDesc->referenceNum, videoDecodeDesc.references[i].slot) : nullptr;
+            if (!referenceDesc) {
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->references' must include metadata for each AV1 reference");
+                return;
+            }
+
+            FillVideoDecodeAV1ReferenceInfoVK(av1StdReferences[i], referenceDesc->frameType, referenceDesc->orderHint);
+            av1References[i] = {VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_DPB_SLOT_INFO_KHR};
+            av1References[i].pStdReferenceInfo = &av1StdReferences[i];
+            referenceSlots[i].pNext = &av1References[i];
         }
     }
 
@@ -1963,6 +1977,21 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
     StdVideoDecodeH265PictureInfo h265StdPicture = {};
     VkVideoDecodeH265DpbSlotInfoKHR h265DpbSlot = {VK_STRUCTURE_TYPE_VIDEO_DECODE_H265_DPB_SLOT_INFO_KHR};
     StdVideoDecodeH265ReferenceInfo h265StdReference = {};
+    VkVideoDecodeAV1PictureInfoKHR av1Picture = {VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_PICTURE_INFO_KHR};
+    StdVideoDecodeAV1PictureInfo av1StdPicture = {};
+    VkVideoDecodeAV1DpbSlotInfoKHR av1DpbSlot = {VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_DPB_SLOT_INFO_KHR};
+    StdVideoDecodeAV1ReferenceInfo av1StdReference = {};
+    StdVideoAV1TileInfo av1TileInfo = {};
+    StdVideoAV1Quantization av1Quantization = {};
+    StdVideoAV1LoopFilter av1LoopFilter = {};
+    StdVideoAV1CDEF av1Cdef = {};
+    StdVideoAV1GlobalMotion av1GlobalMotion = {};
+    Scratch<uint32_t> av1TileOffsets = NRI_ALLOCATE_SCRATCH(device, uint32_t, videoDecodeDesc.av1PictureDesc ? std::max(videoDecodeDesc.av1PictureDesc->tileNum, 1u) : 1u);
+    Scratch<uint32_t> av1TileSizes = NRI_ALLOCATE_SCRATCH(device, uint32_t, videoDecodeDesc.av1PictureDesc ? std::max(videoDecodeDesc.av1PictureDesc->tileNum, 1u) : 1u);
+    Scratch<uint16_t> av1MiColStarts = NRI_ALLOCATE_SCRATCH(device, uint16_t, videoDecodeDesc.av1PictureDesc ? std::max(videoDecodeDesc.av1PictureDesc->tileNum + 1, 2u) : 2u);
+    Scratch<uint16_t> av1MiRowStarts = NRI_ALLOCATE_SCRATCH(device, uint16_t, videoDecodeDesc.av1PictureDesc ? std::max(videoDecodeDesc.av1PictureDesc->tileNum + 1, 2u) : 2u);
+    Scratch<uint16_t> av1WidthInSbsMinus1 = NRI_ALLOCATE_SCRATCH(device, uint16_t, videoDecodeDesc.av1PictureDesc ? std::max(videoDecodeDesc.av1PictureDesc->tileNum, 1u) : 1u);
+    Scratch<uint16_t> av1HeightInSbsMinus1 = NRI_ALLOCATE_SCRATCH(device, uint16_t, videoDecodeDesc.av1PictureDesc ? std::max(videoDecodeDesc.av1PictureDesc->tileNum, 1u) : 1u);
     const void* codecPictureInfo = nullptr;
     const void* setupReferenceInfo = nullptr;
     if (session.m_Desc.codec == VideoCodec::H264) {
@@ -2052,6 +2081,88 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
             h265StdReference.PicOrderCntVal = desc.pictureOrderCount;
             h265DpbSlot.pStdReferenceInfo = &h265StdReference;
             setupReferenceInfo = &h265DpbSlot;
+        }
+    } else if (session.m_Desc.codec == VideoCodec::AV1) {
+        if (!videoDecodeDesc.av1PictureDesc) {
+            NRI_REPORT_ERROR(&device, "'av1PictureDesc' must be valid for AV1 decode sessions");
+            return;
+        }
+
+        const VideoAV1DecodePictureDesc& desc = *videoDecodeDesc.av1PictureDesc;
+        if ((desc.tileNum != 0 && !desc.tiles) || desc.referenceNum > 8 || (desc.referenceNum != 0 && !desc.references)) {
+            NRI_REPORT_ERROR(&device, "'av1PictureDesc' contains invalid tile or reference data");
+            return;
+        }
+
+        for (int32_t& slotIndex : av1Picture.referenceNameSlotIndices)
+            slotIndex = -1;
+        for (uint8_t& refFrameIndex : av1StdPicture.SkipModeFrame)
+            refFrameIndex = 0xFF;
+
+        av1StdPicture.frame_type = GetVideoAV1FrameTypeVK(desc.frameType);
+        av1StdPicture.current_frame_id = desc.currentFrameId;
+        av1StdPicture.OrderHint = desc.orderHint;
+        av1StdPicture.primary_ref_frame = GetVideoEncodeAV1ReferenceNameIndexVK(desc.primaryReferenceName);
+        av1StdPicture.refresh_frame_flags = desc.refreshFrameFlags;
+        av1StdPicture.interpolation_filter = STD_VIDEO_AV1_INTERPOLATION_FILTER_SWITCHABLE;
+        av1StdPicture.TxMode = STD_VIDEO_AV1_TX_MODE_SELECT;
+        av1StdPicture.OrderHints[0] = desc.orderHint;
+        av1StdPicture.expectedFrameId[0] = desc.currentFrameId;
+
+        for (uint32_t i = 0; i < desc.referenceNum; i++) {
+            const VideoAV1ReferenceDesc& reference = desc.references[i];
+            if (reference.refFrameIndex >= 8) {
+                NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].refFrameIndex' is invalid", i);
+                return;
+            }
+
+            av1StdPicture.OrderHints[reference.refFrameIndex] = reference.orderHint;
+            av1StdPicture.expectedFrameId[reference.refFrameIndex] = reference.frameId;
+            const uint8_t referenceNameIndex = GetVideoEncodeAV1ReferenceNameIndexVK(reference.name);
+            if (referenceNameIndex < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR)
+                av1Picture.referenceNameSlotIndices[referenceNameIndex] = (int32_t)reference.slot;
+        }
+
+        av1TileInfo.flags.uniform_tile_spacing_flag = true;
+        av1TileInfo.TileCols = 1;
+        av1TileInfo.TileRows = 1;
+        av1TileInfo.tile_size_bytes_minus_1 = 3;
+        av1MiColStarts[0] = 0;
+        av1MiColStarts[1] = (session.m_Desc.width + 3) / 4;
+        av1MiRowStarts[0] = 0;
+        av1MiRowStarts[1] = (session.m_Desc.height + 3) / 4;
+        av1WidthInSbsMinus1[0] = (session.m_Desc.width + 63) / 64 - 1;
+        av1HeightInSbsMinus1[0] = (session.m_Desc.height + 63) / 64 - 1;
+        av1TileInfo.pMiColStarts = av1MiColStarts;
+        av1TileInfo.pMiRowStarts = av1MiRowStarts;
+        av1TileInfo.pWidthInSbsMinus1 = av1WidthInSbsMinus1;
+        av1TileInfo.pHeightInSbsMinus1 = av1HeightInSbsMinus1;
+        av1Quantization.base_q_idx = desc.baseQIndex;
+        av1Cdef.cdef_damping_minus_3 = 3;
+        av1StdPicture.pTileInfo = &av1TileInfo;
+        av1StdPicture.pQuantization = &av1Quantization;
+        av1StdPicture.pLoopFilter = &av1LoopFilter;
+        av1StdPicture.pCDEF = &av1Cdef;
+        av1StdPicture.pGlobalMotion = &av1GlobalMotion;
+
+        for (uint32_t i = 0; i < desc.tileNum; i++) {
+            av1TileOffsets[i] = desc.tiles[i].offset;
+            av1TileSizes[i] = desc.tiles[i].size;
+        }
+
+        av1Picture.pStdPictureInfo = &av1StdPicture;
+        av1Picture.frameHeaderOffset = desc.frameHeaderOffset;
+        av1Picture.tileCount = desc.tileNum;
+        av1Picture.pTileOffsets = desc.tileNum ? av1TileOffsets : nullptr;
+        av1Picture.pTileSizes = desc.tileNum ? av1TileSizes : nullptr;
+        codecPictureInfo = &av1Picture;
+
+        if (desc.refreshFrameFlags) {
+            FillVideoDecodeAV1ReferenceInfoVK(av1StdReference, desc.frameType, desc.orderHint);
+            for (uint32_t i = 0; i < 8; i++)
+                av1StdReference.SavedOrderHints[i] = av1StdPicture.OrderHints[i];
+            av1DpbSlot.pStdReferenceInfo = &av1StdReference;
+            setupReferenceInfo = &av1DpbSlot;
         }
     }
 
