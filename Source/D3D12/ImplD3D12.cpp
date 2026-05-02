@@ -1435,7 +1435,7 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
             encoderSupport.SubregionFrameEncoding = D3D12_VIDEO_ENCODER_FRAME_SUBREGION_LAYOUT_MODE_FULL_FRAME;
             encoderSupport.ResolutionsListCount = 1;
             encoderSupport.pResolutionList = &resolution;
-            encoderSupport.MaxReferenceFramesInDPB = 8;
+            encoderSupport.MaxReferenceFramesInDPB = videoSessionDesc.maxReferenceNum;
             encoderSupport.SuggestedProfile = profile;
             encoderSupport.SuggestedLevel = suggestedLevel;
             encoderSupport.pResolutionDependentSupport = &resolutionLimits;
@@ -1724,6 +1724,15 @@ static uint32_t GetVideoEncodeAV1ReferenceNameIndexD3D12(VideoAV1ReferenceName n
     return 7;
 }
 
+static bool HasVideoEncodeAV1ReferenceNameSlotD3D12(const uint32_t* referenceNameSlots, uint32_t slot) {
+    for (uint32_t i = 0; i < 7; i++) {
+        if (referenceNameSlots[i] == slot)
+            return true;
+    }
+
+    return false;
+}
+
 static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEncodeDesc& videoEncodeDesc) {
     CommandBufferD3D12& commandBufferD3D12 = (CommandBufferD3D12&)commandBuffer;
     DeviceD3D12& device = commandBufferD3D12.GetDevice();
@@ -1753,6 +1762,10 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     }
     if (videoEncodeDesc.av1PictureDesc && videoEncodeDesc.av1PictureDesc->referenceNum != 0 && !videoEncodeDesc.av1PictureDesc->references) {
         NRI_REPORT_ERROR(&device, "'av1PictureDesc->references' is NULL");
+        return;
+    }
+    if (videoEncodeDesc.av1PictureDesc && (videoEncodeDesc.av1PictureDesc->referenceNum != 0) != (videoEncodeDesc.referenceNum != 0)) {
+        NRI_REPORT_ERROR(&device, "'av1PictureDesc->referenceNum' must match whether 'references' are provided");
         return;
     }
 
@@ -1982,6 +1995,10 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
 
         for (auto& referenceDescriptor : av1Picture.ReferenceFramesReconPictureDescriptors)
             referenceDescriptor.ReconstructedPictureResourceIndex = 0xFF;
+        std::array<bool, 7> activeReferenceNames = {};
+        std::array<uint32_t, 7> referenceNameSlots = {};
+        for (uint32_t& slot : referenceNameSlots)
+            slot = UINT32_MAX;
 
         av1Picture.Flags = D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_FLAG_ENABLE_ERROR_RESILIENT_MODE;
         if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_LOOP_RESTORATION_FILTER) {
@@ -1999,20 +2016,30 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         av1Picture.InterpolationFilter = D3D12_VIDEO_ENCODER_AV1_INTERPOLATION_FILTERS_SWITCHABLE;
         av1Picture.TxMode = pictureDesc.frameType == VideoEncodeFrameType::P ? D3D12_VIDEO_ENCODER_AV1_TX_MODE_SELECT : D3D12_VIDEO_ENCODER_AV1_TX_MODE_LARGEST;
         av1Picture.OrderHint = videoEncodeDesc.av1PictureDesc ? videoEncodeDesc.av1PictureDesc->orderHint : (UINT)pictureDesc.pictureOrderCount;
-        av1Picture.PictureIndex = pictureDesc.frameIndex;
+        av1Picture.PictureIndex = videoEncodeDesc.av1PictureDesc ? videoEncodeDesc.av1PictureDesc->currentFrameId : pictureDesc.frameIndex;
         av1Picture.TemporalLayerIndexPlus1 = pictureDesc.temporalLayer + 1;
         av1Picture.SpatialLayerIndexPlus1 = 1;
         av1Picture.PrimaryRefFrame = 7;
         av1Picture.RefreshFrameFlags = videoEncodeDesc.av1PictureDesc ? videoEncodeDesc.av1PictureDesc->refreshFrameFlags : (pictureDesc.frameType == VideoEncodeFrameType::IDR ? 0xFF : 0);
+        if (frameType == D3D12_VIDEO_ENCODER_AV1_FRAME_TYPE_KEY_FRAME) {
+            av1Picture.PrimaryRefFrame = 7;
+            av1Picture.RefreshFrameFlags = 0xFF;
+            if (videoEncodeDesc.referenceNum) {
+                NRI_REPORT_ERROR(&device, "AV1 key frames must not reference previous pictures");
+                return;
+            }
+        }
         av1Picture.Quantization.BaseQIndex = pictureDesc.frameType == VideoEncodeFrameType::P ? rateControlDesc.qpP : rateControlDesc.qpI;
         if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_QUANTIZATION_DELTAS)
             av1Picture.QuantizationDelta.DeltaQPresent = 0;
-        av1Picture.LoopFilter.LoopFilterDeltaEnabled = 1;
-        av1Picture.LoopFilter.UpdateRefDelta = 1;
-        av1Picture.LoopFilter.RefDeltas[0] = 1;
-        av1Picture.LoopFilter.RefDeltas[4] = -1;
-        av1Picture.LoopFilter.RefDeltas[6] = -1;
-        av1Picture.LoopFilter.RefDeltas[7] = -1;
+        if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_LOOP_FILTER_DELTAS) {
+            av1Picture.LoopFilter.LoopFilterDeltaEnabled = 1;
+            av1Picture.LoopFilter.UpdateRefDelta = 1;
+            av1Picture.LoopFilter.RefDeltas[0] = 1;
+            av1Picture.LoopFilter.RefDeltas[4] = -1;
+            av1Picture.LoopFilter.RefDeltas[6] = -1;
+            av1Picture.LoopFilter.RefDeltas[7] = -1;
+        }
         av1Picture.CDEF.CdefDampingMinus3 = 3;
 
         if (videoEncodeDesc.av1PictureDesc) {
@@ -2040,19 +2067,32 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
                     NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].slot' is not present in 'references'", i);
                     return;
                 }
+                if (reference.refFrameIndex >= 8) {
+                    NRI_REPORT_ERROR(&device, "'av1PictureDesc->references[%u].refFrameIndex' is invalid", i);
+                    return;
+                }
 
-                av1Picture.ReferenceFramesReconPictureDescriptors[referenceNameIndex] = {};
-                av1Picture.ReferenceFramesReconPictureDescriptors[referenceNameIndex].ReconstructedPictureResourceIndex = resourceIndex;
-                av1Picture.ReferenceFramesReconPictureDescriptors[referenceNameIndex].TemporalLayerIndexPlus1 = reference.frameType == VideoEncodeFrameType::MAX_NUM ? 0 : 1;
-                av1Picture.ReferenceFramesReconPictureDescriptors[referenceNameIndex].SpatialLayerIndexPlus1 = 1;
-                av1Picture.ReferenceFramesReconPictureDescriptors[referenceNameIndex].FrameType = GetVideoEncodeAV1FrameTypeD3D12(reference.frameType);
-                av1Picture.ReferenceFramesReconPictureDescriptors[referenceNameIndex].OrderHint = reference.orderHint;
-                av1Picture.ReferenceFramesReconPictureDescriptors[referenceNameIndex].PictureIndex = reference.frameId;
+                av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex] = {};
+                av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex].ReconstructedPictureResourceIndex = resourceIndex;
+                av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex].TemporalLayerIndexPlus1 = reference.frameType == VideoEncodeFrameType::MAX_NUM ? 0 : 1;
+                av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex].SpatialLayerIndexPlus1 = 1;
+                av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex].FrameType = GetVideoEncodeAV1FrameTypeD3D12(reference.frameType);
+                av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex].OrderHint = reference.orderHint;
+                av1Picture.ReferenceFramesReconPictureDescriptors[reference.refFrameIndex].PictureIndex = reference.frameId;
                 av1Picture.ReferenceIndices[referenceNameIndex] = reference.refFrameIndex;
+                activeReferenceNames[referenceNameIndex] = true;
+                referenceNameSlots[referenceNameIndex] = reference.slot;
+            }
+
+            for (uint32_t i = 0; i < videoEncodeDesc.referenceNum; i++) {
+                if (!HasVideoEncodeAV1ReferenceNameSlotD3D12(referenceNameSlots.data(), videoEncodeDesc.references[i].slot)) {
+                    NRI_REPORT_ERROR(&device, "'references[%u].slot' is not named by 'av1PictureDesc'", i);
+                    return;
+                }
             }
 
             const uint32_t primaryReferenceNameIndex = GetVideoEncodeAV1ReferenceNameIndexD3D12(videoEncodeDesc.av1PictureDesc->primaryReferenceName);
-            if (primaryReferenceNameIndex < 7 && av1Picture.ReferenceFramesReconPictureDescriptors[primaryReferenceNameIndex].ReconstructedPictureResourceIndex == 0xFF) {
+            if (primaryReferenceNameIndex < 7 && !activeReferenceNames[primaryReferenceNameIndex]) {
                 NRI_REPORT_ERROR(&device, "'av1PictureDesc->primaryReferenceName' does not name an active reference");
                 return;
             }
