@@ -18,8 +18,8 @@ Result TextureVK::Create(const TextureDesc& textureDesc) {
     m_Device.FillCreateInfo(m_Desc, info);
 
     VideoResourceProfileListVK videoProfiles = {};
-    const bool isVideoDecode = (m_Desc.usage & TextureUsageBits::VIDEO_DECODE) != 0;
-    const bool isVideoEncode = (m_Desc.usage & TextureUsageBits::VIDEO_ENCODE) != 0;
+    const bool isVideoDecode = (m_Desc.usage & (TextureUsageBits::VIDEO_DECODE | TextureUsageBits::VIDEO_DECODE_REFERENCE_ONLY)) != 0;
+    const bool isVideoEncode = (m_Desc.usage & (TextureUsageBits::VIDEO_ENCODE | TextureUsageBits::VIDEO_ENCODE_REFERENCE_ONLY)) != 0;
     if (isVideoDecode || isVideoEncode) {
         videoProfiles.Fill(isVideoDecode, isVideoEncode, m_Desc.format, m_Device.GetVideoCodecOperations(isVideoDecode, isVideoEncode));
         if (videoProfiles.list.profileCount) {
@@ -64,11 +64,15 @@ Result TextureVK::Create(const TextureVKDesc& textureVKDesc) {
     if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT)
         m_Desc.usage |= TextureUsageBits::INPUT_ATTACHMENT;
 
-    if (textureVKDesc.vkImageUsageFlags & (VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR | VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR))
+    if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_VIDEO_DECODE_DST_BIT_KHR)
         m_Desc.usage |= TextureUsageBits::VIDEO_DECODE;
+    else if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_VIDEO_DECODE_DPB_BIT_KHR)
+        m_Desc.usage |= TextureUsageBits::VIDEO_DECODE_REFERENCE_ONLY;
 
-    if (textureVKDesc.vkImageUsageFlags & (VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR | VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR))
+    if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_VIDEO_ENCODE_SRC_BIT_KHR)
         m_Desc.usage |= TextureUsageBits::VIDEO_ENCODE;
+    else if (textureVKDesc.vkImageUsageFlags & VK_IMAGE_USAGE_VIDEO_ENCODE_DPB_BIT_KHR)
+        m_Desc.usage |= TextureUsageBits::VIDEO_ENCODE_REFERENCE_ONLY;
 
     m_OwnsNativeObjects = false;
     m_Handle = (VkImage)textureVKDesc.vkImage;

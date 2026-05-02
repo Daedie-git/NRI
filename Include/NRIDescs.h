@@ -671,7 +671,7 @@ NriEnum(SharingMode, uint8_t,
 
 // https://docs.vulkan.org/refpages/latest/refpages/source/VkImageUsageFlagBits.html
 // https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_resource_flags
-NriBits(TextureUsageBits, uint8_t,                  // Min compatible access:                   Usage:
+NriBits(TextureUsageBits, uint16_t,                 // Min compatible access:                   Usage:
     NONE                                = 0,
     SHADER_RESOURCE                     = NriBit(0),    // SHADER_RESOURCE                          Read-only shader resource view (SRV)
     SHADER_RESOURCE_STORAGE             = NriBit(1),    // SHADER_RESOURCE_STORAGE                  Read/write shader resource view (UAV)
@@ -680,7 +680,9 @@ NriBits(TextureUsageBits, uint8_t,                  // Min compatible access:   
     SHADING_RATE_ATTACHMENT             = NriBit(4),    // SHADING_RATE_ATTACHMENT                  Shading rate attachment (source)
     INPUT_ATTACHMENT                    = NriBit(5),    // INPUT_ATTACHMENT                         Subpass input (read on-chip tile cache)
     VIDEO_DECODE                        = NriBit(6),    // VIDEO_DECODE                             Video decode output / DPB picture
-    VIDEO_ENCODE                        = NriBit(7)     // VIDEO_ENCODE                             Video encode input / DPB picture
+    VIDEO_ENCODE                        = NriBit(7),    // VIDEO_ENCODE                             Video encode input / DPB picture
+    VIDEO_DECODE_REFERENCE_ONLY         = NriBit(8),    // VIDEO_DECODE                             Video decode DPB picture, D3D12 reference-only allocation
+    VIDEO_ENCODE_REFERENCE_ONLY         = NriBit(9)     // VIDEO_ENCODE                             Video encode DPB picture, D3D12 reference-only allocation
 );
 
 // https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferUsageFlagBits.html

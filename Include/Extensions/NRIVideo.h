@@ -9,75 +9,74 @@
 
 NriNamespaceBegin
 
-NriForwardStruct(VideoSession);
+    NriForwardStruct(VideoSession);
 NriForwardStruct(VideoSessionParameters);
 NriForwardStruct(VideoPicture);
 
 NriEnum(VideoUsage, uint8_t,
     DECODE,
-    ENCODE
-);
+    ENCODE);
 
 NriEnum(VideoCodec, uint8_t,
     H264,
     H265,
-    AV1
-);
+    AV1);
 
 NriEnum(VideoDecodeArgumentType, uint8_t,
     PICTURE_PARAMETERS,
     INVERSE_QUANTIZATION_MATRIX,
-    SLICE_CONTROL
-);
+    SLICE_CONTROL);
 
 NriBits(VideoH264SequenceParameterSetBits, uint16_t,
-    NONE                                = 0,
-    CONSTRAINT_SET0                     = NriBit(0),
-    CONSTRAINT_SET1                     = NriBit(1),
-    CONSTRAINT_SET2                     = NriBit(2),
-    CONSTRAINT_SET3                     = NriBit(3),
-    CONSTRAINT_SET4                     = NriBit(4),
-    CONSTRAINT_SET5                     = NriBit(5),
-    DIRECT_8X8_INFERENCE                = NriBit(6),
-    MB_ADAPTIVE_FRAME_FIELD             = NriBit(7),
-    FRAME_MBS_ONLY                      = NriBit(8),
-    DELTA_PIC_ORDER_ALWAYS_ZERO         = NriBit(9),
-    SEPARATE_COLOUR_PLANE               = NriBit(10),
-    GAPS_IN_FRAME_NUM_ALLOWED           = NriBit(11),
-    QPPRIME_Y_ZERO_TRANSFORM_BYPASS     = NriBit(12)
-);
+    NONE = 0,
+    CONSTRAINT_SET0 = NriBit(0),
+    CONSTRAINT_SET1 = NriBit(1),
+    CONSTRAINT_SET2 = NriBit(2),
+    CONSTRAINT_SET3 = NriBit(3),
+    CONSTRAINT_SET4 = NriBit(4),
+    CONSTRAINT_SET5 = NriBit(5),
+    DIRECT_8X8_INFERENCE = NriBit(6),
+    MB_ADAPTIVE_FRAME_FIELD = NriBit(7),
+    FRAME_MBS_ONLY = NriBit(8),
+    DELTA_PIC_ORDER_ALWAYS_ZERO = NriBit(9),
+    SEPARATE_COLOUR_PLANE = NriBit(10),
+    GAPS_IN_FRAME_NUM_ALLOWED = NriBit(11),
+    QPPRIME_Y_ZERO_TRANSFORM_BYPASS = NriBit(12));
 
 NriBits(VideoH264PictureParameterSetBits, uint8_t,
-    NONE                                = 0,
-    TRANSFORM_8X8_MODE                  = NriBit(0),
-    REDUNDANT_PIC_CNT_PRESENT           = NriBit(1),
-    CONSTRAINED_INTRA_PRED              = NriBit(2),
-    DEBLOCKING_FILTER_CONTROL_PRESENT   = NriBit(3),
-    WEIGHTED_PRED                       = NriBit(4),
-    BOTTOM_FIELD_PIC_ORDER_IN_FRAME     = NriBit(5),
-    ENTROPY_CODING_MODE                 = NriBit(6)
-);
+    NONE = 0,
+    TRANSFORM_8X8_MODE = NriBit(0),
+    REDUNDANT_PIC_CNT_PRESENT = NriBit(1),
+    CONSTRAINED_INTRA_PRED = NriBit(2),
+    DEBLOCKING_FILTER_CONTROL_PRESENT = NriBit(3),
+    WEIGHTED_PRED = NriBit(4),
+    BOTTOM_FIELD_PIC_ORDER_IN_FRAME = NriBit(5),
+    ENTROPY_CODING_MODE = NriBit(6));
 
 NriBits(VideoH264DecodePictureBits, uint8_t,
-    NONE                                = 0,
-    FIELD_PICTURE                       = NriBit(0),
-    INTRA                               = NriBit(1),
-    IDR                                 = NriBit(2),
-    BOTTOM_FIELD                        = NriBit(3),
-    REFERENCE                           = NriBit(4),
-    COMPLEMENTARY_FIELD_PAIR            = NriBit(5)
-);
+    NONE = 0,
+    FIELD_PICTURE = NriBit(0),
+    INTRA = NriBit(1),
+    IDR = NriBit(2),
+    BOTTOM_FIELD = NriBit(3),
+    REFERENCE = NriBit(4),
+    COMPLEMENTARY_FIELD_PAIR = NriBit(5));
+
+NriBits(VideoH264DecodeReferenceBits, uint8_t,
+    NONE = 0,
+    TOP_FIELD = NriBit(0),
+    BOTTOM_FIELD = NriBit(1),
+    LONG_TERM = NriBit(2),
+    NON_EXISTING = NriBit(3));
 
 NriEnum(VideoEncodeFrameType, uint8_t,
     IDR,
     I,
     P,
-    B
-);
+    B);
 
 NriEnum(VideoEncodeRateControlMode, uint8_t,
-    CQP
-);
+    CQP);
 
 NriEnum(VideoAV1ReferenceName, uint8_t,
     NONE,
@@ -87,8 +86,7 @@ NriEnum(VideoAV1ReferenceName, uint8_t,
     GOLDEN,
     BWDREF,
     ALTREF2,
-    ALTREF
-);
+    ALTREF);
 
 NriStruct(VideoSessionDesc) {
     Nri(VideoUsage) usage;
@@ -150,7 +148,7 @@ NriStruct(VideoH264SessionParametersDesc) {
     NriOptional const NriPtr(VideoH264PictureParameterSetDesc) pictureParameterSets; // if provided, must include "pictureParameterSetNum" entries
     uint32_t pictureParameterSetNum;
     NriOptional uint32_t maxSequenceParameterSetNum; // defaults to "sequenceParameterSetNum"
-    NriOptional uint32_t maxPictureParameterSetNum; // defaults to "pictureParameterSetNum"
+    NriOptional uint32_t maxPictureParameterSetNum;  // defaults to "pictureParameterSetNum"
 };
 
 NriStruct(VideoSessionParametersDesc) {
@@ -164,6 +162,15 @@ NriStruct(VideoDecodeArgument) {
     const void* data;
 };
 
+NriStruct(VideoH264DecodeReferenceDesc) {
+    Nri(VideoH264DecodeReferenceBits) flags;
+    uint8_t reserved;
+    uint16_t frameNum;
+    uint32_t slot;
+    int32_t topFieldOrderCount;
+    int32_t bottomFieldOrderCount;
+};
+
 NriStruct(VideoH264DecodePictureDesc) {
     Nri(VideoH264DecodePictureBits) flags;
     uint8_t sequenceParameterSetId;
@@ -174,6 +181,9 @@ NriStruct(VideoH264DecodePictureDesc) {
     int32_t bottomFieldOrderCount;
     NriOptional const uint32_t* sliceOffsets; // if provided, must include "sliceOffsetNum" entries
     uint32_t sliceOffsetNum;
+    uint32_t referenceSlot;                                            // used when "flags" includes REFERENCE
+    NriOptional const NriPtr(VideoH264DecodeReferenceDesc) references; // if provided, must include "referenceNum" entries
+    uint32_t referenceNum;
 };
 
 NriStruct(VideoEncodeRateControlDesc) {
@@ -191,6 +201,26 @@ NriStruct(VideoEncodePictureDesc) {
     uint16_t idrPictureId;
     uint32_t frameIndex;
     int32_t pictureOrderCount;
+};
+
+NriStruct(VideoH264ReferenceDesc) {
+    Nri(VideoEncodeFrameType) frameType;
+    uint8_t temporalLayer;
+    uint8_t listIndex;
+    uint8_t longTermReference;
+    uint32_t frameNum;
+    int32_t pictureOrderCount;
+    uint32_t slot;
+    uint16_t longTermPictureIndex;
+    uint16_t longTermFrameIndex;
+};
+
+NriStruct(VideoH264PictureDesc) {
+    uint8_t sequenceParameterSetId;
+    uint8_t pictureParameterSetId;
+    uint16_t reserved;
+    NriOptional const NriPtr(VideoH264ReferenceDesc) references; // if provided, must include "referenceNum" entries
+    uint32_t referenceNum;
 };
 
 NriStruct(VideoAV1ReferenceDesc) {
@@ -240,6 +270,7 @@ NriStruct(VideoEncodeDesc) {
     NriOptional const NriPtr(VideoReference) references; // if provided, must include "referenceNum" entries
     uint32_t referenceNum;
     uint32_t reconstructedSlot;
+    NriOptional const NriPtr(VideoH264PictureDesc) h264PictureDesc;
     NriOptional const NriPtr(VideoAV1PictureDesc) av1PictureDesc;
 };
 
@@ -247,19 +278,19 @@ NriStruct(VideoEncodeDesc) {
 NriStruct(VideoInterface) {
     // Session
     // {
-        Nri(Result) (NRI_CALL *CreateVideoSession)  (NriRef(Device) device, const NriRef(VideoSessionDesc) videoSessionDesc, NriOut NriRef(VideoSession*) videoSession);
-        void        (NRI_CALL *DestroyVideoSession) (NriRef(VideoSession) videoSession);
-        Nri(Result) (NRI_CALL *CreateVideoSessionParameters)  (NriRef(Device) device, const NriRef(VideoSessionParametersDesc) videoSessionParametersDesc, NriOut NriRef(VideoSessionParameters*) videoSessionParameters);
-        void        (NRI_CALL *DestroyVideoSessionParameters) (NriRef(VideoSessionParameters) videoSessionParameters);
-        Nri(Result) (NRI_CALL *CreateVideoPicture)  (NriRef(Device) device, const NriRef(VideoPictureDesc) videoPictureDesc, NriOut NriRef(VideoPicture*) videoPicture);
-        void        (NRI_CALL *DestroyVideoPicture) (NriRef(VideoPicture) videoPicture);
+    Nri(Result)(NRI_CALL * CreateVideoSession)(NriRef(Device) device, const NriRef(VideoSessionDesc) videoSessionDesc, NriOut NriRef(VideoSession*) videoSession);
+    void(NRI_CALL * DestroyVideoSession)(NriRef(VideoSession) videoSession);
+    Nri(Result)(NRI_CALL * CreateVideoSessionParameters)(NriRef(Device) device, const NriRef(VideoSessionParametersDesc) videoSessionParametersDesc, NriOut NriRef(VideoSessionParameters*) videoSessionParameters);
+    void(NRI_CALL * DestroyVideoSessionParameters)(NriRef(VideoSessionParameters) videoSessionParameters);
+    Nri(Result)(NRI_CALL * CreateVideoPicture)(NriRef(Device) device, const NriRef(VideoPictureDesc) videoPictureDesc, NriOut NriRef(VideoPicture*) videoPicture);
+    void(NRI_CALL * DestroyVideoPicture)(NriRef(VideoPicture) videoPicture);
     // }
 
     // Command buffer
     // {
-        // Video decode/encode command buffers must be created from "QueueType::VIDEO_DECODE" or "QueueType::VIDEO_ENCODE" queues.
-        void (NRI_CALL *CmdDecodeVideo) (NriRef(CommandBuffer) commandBuffer, const NriRef(VideoDecodeDesc) videoDecodeDesc);
-        void (NRI_CALL *CmdEncodeVideo) (NriRef(CommandBuffer) commandBuffer, const NriRef(VideoEncodeDesc) videoEncodeDesc);
+    // Video decode/encode command buffers must be created from "QueueType::VIDEO_DECODE" or "QueueType::VIDEO_ENCODE" queues.
+    void(NRI_CALL * CmdDecodeVideo)(NriRef(CommandBuffer) commandBuffer, const NriRef(VideoDecodeDesc) videoDecodeDesc);
+    void(NRI_CALL * CmdEncodeVideo)(NriRef(CommandBuffer) commandBuffer, const NriRef(VideoEncodeDesc) videoEncodeDesc);
     // }
 };
 
