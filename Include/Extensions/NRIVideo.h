@@ -552,6 +552,44 @@ NriStruct(VideoAV1TileLayoutDesc) {
     NriOptional const uint16_t* heightInSuperblocksMinus1; // if provided, must include "rowNum" entries
 };
 
+NriStruct(VideoAV1QuantizationDesc) {
+    int8_t deltaQYDc;
+    int8_t deltaQUDc;
+    int8_t deltaQUAc;
+    int8_t deltaQVDc;
+    int8_t deltaQVAc;
+    uint8_t qmY;
+    uint8_t qmU;
+    uint8_t qmV;
+    uint8_t usingQmatrix;
+    uint8_t diffUvDelta;
+    uint8_t reserved[2];
+};
+
+NriStruct(VideoAV1LoopFilterDesc) {
+    uint8_t level[4];
+    uint8_t sharpness;
+    uint8_t deltaEnabled;
+    uint8_t deltaUpdate;
+    uint8_t updateModeDelta;
+    int8_t refDeltas[8];
+    int8_t modeDeltas[2];
+    uint8_t reserved[2];
+};
+
+NriStruct(VideoAV1CdefDesc) {
+    uint8_t yPrimaryStrength[8];
+    uint8_t ySecondaryStrength[8];
+    uint8_t uvPrimaryStrength[8];
+    uint8_t uvSecondaryStrength[8];
+};
+
+NriStruct(VideoAV1SegmentationDesc) {
+    uint8_t featureEnabled[8];
+    uint8_t reserved[8];
+    int16_t featureData[8][8];
+};
+
 NriStruct(VideoAV1PictureDesc) {
     uint32_t currentFrameId;
     uint8_t orderHint;
@@ -569,6 +607,10 @@ NriStruct(VideoAV1PictureDesc) {
     uint8_t deltaQRes;
     uint8_t deltaLfRes;
     NriOptional const NriPtr(VideoAV1TileLayoutDesc) tileLayout;
+    NriOptional const NriPtr(VideoAV1QuantizationDesc) quantization;
+    NriOptional const NriPtr(VideoAV1LoopFilterDesc) loopFilter;
+    NriOptional const NriPtr(VideoAV1CdefDesc) cdef;
+    NriOptional const NriPtr(VideoAV1SegmentationDesc) segmentation;
     NriOptional const NriPtr(VideoAV1ReferenceDesc) references; // if provided, must include "referenceNum" DPB snapshot entries
     uint32_t referenceNum;
 };
@@ -602,6 +644,10 @@ NriStruct(VideoAV1DecodePictureDesc) {
     uint8_t deltaQRes;
     uint8_t deltaLfRes;
     NriOptional const NriPtr(VideoAV1TileLayoutDesc) tileLayout;
+    NriOptional const NriPtr(VideoAV1QuantizationDesc) quantization;
+    NriOptional const NriPtr(VideoAV1LoopFilterDesc) loopFilter;
+    NriOptional const NriPtr(VideoAV1CdefDesc) cdef;
+    NriOptional const NriPtr(VideoAV1SegmentationDesc) segmentation;
     NriOptional const NriPtr(VideoAV1DecodeTileDesc) tiles; // if provided, must include "tileNum" entries
     uint32_t tileNum;
     NriOptional const NriPtr(VideoAV1ReferenceDesc) references; // if provided, must include "referenceNum" DPB snapshot entries

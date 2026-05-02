@@ -2093,6 +2093,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
     StdVideoAV1TileInfo av1TileInfo = {};
     StdVideoAV1Quantization av1Quantization = {};
     StdVideoAV1LoopFilter av1LoopFilter = {};
+    StdVideoAV1LoopRestoration av1LoopRestoration = {};
+    StdVideoAV1Segmentation av1Segmentation = {};
     StdVideoAV1CDEF av1Cdef = {};
     StdVideoAV1GlobalMotion av1GlobalMotion = {};
     Scratch<uint32_t> av1TileOffsets = NRI_ALLOCATE_SCRATCH(device, uint32_t, videoDecodeDesc.av1PictureDesc ? std::max(videoDecodeDesc.av1PictureDesc->tileNum, 1u) : 1u);
@@ -2275,12 +2277,51 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
             av1TileInfo.pHeightInSbsMinus1 = desc.tileLayout->heightInSuperblocksMinus1;
         }
         av1Quantization.base_q_idx = desc.baseQIndex;
+        if (desc.quantization) {
+            av1Quantization.flags.using_qmatrix = desc.quantization->usingQmatrix != 0;
+            av1Quantization.flags.diff_uv_delta = desc.quantization->diffUvDelta != 0;
+            av1Quantization.DeltaQYDc = desc.quantization->deltaQYDc;
+            av1Quantization.DeltaQUDc = desc.quantization->deltaQUDc;
+            av1Quantization.DeltaQUAc = desc.quantization->deltaQUAc;
+            av1Quantization.DeltaQVDc = desc.quantization->deltaQVDc;
+            av1Quantization.DeltaQVAc = desc.quantization->deltaQVAc;
+            av1Quantization.qm_y = desc.quantization->qmY;
+            av1Quantization.qm_u = desc.quantization->qmU;
+            av1Quantization.qm_v = desc.quantization->qmV;
+        }
+        if (desc.loopFilter) {
+            av1LoopFilter.flags.loop_filter_delta_enabled = desc.loopFilter->deltaEnabled != 0;
+            av1LoopFilter.flags.loop_filter_delta_update = desc.loopFilter->deltaUpdate != 0;
+            std::memcpy(av1LoopFilter.loop_filter_level, desc.loopFilter->level, sizeof(av1LoopFilter.loop_filter_level));
+            av1LoopFilter.loop_filter_sharpness = desc.loopFilter->sharpness;
+            av1LoopFilter.update_mode_delta = desc.loopFilter->updateModeDelta;
+            std::memcpy(av1LoopFilter.loop_filter_ref_deltas, desc.loopFilter->refDeltas, sizeof(av1LoopFilter.loop_filter_ref_deltas));
+            std::memcpy(av1LoopFilter.loop_filter_mode_deltas, desc.loopFilter->modeDeltas, sizeof(av1LoopFilter.loop_filter_mode_deltas));
+        }
+        if (!desc.loopFilter) {
+            av1LoopFilter.loop_filter_ref_deltas[0] = 1;
+            av1LoopFilter.loop_filter_ref_deltas[4] = -1;
+            av1LoopFilter.loop_filter_ref_deltas[6] = -1;
+            av1LoopFilter.loop_filter_ref_deltas[7] = -1;
+        }
         av1Cdef.cdef_damping_minus_3 = desc.cdefDampingMinus3 ? desc.cdefDampingMinus3 : 3;
         av1Cdef.cdef_bits = desc.cdefBits;
+        if (desc.cdef) {
+            std::memcpy(av1Cdef.cdef_y_pri_strength, desc.cdef->yPrimaryStrength, sizeof(av1Cdef.cdef_y_pri_strength));
+            std::memcpy(av1Cdef.cdef_y_sec_strength, desc.cdef->ySecondaryStrength, sizeof(av1Cdef.cdef_y_sec_strength));
+            std::memcpy(av1Cdef.cdef_uv_pri_strength, desc.cdef->uvPrimaryStrength, sizeof(av1Cdef.cdef_uv_pri_strength));
+            std::memcpy(av1Cdef.cdef_uv_sec_strength, desc.cdef->uvSecondaryStrength, sizeof(av1Cdef.cdef_uv_sec_strength));
+        }
+        if (desc.segmentation) {
+            std::memcpy(av1Segmentation.FeatureEnabled, desc.segmentation->featureEnabled, sizeof(av1Segmentation.FeatureEnabled));
+            std::memcpy(av1Segmentation.FeatureData, desc.segmentation->featureData, sizeof(av1Segmentation.FeatureData));
+        }
         av1StdPicture.pTileInfo = &av1TileInfo;
         av1StdPicture.pQuantization = &av1Quantization;
+        av1StdPicture.pSegmentation = desc.segmentation ? &av1Segmentation : nullptr;
         av1StdPicture.pLoopFilter = &av1LoopFilter;
         av1StdPicture.pCDEF = &av1Cdef;
+        av1StdPicture.pLoopRestoration = &av1LoopRestoration;
         av1StdPicture.pGlobalMotion = &av1GlobalMotion;
 
         for (uint32_t i = 0; i < desc.tileNum; i++) {

@@ -1480,11 +1480,11 @@ Result VideoSessionD3D12::Create(const VideoSessionDesc& videoSessionDesc) {
 
         D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_H264 h264Gop = {};
         h264Gop.GOPLength = videoSessionDesc.maxReferenceNum ? 60 : 1;
-        h264Gop.PPicturePeriod = videoSessionDesc.maxReferenceNum ? 1 : 0;
+        h264Gop.PPicturePeriod = 1;
 
         D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_HEVC hevcGop = {};
-        hevcGop.GOPLength = videoSessionDesc.maxReferenceNum ? 0 : 1;
-        hevcGop.PPicturePeriod = videoSessionDesc.maxReferenceNum > 1 ? 2 : (videoSessionDesc.maxReferenceNum ? 1 : 0);
+        hevcGop.GOPLength = videoSessionDesc.maxReferenceNum ? 60 : 1;
+        hevcGop.PPicturePeriod = videoSessionDesc.maxReferenceNum > 1 ? 2 : 1;
 
         D3D12_VIDEO_ENCODER_AV1_SEQUENCE_STRUCTURE av1Sequence = {};
         av1Sequence.IntraDistance = videoSessionDesc.maxReferenceNum ? 60 : 1;
@@ -1908,16 +1908,57 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         av1PictureParameters.quantization.delta_q_present = !!(pictureFlags & VideoAV1PictureBits::DELTA_Q_PRESENT);
         av1PictureParameters.quantization.delta_q_res = desc.deltaQRes;
         av1PictureParameters.quantization.base_qindex = desc.baseQIndex;
+        if (desc.quantization) {
+            av1PictureParameters.quantization.y_dc_delta_q = desc.quantization->deltaQYDc;
+            av1PictureParameters.quantization.u_dc_delta_q = desc.quantization->deltaQUDc;
+            av1PictureParameters.quantization.u_ac_delta_q = desc.quantization->deltaQUAc;
+            av1PictureParameters.quantization.v_dc_delta_q = desc.quantization->deltaQVDc;
+            av1PictureParameters.quantization.v_ac_delta_q = desc.quantization->deltaQVAc;
+            av1PictureParameters.quantization.qm_y = desc.quantization->qmY;
+            av1PictureParameters.quantization.qm_u = desc.quantization->qmU;
+            av1PictureParameters.quantization.qm_v = desc.quantization->qmV;
+        }
         av1PictureParameters.cdef.damping = desc.cdefDampingMinus3;
         av1PictureParameters.cdef.bits = desc.cdefBits;
+        if (desc.cdef) {
+            for (uint32_t i = 0; i < 8; i++) {
+                av1PictureParameters.cdef.y_strengths[i].primary = desc.cdef->yPrimaryStrength[i];
+                av1PictureParameters.cdef.y_strengths[i].secondary = desc.cdef->ySecondaryStrength[i];
+                av1PictureParameters.cdef.uv_strengths[i].primary = desc.cdef->uvPrimaryStrength[i];
+                av1PictureParameters.cdef.uv_strengths[i].secondary = desc.cdef->uvSecondaryStrength[i];
+            }
+        }
         av1PictureParameters.interp_filter = desc.interpolationFilter ? desc.interpolationFilter : 4;
         av1PictureParameters.loop_filter.delta_lf_present = !!(pictureFlags & VideoAV1PictureBits::DELTA_LF_PRESENT);
         av1PictureParameters.loop_filter.delta_lf_multi = !!(pictureFlags & VideoAV1PictureBits::DELTA_LF_MULTI);
         av1PictureParameters.loop_filter.delta_lf_res = desc.deltaLfRes;
+        if (desc.loopFilter) {
+            av1PictureParameters.loop_filter.filter_level[0] = desc.loopFilter->level[0];
+            av1PictureParameters.loop_filter.filter_level[1] = desc.loopFilter->level[1];
+            av1PictureParameters.loop_filter.filter_level_u = desc.loopFilter->level[2];
+            av1PictureParameters.loop_filter.filter_level_v = desc.loopFilter->level[3];
+            av1PictureParameters.loop_filter.sharpness_level = desc.loopFilter->sharpness;
+            av1PictureParameters.loop_filter.mode_ref_delta_enabled = desc.loopFilter->deltaEnabled;
+            av1PictureParameters.loop_filter.mode_ref_delta_update = desc.loopFilter->deltaUpdate;
+            std::memcpy(av1PictureParameters.loop_filter.ref_deltas, desc.loopFilter->refDeltas, sizeof(av1PictureParameters.loop_filter.ref_deltas));
+            std::memcpy(av1PictureParameters.loop_filter.mode_deltas, desc.loopFilter->modeDeltas, sizeof(av1PictureParameters.loop_filter.mode_deltas));
+        } else {
+            av1PictureParameters.loop_filter.ref_deltas[0] = 1;
+            av1PictureParameters.loop_filter.ref_deltas[4] = -1;
+            av1PictureParameters.loop_filter.ref_deltas[6] = -1;
+            av1PictureParameters.loop_filter.ref_deltas[7] = -1;
+        }
         av1PictureParameters.segmentation.enabled = !!(pictureFlags & VideoAV1PictureBits::SEGMENTATION_ENABLED);
         av1PictureParameters.segmentation.update_map = !!(pictureFlags & VideoAV1PictureBits::SEGMENTATION_UPDATE_MAP);
         av1PictureParameters.segmentation.update_data = !!(pictureFlags & VideoAV1PictureBits::SEGMENTATION_UPDATE_DATA);
         av1PictureParameters.segmentation.temporal_update = !!(pictureFlags & VideoAV1PictureBits::SEGMENTATION_TEMPORAL_UPDATE);
+        if (desc.segmentation) {
+            for (uint32_t i = 0; i < 8; i++) {
+                av1PictureParameters.segmentation.feature_mask[i].mask = desc.segmentation->featureEnabled[i];
+                for (uint32_t j = 0; j < 8; j++)
+                    av1PictureParameters.segmentation.feature_data[i][j] = desc.segmentation->featureData[i][j];
+            }
+        }
         av1PictureParameters.StatusReportFeedbackNumber = 1;
 
         for (uint32_t i = 0; i < desc.tileNum; i++) {
@@ -2207,11 +2248,11 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
 
     D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_H264 h264Gop = {};
     h264Gop.GOPLength = videoEncodeDesc.referenceNum ? 60 : 1;
-    h264Gop.PPicturePeriod = videoEncodeDesc.referenceNum ? 1 : 0;
+    h264Gop.PPicturePeriod = 1;
 
     D3D12_VIDEO_ENCODER_SEQUENCE_GOP_STRUCTURE_HEVC hevcGop = {};
-    hevcGop.GOPLength = session.m_Desc.maxReferenceNum ? 0 : 1;
-    hevcGop.PPicturePeriod = session.m_Desc.maxReferenceNum > 1 ? 2 : (session.m_Desc.maxReferenceNum ? 1 : 0);
+    hevcGop.GOPLength = session.m_Desc.maxReferenceNum ? 60 : 1;
+    hevcGop.PPicturePeriod = session.m_Desc.maxReferenceNum > 1 ? 2 : 1;
 
     D3D12_VIDEO_ENCODER_AV1_SEQUENCE_STRUCTURE av1Sequence = {};
     av1Sequence.IntraDistance = session.m_Desc.maxReferenceNum ? 60 : 1;
@@ -2233,9 +2274,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     }
 
     D3D12_VIDEO_ENCODER_SEQUENCE_CONTROL_DESC sequenceControl = {};
-    sequenceControl.Flags = D3D12_VIDEO_ENCODER_SEQUENCE_CONTROL_FLAG_RATE_CONTROL_CHANGE | D3D12_VIDEO_ENCODER_SEQUENCE_CONTROL_FLAG_GOP_SEQUENCE_CHANGE;
-    if (session.m_Desc.codec == VideoCodec::AV1)
-        sequenceControl.Flags = D3D12_VIDEO_ENCODER_SEQUENCE_CONTROL_FLAG_NONE;
+    sequenceControl.Flags = D3D12_VIDEO_ENCODER_SEQUENCE_CONTROL_FLAG_NONE;
     sequenceControl.RateControl = rateControl;
     sequenceControl.PictureTargetResolution = {session.m_Desc.width, session.m_Desc.height};
     sequenceControl.SelectedLayoutMode = D3D12_VIDEO_ENCODER_FRAME_SUBREGION_LAYOUT_MODE_FULL_FRAME;
