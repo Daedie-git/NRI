@@ -285,11 +285,14 @@ NriStruct(VideoEncodeDesc) {
     NriPtr(VideoPicture) srcPicture;
     NriPtr(Buffer) dstBitstream;
     uint64_t dstBitstreamOffset;
+    uint64_t bitstreamMetadataSize; // D3D12: bytes of codec metadata already written before the current frame payload
     NriOptional const NriPtr(VideoEncodePictureDesc) pictureDesc;
     NriOptional const NriPtr(VideoEncodeRateControlDesc) rateControlDesc;
     NriOptional NriPtr(VideoPicture) reconstructedPicture;
     NriOptional NriPtr(Buffer) metadata;
     uint64_t metadataOffset;
+    NriOptional NriPtr(Buffer) resolvedMetadata;
+    uint64_t resolvedMetadataOffset;
     NriOptional const NriPtr(VideoReference) references; // if provided, must include "referenceNum" entries
     uint32_t referenceNum;
     uint32_t reconstructedSlot;
