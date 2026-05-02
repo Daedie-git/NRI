@@ -418,9 +418,9 @@ bool nri::GetTextureDesc(const TextureD3D12Desc& textureD3D12Desc, TextureDesc& 
     if (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS)
         textureDesc.usage |= TextureUsageBits::SHADER_RESOURCE_STORAGE;
     if (desc.Flags & D3D12_RESOURCE_FLAG_VIDEO_DECODE_REFERENCE_ONLY)
-        textureDesc.usage |= TextureUsageBits::VIDEO_DECODE_REFERENCE_ONLY;
+        textureDesc.usage |= TextureUsageBits::VIDEO_DECODE | TextureUsageBits::VIDEO_REFERENCE_ONLY;
     if (desc.Flags & D3D12_RESOURCE_FLAG_VIDEO_ENCODE_REFERENCE_ONLY)
-        textureDesc.usage |= TextureUsageBits::VIDEO_ENCODE_REFERENCE_ONLY;
+        textureDesc.usage |= TextureUsageBits::VIDEO_ENCODE | TextureUsageBits::VIDEO_REFERENCE_ONLY;
 
     if (textureD3D12Desc.format)
         textureDesc.format = DXGIFormatToNRIFormat(textureD3D12Desc.format);

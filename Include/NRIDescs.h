@@ -681,8 +681,7 @@ NriBits(TextureUsageBits, uint16_t,                 // Min compatible access:   
     INPUT_ATTACHMENT                    = NriBit(5),    // INPUT_ATTACHMENT                         Subpass input (read on-chip tile cache)
     VIDEO_DECODE                        = NriBit(6),    // VIDEO_DECODE                             Video decode output / DPB picture
     VIDEO_ENCODE                        = NriBit(7),    // VIDEO_ENCODE                             Video encode input / DPB picture
-    VIDEO_DECODE_REFERENCE_ONLY         = NriBit(8),    // VIDEO_DECODE                             Video decode DPB picture, D3D12 reference-only allocation
-    VIDEO_ENCODE_REFERENCE_ONLY         = NriBit(9)     // VIDEO_ENCODE                             Video encode DPB picture, D3D12 reference-only allocation
+    VIDEO_REFERENCE_ONLY                = NriBit(8)     // VIDEO_*                                  Video DPB/reference-only allocation
 );
 
 // https://docs.vulkan.org/refpages/latest/refpages/source/VkBufferUsageFlagBits.html
