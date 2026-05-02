@@ -273,6 +273,7 @@ NriStruct(VideoDecodeDesc) {
     NriPtr(VideoPicture) dstPicture;
     NriOptional const NriPtr(VideoReference) references; // if provided, must include "referenceNum" entries
     uint32_t referenceNum;
+    uint32_t dstSlot;
     NriOptional const NriPtr(VideoDecodeArgument) arguments; // if provided, must include "argumentNum" entries
     uint32_t argumentNum;
     NriOptional const NriPtr(VideoH264DecodePictureDesc) h264PictureDesc;

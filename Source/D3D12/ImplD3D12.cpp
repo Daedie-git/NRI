@@ -1656,8 +1656,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
             return;
         }
 
-        if (!BuildVideoDecodeH264ArgumentsD3D12(*parameters->m_H264Parameters, *videoDecodeDesc.h264PictureDesc, videoDecodeDesc.bitstreamSize, h264PictureParameters,
-                h264InverseQuantizationMatrix, h264Slices, videoDecodeDesc.h264PictureDesc->sliceOffsetNum)) {
+        if (!BuildVideoDecodeH264ArgumentsD3D12(*parameters->m_H264Parameters, *videoDecodeDesc.h264PictureDesc, videoDecodeDesc.bitstreamSize, videoDecodeDesc.dstSlot,
+                h264PictureParameters, h264InverseQuantizationMatrix, h264Slices, videoDecodeDesc.h264PictureDesc->sliceOffsetNum)) {
             NRI_REPORT_ERROR(&device, "Failed to build D3D12 H.264 decode arguments from neutral descriptors");
             return;
         }
@@ -1703,7 +1703,7 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         return;
     }
     if (h264NeutralDecode)
-        referenceLayout.slotCount = std::max(referenceLayout.slotCount, 1u);
+        referenceLayout.slotCount = std::max(referenceLayout.slotCount, videoDecodeDesc.dstSlot + 1);
 
     Scratch<ID3D12Resource*> referenceResources = NRI_ALLOCATE_SCRATCH(device, ID3D12Resource*, referenceLayout.slotCount);
     Scratch<uint32_t> referenceSubresources = NRI_ALLOCATE_SCRATCH(device, uint32_t, referenceLayout.slotCount);
@@ -1724,8 +1724,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         referenceSubresources[slot] = reference.m_Subresource;
     }
     if (h264NeutralDecode) {
-        referenceResources[0] = (ID3D12Resource*)(*dstPicture.m_Texture);
-        referenceSubresources[0] = dstPicture.m_Subresource;
+        referenceResources[videoDecodeDesc.dstSlot] = (ID3D12Resource*)(*dstPicture.m_Texture);
+        referenceSubresources[videoDecodeDesc.dstSlot] = dstPicture.m_Subresource;
     }
 
     input.ReferenceFrames.NumTexture2Ds = referenceLayout.slotCount;

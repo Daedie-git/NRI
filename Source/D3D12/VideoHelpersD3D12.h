@@ -86,7 +86,7 @@ inline bool CanBuildVideoDecodeH264ArgumentsD3D12(const VideoDecodeDesc& desc) {
 }
 
 inline bool BuildVideoDecodeH264ArgumentsD3D12(const VideoH264SessionParametersDesc& parameters, const VideoH264DecodePictureDesc& pictureDesc, uint64_t bitstreamSize,
-    DXVA_PicParams_H264& pictureParameters, DXVA_Qmatrix_H264& inverseQuantizationMatrix, DXVA_Slice_H264_Short* slices, uint32_t sliceNum) {
+    uint32_t dstSlot, DXVA_PicParams_H264& pictureParameters, DXVA_Qmatrix_H264& inverseQuantizationMatrix, DXVA_Slice_H264_Short* slices, uint32_t sliceNum) {
     if (sliceNum == 0 || sliceNum != pictureDesc.sliceOffsetNum || !pictureDesc.sliceOffsets || !slices)
         return false;
 
@@ -107,7 +107,10 @@ inline bool BuildVideoDecodeH264ArgumentsD3D12(const VideoH264SessionParametersD
     pictureParameters = {};
     pictureParameters.wFrameWidthInMbsMinus1 = sps->pictureWidthInMbsMinus1;
     pictureParameters.wFrameHeightInMbsMinus1 = sps->pictureHeightInMapUnitsMinus1;
-    pictureParameters.CurrPic.bPicEntry = 0;
+    if (dstSlot > 0x7F)
+        return false;
+
+    pictureParameters.CurrPic.bPicEntry = (uint8_t)dstSlot;
     pictureParameters.CurrPic.AssociatedFlag = !!(pictureDesc.flags & VideoH264DecodePictureBits::BOTTOM_FIELD);
     pictureParameters.num_ref_frames = sps->referenceFrameNum;
     pictureParameters.field_pic_flag = !!(pictureDesc.flags & VideoH264DecodePictureBits::FIELD_PICTURE);

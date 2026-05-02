@@ -2037,7 +2037,7 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
 
     VkVideoReferenceSlotInfoKHR setupReferenceSlot = {VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
     setupReferenceSlot.pNext = setupReferenceInfo;
-    setupReferenceSlot.slotIndex = setupReferenceInfo ? 0 : -1;
+    setupReferenceSlot.slotIndex = setupReferenceInfo ? (int32_t)videoDecodeDesc.dstSlot : -1;
     setupReferenceSlot.pPictureResource = &dstPicture.m_Resource;
 
     VkVideoBeginCodingInfoKHR beginInfo = {VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR};
