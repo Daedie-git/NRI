@@ -1154,7 +1154,9 @@ struct VideoSessionD3D12 final : public DebugNameBase {
 
 struct VideoSessionParametersD3D12 final {
     inline VideoSessionParametersD3D12(DeviceD3D12& device)
-        : m_Device(device) {
+        : m_Device(device)
+        , m_H264SequenceParameterSets(device.GetStdAllocator())
+        , m_H264PictureParameterSets(device.GetStdAllocator()) {
     }
 
     inline DeviceD3D12& GetDevice() const {
@@ -1167,11 +1169,30 @@ struct VideoSessionParametersD3D12 final {
 
         m_Session = (VideoSessionD3D12*)videoSessionParametersDesc.session;
         m_H264Parameters = videoSessionParametersDesc.h264Parameters;
+        if (m_H264Parameters) {
+            if ((m_H264Parameters->sequenceParameterSetNum && !m_H264Parameters->sequenceParameterSets) ||
+                (m_H264Parameters->pictureParameterSetNum && !m_H264Parameters->pictureParameterSets))
+                return Result::INVALID_ARGUMENT;
+
+            m_H264SequenceParameterSets.clear();
+            m_H264PictureParameterSets.clear();
+            if (m_H264Parameters->sequenceParameterSetNum)
+                m_H264SequenceParameterSets.assign(m_H264Parameters->sequenceParameterSets, m_H264Parameters->sequenceParameterSets + m_H264Parameters->sequenceParameterSetNum);
+            if (m_H264Parameters->pictureParameterSetNum)
+                m_H264PictureParameterSets.assign(m_H264Parameters->pictureParameterSets, m_H264Parameters->pictureParameterSets + m_H264Parameters->pictureParameterSetNum);
+            m_H264ParametersStorage = *m_H264Parameters;
+            m_H264ParametersStorage.sequenceParameterSets = m_H264SequenceParameterSets.data();
+            m_H264ParametersStorage.pictureParameterSets = m_H264PictureParameterSets.data();
+            m_H264Parameters = &m_H264ParametersStorage;
+        }
         return Result::SUCCESS;
     }
 
     DeviceD3D12& m_Device;
     VideoSessionD3D12* m_Session = nullptr;
+    VideoH264SessionParametersDesc m_H264ParametersStorage = {};
+    Vector<VideoH264SequenceParameterSetDesc> m_H264SequenceParameterSets;
+    Vector<VideoH264PictureParameterSetDesc> m_H264PictureParameterSets;
     const VideoH264SessionParametersDesc* m_H264Parameters = nullptr;
 };
 
@@ -1603,32 +1624,75 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         NRI_REPORT_ERROR(&device, "'arguments' is NULL");
         return;
     }
-    if (HasVideoDecodeNeutralCodecDescriptorsD3D12(videoDecodeDesc)) {
-        NRI_REPORT_ERROR(&device, "D3D12 video decode currently requires native 'arguments'; neutral H.264/H.265 decode descriptors are not translated");
-        return;
-    }
 
     VideoSessionD3D12& session = *(VideoSessionD3D12*)videoDecodeDesc.session;
+    VideoSessionParametersD3D12* parameters = nullptr;
     if (videoDecodeDesc.parameters) {
-        VideoSessionParametersD3D12& parameters = *(VideoSessionParametersD3D12*)videoDecodeDesc.parameters;
-        if (parameters.m_Session != &session) {
+        parameters = (VideoSessionParametersD3D12*)videoDecodeDesc.parameters;
+        if (parameters->m_Session != &session) {
             NRI_REPORT_ERROR(&device, "'parameters' must belong to 'session'");
             return;
         }
     }
 
     D3D12_VIDEO_DECODE_INPUT_STREAM_ARGUMENTS input = {};
-    input.NumFrameArguments = videoDecodeDesc.argumentNum;
-    for (uint32_t i = 0; i < videoDecodeDesc.argumentNum; i++) {
-        if (!videoDecodeDesc.arguments[i].data || videoDecodeDesc.arguments[i].size == 0) {
-            NRI_REPORT_ERROR(&device, "'arguments[%u]' has invalid data or size", i);
+    DXVA_PicParams_H264 h264PictureParameters = {};
+    DXVA_Qmatrix_H264 h264InverseQuantizationMatrix = {};
+    Scratch<DXVA_Slice_H264_Short> h264Slices =
+        NRI_ALLOCATE_SCRATCH(device, DXVA_Slice_H264_Short, videoDecodeDesc.h264PictureDesc ? std::max(videoDecodeDesc.h264PictureDesc->sliceOffsetNum, 1u) : 1u);
+    if (videoDecodeDesc.h264PictureDesc) {
+        if (session.m_Desc.codec != VideoCodec::H264) {
+            NRI_REPORT_ERROR(&device, "'h264PictureDesc' can only be used with H.264 decode sessions");
             return;
         }
 
-        input.FrameArguments[i].Type = (D3D12_VIDEO_DECODE_ARGUMENT_TYPE)videoDecodeDesc.arguments[i].type;
-        input.FrameArguments[i].Size = videoDecodeDesc.arguments[i].size;
-        input.FrameArguments[i].pData = (void*)videoDecodeDesc.arguments[i].data;
+        if (!parameters || !parameters->m_H264Parameters) {
+            NRI_REPORT_ERROR(&device, "'parameters' with H.264 SPS/PPS data must be valid for neutral H.264 D3D12 decode");
+            return;
+        }
+
+        if (!CanBuildVideoDecodeH264ArgumentsD3D12(videoDecodeDesc)) {
+            NRI_REPORT_ERROR(&device, "D3D12 neutral H.264 decode currently supports IDR/intra pictures without native 'arguments' or references");
+            return;
+        }
+
+        if (!BuildVideoDecodeH264ArgumentsD3D12(*parameters->m_H264Parameters, *videoDecodeDesc.h264PictureDesc, videoDecodeDesc.bitstreamSize, h264PictureParameters,
+                h264InverseQuantizationMatrix, h264Slices, videoDecodeDesc.h264PictureDesc->sliceOffsetNum)) {
+            NRI_REPORT_ERROR(&device, "Failed to build D3D12 H.264 decode arguments from neutral descriptors");
+            return;
+        }
+
+        input.NumFrameArguments = 3;
+        input.FrameArguments[0].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_PICTURE_PARAMETERS;
+        input.FrameArguments[0].Size = sizeof(h264PictureParameters);
+        input.FrameArguments[0].pData = &h264PictureParameters;
+        input.FrameArguments[1].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_INVERSE_QUANTIZATION_MATRIX;
+        input.FrameArguments[1].Size = sizeof(h264InverseQuantizationMatrix);
+        input.FrameArguments[1].pData = &h264InverseQuantizationMatrix;
+        input.FrameArguments[2].Type = D3D12_VIDEO_DECODE_ARGUMENT_TYPE_SLICE_CONTROL;
+        input.FrameArguments[2].Size = sizeof(DXVA_Slice_H264_Short) * videoDecodeDesc.h264PictureDesc->sliceOffsetNum;
+        input.FrameArguments[2].pData = h264Slices;
+    } else {
+        if (videoDecodeDesc.h265PictureDesc) {
+            NRI_REPORT_ERROR(&device, "D3D12 neutral H.265 decode is not supported yet; provide native 'arguments'");
+            return;
+        }
+
+        input.NumFrameArguments = videoDecodeDesc.argumentNum;
+        for (uint32_t i = 0; i < videoDecodeDesc.argumentNum; i++) {
+            if (!videoDecodeDesc.arguments[i].data || videoDecodeDesc.arguments[i].size == 0) {
+                NRI_REPORT_ERROR(&device, "'arguments[%u]' has invalid data or size", i);
+                return;
+            }
+
+            input.FrameArguments[i].Type = (D3D12_VIDEO_DECODE_ARGUMENT_TYPE)videoDecodeDesc.arguments[i].type;
+            input.FrameArguments[i].Size = videoDecodeDesc.arguments[i].size;
+            input.FrameArguments[i].pData = (void*)videoDecodeDesc.arguments[i].data;
+        }
     }
+
+    VideoPictureD3D12& dstPicture = *(VideoPictureD3D12*)videoDecodeDesc.dstPicture;
+    const bool h264NeutralDecode = videoDecodeDesc.h264PictureDesc != nullptr;
 
     VideoDecodeReferenceLayoutD3D12 referenceLayout = {};
     if (!GetVideoDecodeReferenceLayoutD3D12(videoDecodeDesc.references, videoDecodeDesc.referenceNum, referenceLayout)) {
@@ -1638,6 +1702,8 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
             NRI_REPORT_ERROR(&device, "'references[%u].slot' exceeds the D3D12 decode PicEntry index range", referenceLayout.failingReference);
         return;
     }
+    if (h264NeutralDecode)
+        referenceLayout.slotCount = std::max(referenceLayout.slotCount, 1u);
 
     Scratch<ID3D12Resource*> referenceResources = NRI_ALLOCATE_SCRATCH(device, ID3D12Resource*, referenceLayout.slotCount);
     Scratch<uint32_t> referenceSubresources = NRI_ALLOCATE_SCRATCH(device, uint32_t, referenceLayout.slotCount);
@@ -1657,6 +1723,10 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         referenceResources[slot] = (ID3D12Resource*)(*reference.m_Texture);
         referenceSubresources[slot] = reference.m_Subresource;
     }
+    if (h264NeutralDecode) {
+        referenceResources[0] = (ID3D12Resource*)(*dstPicture.m_Texture);
+        referenceSubresources[0] = dstPicture.m_Subresource;
+    }
 
     input.ReferenceFrames.NumTexture2Ds = referenceLayout.slotCount;
     input.ReferenceFrames.ppTexture2Ds = referenceLayout.slotCount ? referenceResources : nullptr;
@@ -1667,7 +1737,6 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
     input.pHeap = session.m_DecoderHeap;
 
     D3D12_VIDEO_DECODE_OUTPUT_STREAM_ARGUMENTS output = {};
-    VideoPictureD3D12& dstPicture = *(VideoPictureD3D12*)videoDecodeDesc.dstPicture;
     output.pOutputTexture2D = (ID3D12Resource*)(*dstPicture.m_Texture);
     output.OutputSubresource = dstPicture.m_Subresource;
 

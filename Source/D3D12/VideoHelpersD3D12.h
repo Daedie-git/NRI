@@ -5,10 +5,12 @@
 #include "Extensions/NRIVideo.h"
 
 #include <d3d12video.h>
+#include <dxva.h>
 
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 
 namespace nri {
 
@@ -54,8 +56,118 @@ inline bool GetVideoDecodeReferenceLayoutD3D12(const VideoReference* references,
     return true;
 }
 
-inline bool HasVideoDecodeNeutralCodecDescriptorsD3D12(const VideoDecodeDesc& desc) {
-    return desc.h264PictureDesc || desc.h265PictureDesc;
+inline const VideoH264SequenceParameterSetDesc* FindVideoH264SequenceParameterSetD3D12(const VideoH264SessionParametersDesc& parameters, uint8_t id) {
+    if (!parameters.sequenceParameterSets)
+        return nullptr;
+
+    for (uint32_t i = 0; i < parameters.sequenceParameterSetNum; i++) {
+        if (parameters.sequenceParameterSets[i].sequenceParameterSetId == id)
+            return &parameters.sequenceParameterSets[i];
+    }
+
+    return nullptr;
+}
+
+inline const VideoH264PictureParameterSetDesc* FindVideoH264PictureParameterSetD3D12(const VideoH264SessionParametersDesc& parameters, uint8_t id) {
+    if (!parameters.pictureParameterSets)
+        return nullptr;
+
+    for (uint32_t i = 0; i < parameters.pictureParameterSetNum; i++) {
+        if (parameters.pictureParameterSets[i].pictureParameterSetId == id)
+            return &parameters.pictureParameterSets[i];
+    }
+
+    return nullptr;
+}
+
+inline bool CanBuildVideoDecodeH264ArgumentsD3D12(const VideoDecodeDesc& desc) {
+    return desc.h264PictureDesc && !desc.h265PictureDesc && desc.argumentNum == 0 && desc.referenceNum == 0 &&
+        (desc.h264PictureDesc->flags & VideoH264DecodePictureBits::INTRA);
+}
+
+inline bool BuildVideoDecodeH264ArgumentsD3D12(const VideoH264SessionParametersDesc& parameters, const VideoH264DecodePictureDesc& pictureDesc, uint64_t bitstreamSize,
+    DXVA_PicParams_H264& pictureParameters, DXVA_Qmatrix_H264& inverseQuantizationMatrix, DXVA_Slice_H264_Short* slices, uint32_t sliceNum) {
+    if (sliceNum == 0 || sliceNum != pictureDesc.sliceOffsetNum || !pictureDesc.sliceOffsets || !slices)
+        return false;
+
+    if (!(pictureDesc.flags & VideoH264DecodePictureBits::INTRA))
+        return false;
+
+    const VideoH264PictureParameterSetDesc* pps = FindVideoH264PictureParameterSetD3D12(parameters, pictureDesc.pictureParameterSetId);
+    if (!pps)
+        return false;
+
+    const VideoH264SequenceParameterSetDesc* sps = FindVideoH264SequenceParameterSetD3D12(parameters, pictureDesc.sequenceParameterSetId);
+    if (!sps || pps->sequenceParameterSetId != sps->sequenceParameterSetId)
+        return false;
+
+    if (bitstreamSize > UINT32_MAX)
+        return false;
+
+    pictureParameters = {};
+    pictureParameters.wFrameWidthInMbsMinus1 = sps->pictureWidthInMbsMinus1;
+    pictureParameters.wFrameHeightInMbsMinus1 = sps->pictureHeightInMapUnitsMinus1;
+    pictureParameters.CurrPic.bPicEntry = 0;
+    pictureParameters.CurrPic.AssociatedFlag = !!(pictureDesc.flags & VideoH264DecodePictureBits::BOTTOM_FIELD);
+    pictureParameters.num_ref_frames = sps->referenceFrameNum;
+    pictureParameters.field_pic_flag = !!(pictureDesc.flags & VideoH264DecodePictureBits::FIELD_PICTURE);
+    pictureParameters.MbaffFrameFlag = !!(sps->flags & VideoH264SequenceParameterSetBits::MB_ADAPTIVE_FRAME_FIELD) && !pictureParameters.field_pic_flag;
+    pictureParameters.chroma_format_idc = sps->chromaFormatIdc;
+    pictureParameters.RefPicFlag = !!(pictureDesc.flags & VideoH264DecodePictureBits::REFERENCE);
+    pictureParameters.constrained_intra_pred_flag = !!(pps->flags & VideoH264PictureParameterSetBits::CONSTRAINED_INTRA_PRED);
+    pictureParameters.weighted_pred_flag = !!(pps->flags & VideoH264PictureParameterSetBits::WEIGHTED_PRED);
+    pictureParameters.weighted_bipred_idc = pps->weightedBipredIdc;
+    pictureParameters.MbsConsecutiveFlag = 1;
+    pictureParameters.frame_mbs_only_flag = !!(sps->flags & VideoH264SequenceParameterSetBits::FRAME_MBS_ONLY);
+    pictureParameters.transform_8x8_mode_flag = !!(pps->flags & VideoH264PictureParameterSetBits::TRANSFORM_8X8_MODE);
+    pictureParameters.MinLumaBipredSize8x8Flag = sps->levelIdc >= 31;
+    pictureParameters.IntraPicFlag = !!(pictureDesc.flags & VideoH264DecodePictureBits::INTRA);
+    pictureParameters.bit_depth_luma_minus8 = sps->bitDepthLumaMinus8;
+    pictureParameters.bit_depth_chroma_minus8 = sps->bitDepthChromaMinus8;
+    pictureParameters.Reserved16Bits = 3;
+    pictureParameters.StatusReportFeedbackNumber = 1;
+    for (uint32_t i = 0; i < 16; i++)
+        pictureParameters.RefFrameList[i].bPicEntry = 0xff;
+    pictureParameters.CurrFieldOrderCnt[0] = pictureDesc.topFieldOrderCount;
+    pictureParameters.CurrFieldOrderCnt[1] = pictureDesc.bottomFieldOrderCount;
+    pictureParameters.pic_init_qs_minus26 = pps->pictureInitQsMinus26;
+    pictureParameters.chroma_qp_index_offset = pps->chromaQpIndexOffset;
+    pictureParameters.second_chroma_qp_index_offset = pps->secondChromaQpIndexOffset;
+    pictureParameters.ContinuationFlag = 1;
+    pictureParameters.pic_init_qp_minus26 = pps->pictureInitQpMinus26;
+    pictureParameters.num_ref_idx_l0_active_minus1 = pps->refIndexL0DefaultActiveMinus1;
+    pictureParameters.num_ref_idx_l1_active_minus1 = pps->refIndexL1DefaultActiveMinus1;
+    pictureParameters.frame_num = pictureDesc.frameNum;
+    pictureParameters.log2_max_frame_num_minus4 = sps->log2MaxFrameNumMinus4;
+    pictureParameters.pic_order_cnt_type = sps->pictureOrderCountType;
+    pictureParameters.log2_max_pic_order_cnt_lsb_minus4 = sps->log2MaxPictureOrderCountLsbMinus4;
+    pictureParameters.delta_pic_order_always_zero_flag = !!(sps->flags & VideoH264SequenceParameterSetBits::DELTA_PIC_ORDER_ALWAYS_ZERO);
+    pictureParameters.direct_8x8_inference_flag = !!(sps->flags & VideoH264SequenceParameterSetBits::DIRECT_8X8_INFERENCE);
+    pictureParameters.entropy_coding_mode_flag = !!(pps->flags & VideoH264PictureParameterSetBits::ENTROPY_CODING_MODE);
+    pictureParameters.pic_order_present_flag = !!(pps->flags & VideoH264PictureParameterSetBits::BOTTOM_FIELD_PIC_ORDER_IN_FRAME);
+    pictureParameters.deblocking_filter_control_present_flag = !!(pps->flags & VideoH264PictureParameterSetBits::DEBLOCKING_FILTER_CONTROL_PRESENT);
+    pictureParameters.redundant_pic_cnt_present_flag = !!(pps->flags & VideoH264PictureParameterSetBits::REDUNDANT_PIC_CNT_PRESENT);
+
+    inverseQuantizationMatrix = {};
+    std::memset(inverseQuantizationMatrix.bScalingLists4x4, 16, sizeof(inverseQuantizationMatrix.bScalingLists4x4));
+    std::memset(inverseQuantizationMatrix.bScalingLists8x8, 16, sizeof(inverseQuantizationMatrix.bScalingLists8x8));
+
+    for (uint32_t i = 0; i < sliceNum; i++) {
+        const uint32_t offset = pictureDesc.sliceOffsets[i];
+        if (offset >= bitstreamSize || (i + 1 < sliceNum && pictureDesc.sliceOffsets[i + 1] <= offset))
+            return false;
+
+        const uint64_t nextOffset = i + 1 < sliceNum ? pictureDesc.sliceOffsets[i + 1] : bitstreamSize;
+        const uint64_t size = nextOffset - offset;
+        if (size > UINT32_MAX)
+            return false;
+
+        slices[i] = {};
+        slices[i].BSNALunitDataLocation = offset;
+        slices[i].SliceBytesInBuffer = (UINT)size;
+    }
+
+    return true;
 }
 
 inline bool IsVideoEncodeFrameTypeSupportedByD3D12NoBGop(VideoCodec codec, VideoEncodeFrameType frameType) {
