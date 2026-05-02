@@ -1244,17 +1244,6 @@ static StdVideoH265LevelIdc GetVideoH265LevelIdcVK(uint32_t width, uint32_t heig
     return STD_VIDEO_H265_LEVEL_IDC_4_1;
 }
 
-static uint8_t GetVideoSizeBitsMinus1(uint32_t value) {
-    uint8_t bits = 0;
-    value--;
-    do {
-        bits++;
-        value >>= 1;
-    } while (value);
-
-    return bits - 1;
-}
-
 struct VideoSessionParametersVK final {
     inline VideoSessionParametersVK(DeviceVK& device)
         : m_Device(device)
@@ -1310,8 +1299,10 @@ struct VideoSessionParametersVK final {
         m_Session = &session;
         if (session.m_Desc.codec == VideoCodec::H265)
             return CreateH265(session);
-        if (session.m_Desc.codec == VideoCodec::AV1)
+        if (session.m_Desc.codec == VideoCodec::AV1) {
+            m_AV1Parameters = videoSessionParametersDesc.av1Parameters;
             return CreateAV1(session);
+        }
         if (session.m_Desc.codec != VideoCodec::H264)
             return Result::UNSUPPORTED;
 
@@ -1417,25 +1408,39 @@ struct VideoSessionParametersVK final {
     }
 
     Result CreateAV1(VideoSessionVK& session) {
-        m_AV1ColorConfig.BitDepth = session.m_Desc.format == Format::P010_UNORM || session.m_Desc.format == Format::P016_UNORM ? 10 : 8;
-        m_AV1ColorConfig.subsampling_x = 1;
-        m_AV1ColorConfig.subsampling_y = 1;
-        m_AV1ColorConfig.flags.color_description_present_flag = true;
-        m_AV1ColorConfig.color_primaries = STD_VIDEO_AV1_COLOR_PRIMARIES_BT_709;
-        m_AV1ColorConfig.transfer_characteristics = STD_VIDEO_AV1_TRANSFER_CHARACTERISTICS_BT_709;
-        m_AV1ColorConfig.matrix_coefficients = STD_VIDEO_AV1_MATRIX_COEFFICIENTS_BT_709;
-        m_AV1ColorConfig.chroma_sample_position = STD_VIDEO_AV1_CHROMA_SAMPLE_POSITION_VERTICAL;
-        m_AV1SequenceHeader.seq_profile = STD_VIDEO_AV1_PROFILE_MAIN;
-        m_AV1SequenceHeader.flags.enable_order_hint = true;
-        m_AV1SequenceHeader.frame_width_bits_minus_1 = GetVideoSizeBitsMinus1(session.m_Desc.width);
-        m_AV1SequenceHeader.frame_height_bits_minus_1 = GetVideoSizeBitsMinus1(session.m_Desc.height);
-        m_AV1SequenceHeader.max_frame_width_minus_1 = (uint16_t)(session.m_Desc.width - 1);
-        m_AV1SequenceHeader.max_frame_height_minus_1 = (uint16_t)(session.m_Desc.height - 1);
-        m_AV1SequenceHeader.order_hint_bits_minus_1 = 7;
-        m_AV1SequenceHeader.seq_force_integer_mv = STD_VIDEO_AV1_SELECT_INTEGER_MV;
-        m_AV1SequenceHeader.seq_force_screen_content_tools = STD_VIDEO_AV1_SELECT_SCREEN_CONTENT_TOOLS;
-        m_AV1SequenceHeader.pColorConfig = &m_AV1ColorConfig;
-        m_AV1OperatingPoint.seq_level_idx = GetVideoAV1LevelVK(session.m_Desc.width, session.m_Desc.height);
+        if (m_AV1Parameters) {
+            FillVideoAV1ColorConfigVK(m_AV1ColorConfig, m_AV1Parameters->sequence);
+            m_AV1TimingInfo = {};
+            const StdVideoAV1TimingInfo* timingInfo = nullptr;
+            if (m_AV1Parameters->sequence.numUnitsInDisplayTick && m_AV1Parameters->sequence.timeScale) {
+                m_AV1TimingInfo.num_units_in_display_tick = m_AV1Parameters->sequence.numUnitsInDisplayTick;
+                m_AV1TimingInfo.time_scale = m_AV1Parameters->sequence.timeScale;
+                m_AV1TimingInfo.num_ticks_per_picture_minus_1 = m_AV1Parameters->sequence.numTicksPerPictureMinus1;
+                timingInfo = &m_AV1TimingInfo;
+            }
+            FillVideoAV1SequenceHeaderVK(m_AV1SequenceHeader, m_AV1Parameters->sequence, m_AV1ColorConfig, timingInfo);
+            m_AV1OperatingPoint.seq_level_idx = GetVideoAV1LevelVK(m_AV1Parameters->sequence.level, session.m_Desc.width, session.m_Desc.height);
+        } else {
+            m_AV1ColorConfig.BitDepth = session.m_Desc.format == Format::P010_UNORM || session.m_Desc.format == Format::P016_UNORM ? 10 : 8;
+            m_AV1ColorConfig.subsampling_x = 1;
+            m_AV1ColorConfig.subsampling_y = 1;
+            m_AV1ColorConfig.flags.color_description_present_flag = true;
+            m_AV1ColorConfig.color_primaries = STD_VIDEO_AV1_COLOR_PRIMARIES_BT_709;
+            m_AV1ColorConfig.transfer_characteristics = STD_VIDEO_AV1_TRANSFER_CHARACTERISTICS_BT_709;
+            m_AV1ColorConfig.matrix_coefficients = STD_VIDEO_AV1_MATRIX_COEFFICIENTS_BT_709;
+            m_AV1ColorConfig.chroma_sample_position = STD_VIDEO_AV1_CHROMA_SAMPLE_POSITION_VERTICAL;
+            m_AV1SequenceHeader.seq_profile = STD_VIDEO_AV1_PROFILE_MAIN;
+            m_AV1SequenceHeader.flags.enable_order_hint = true;
+            m_AV1SequenceHeader.frame_width_bits_minus_1 = GetVideoAV1SizeBitsMinus1VK(session.m_Desc.width);
+            m_AV1SequenceHeader.frame_height_bits_minus_1 = GetVideoAV1SizeBitsMinus1VK(session.m_Desc.height);
+            m_AV1SequenceHeader.max_frame_width_minus_1 = (uint16_t)(session.m_Desc.width - 1);
+            m_AV1SequenceHeader.max_frame_height_minus_1 = (uint16_t)(session.m_Desc.height - 1);
+            m_AV1SequenceHeader.order_hint_bits_minus_1 = 7;
+            m_AV1SequenceHeader.seq_force_integer_mv = STD_VIDEO_AV1_SELECT_INTEGER_MV;
+            m_AV1SequenceHeader.seq_force_screen_content_tools = STD_VIDEO_AV1_SELECT_SCREEN_CONTENT_TOOLS;
+            m_AV1SequenceHeader.pColorConfig = &m_AV1ColorConfig;
+            m_AV1OperatingPoint.seq_level_idx = GetVideoAV1LevelVK(session.m_Desc.width, session.m_Desc.height);
+        }
 
         VkVideoDecodeAV1SessionParametersCreateInfoKHR decodeInfo = {VK_STRUCTURE_TYPE_VIDEO_DECODE_AV1_SESSION_PARAMETERS_CREATE_INFO_KHR};
         decodeInfo.pStdSequenceHeader = &m_AV1SequenceHeader;
@@ -1458,8 +1463,10 @@ struct VideoSessionParametersVK final {
     StdVideoH265SequenceParameterSet m_H265Sps = {};
     StdVideoH265PictureParameterSet m_H265Pps = {};
     StdVideoAV1ColorConfig m_AV1ColorConfig = {};
+    StdVideoAV1TimingInfo m_AV1TimingInfo = {};
     StdVideoAV1SequenceHeader m_AV1SequenceHeader = {};
     StdVideoEncodeAV1OperatingPointInfo m_AV1OperatingPoint = {};
+    const VideoAV1SessionParametersDesc* m_AV1Parameters = nullptr;
 };
 
 struct VideoPictureVK final : public DebugNameBase {
@@ -2093,19 +2100,29 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
             NRI_REPORT_ERROR(&device, "'av1PictureDesc' contains invalid tile or reference data");
             return;
         }
+        if (desc.tileLayout && (!desc.tileLayout->columnNum || !desc.tileLayout->rowNum ||
+                !desc.tileLayout->miColumnStarts || !desc.tileLayout->miRowStarts || !desc.tileLayout->widthInSuperblocksMinus1 || !desc.tileLayout->heightInSuperblocksMinus1)) {
+            NRI_REPORT_ERROR(&device, "'av1PictureDesc->tileLayout' is invalid");
+            return;
+        }
 
         for (int32_t& slotIndex : av1Picture.referenceNameSlotIndices)
             slotIndex = -1;
         for (uint8_t& refFrameIndex : av1StdPicture.SkipModeFrame)
             refFrameIndex = 0xFF;
 
+        const VideoAV1PictureBits pictureFlags = desc.flags == VideoAV1PictureBits::NONE ? GetDefaultVideoAV1PictureFlagsVK() : desc.flags;
+        FillVideoAV1PictureFlagsVK(av1StdPicture.flags, pictureFlags);
         av1StdPicture.frame_type = GetVideoAV1FrameTypeVK(desc.frameType);
         av1StdPicture.current_frame_id = desc.currentFrameId;
         av1StdPicture.OrderHint = desc.orderHint;
         av1StdPicture.primary_ref_frame = GetVideoEncodeAV1ReferenceNameIndexVK(desc.primaryReferenceName);
         av1StdPicture.refresh_frame_flags = desc.refreshFrameFlags;
-        av1StdPicture.interpolation_filter = STD_VIDEO_AV1_INTERPOLATION_FILTER_SWITCHABLE;
-        av1StdPicture.TxMode = STD_VIDEO_AV1_TX_MODE_SELECT;
+        av1StdPicture.interpolation_filter = (StdVideoAV1InterpolationFilter)(desc.interpolationFilter ? desc.interpolationFilter : STD_VIDEO_AV1_INTERPOLATION_FILTER_SWITCHABLE);
+        av1StdPicture.TxMode = (StdVideoAV1TxMode)(desc.txMode ? desc.txMode : STD_VIDEO_AV1_TX_MODE_SELECT);
+        av1StdPicture.delta_q_res = desc.deltaQRes;
+        av1StdPicture.delta_lf_res = desc.deltaLfRes;
+        av1StdPicture.coded_denom = desc.codedDenom;
         av1StdPicture.OrderHints[0] = desc.orderHint;
         av1StdPicture.expectedFrameId[0] = desc.currentFrameId;
 
@@ -2137,8 +2154,20 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
         av1TileInfo.pMiRowStarts = av1MiRowStarts;
         av1TileInfo.pWidthInSbsMinus1 = av1WidthInSbsMinus1;
         av1TileInfo.pHeightInSbsMinus1 = av1HeightInSbsMinus1;
+        if (desc.tileLayout) {
+            av1TileInfo.flags.uniform_tile_spacing_flag = desc.tileLayout->uniformSpacing != 0;
+            av1TileInfo.TileCols = desc.tileLayout->columnNum;
+            av1TileInfo.TileRows = desc.tileLayout->rowNum;
+            av1TileInfo.context_update_tile_id = desc.tileLayout->contextUpdateTileId;
+            av1TileInfo.tile_size_bytes_minus_1 = desc.tileLayout->tileSizeBytesMinus1;
+            av1TileInfo.pMiColStarts = desc.tileLayout->miColumnStarts;
+            av1TileInfo.pMiRowStarts = desc.tileLayout->miRowStarts;
+            av1TileInfo.pWidthInSbsMinus1 = desc.tileLayout->widthInSuperblocksMinus1;
+            av1TileInfo.pHeightInSbsMinus1 = desc.tileLayout->heightInSuperblocksMinus1;
+        }
         av1Quantization.base_q_idx = desc.baseQIndex;
-        av1Cdef.cdef_damping_minus_3 = 3;
+        av1Cdef.cdef_damping_minus_3 = desc.cdefDampingMinus3 ? desc.cdefDampingMinus3 : 3;
+        av1Cdef.cdef_bits = desc.cdefBits;
         av1StdPicture.pTileInfo = &av1TileInfo;
         av1StdPicture.pQuantization = &av1Quantization;
         av1StdPicture.pLoopFilter = &av1LoopFilter;
@@ -2375,6 +2404,12 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     StdVideoAV1GlobalMotion av1GlobalMotion = {};
     StdVideoEncodeAV1ReferenceInfo av1StdSetupReference = {};
     VkVideoEncodeAV1DpbSlotInfoKHR av1SetupReference = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_DPB_SLOT_INFO_KHR};
+    const VideoAV1TileLayoutDesc* encodeAv1TileLayout = videoEncodeDesc.av1PictureDesc ? videoEncodeDesc.av1PictureDesc->tileLayout : nullptr;
+    if (encodeAv1TileLayout && (!encodeAv1TileLayout->columnNum || !encodeAv1TileLayout->rowNum ||
+            !encodeAv1TileLayout->miColumnStarts || !encodeAv1TileLayout->miRowStarts || !encodeAv1TileLayout->widthInSuperblocksMinus1 || !encodeAv1TileLayout->heightInSuperblocksMinus1)) {
+        NRI_REPORT_ERROR(&device, "'av1PictureDesc->tileLayout' is invalid");
+        return;
+    }
     std::array<uint16_t, 2> av1MiColStarts = {};
     std::array<uint16_t, 2> av1MiRowStarts = {};
     std::array<uint16_t, 1> av1WidthInSbsMinus1 = {};
@@ -2569,7 +2604,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         }
         av1StdPicture.frame_type = GetVideoEncodeAV1FrameTypeVK(pictureDesc.frameType);
         av1StdPicture.frame_presentation_time = pictureDesc.frameIndex;
-        av1StdPicture.current_frame_id = av1PictureDesc ? av1PictureDesc->currentFrameId : pictureDesc.frameIndex;
+        av1StdPicture.current_frame_id = videoEncodeDesc.reconstructedSlot;
         av1StdPicture.order_hint = av1PictureDesc ? av1PictureDesc->orderHint : (uint8_t)pictureDesc.pictureOrderCount;
         av1StdPicture.primary_ref_frame = STD_VIDEO_AV1_PRIMARY_REF_NONE;
         av1StdPicture.refresh_frame_flags = av1PictureDesc ? av1PictureDesc->refreshFrameFlags : (pictureDesc.frameType == VideoEncodeFrameType::IDR ? 0xFF : 0);
@@ -2583,12 +2618,23 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         av1StdPicture.flags.force_integer_mv = true;
         av1StdPicture.flags.show_frame = true;
         av1StdPicture.flags.showable_frame = true;
+        if (av1PictureDesc && av1PictureDesc->flags != VideoAV1PictureBits::NONE) {
+            FillVideoAV1PictureFlagsVK(av1StdPicture.flags, av1PictureDesc->flags);
+            av1StdPicture.render_width_minus_1 = av1PictureDesc->renderWidthMinus1 ? av1PictureDesc->renderWidthMinus1 : av1StdPicture.render_width_minus_1;
+            av1StdPicture.render_height_minus_1 = av1PictureDesc->renderHeightMinus1 ? av1PictureDesc->renderHeightMinus1 : av1StdPicture.render_height_minus_1;
+            av1StdPicture.interpolation_filter = (StdVideoAV1InterpolationFilter)(av1PictureDesc->interpolationFilter ? av1PictureDesc->interpolationFilter : STD_VIDEO_AV1_INTERPOLATION_FILTER_SWITCHABLE);
+            av1StdPicture.TxMode = (StdVideoAV1TxMode)(av1PictureDesc->txMode ? av1PictureDesc->txMode : STD_VIDEO_AV1_TX_MODE_SELECT);
+            av1StdPicture.coded_denom = av1PictureDesc->codedDenom;
+            av1StdPicture.delta_q_res = av1PictureDesc->deltaQRes;
+            av1StdPicture.delta_lf_res = av1PictureDesc->deltaLfRes;
+        }
         for (int8_t& refFrameIndex : av1StdPicture.ref_frame_idx)
             refFrameIndex = -1;
         if (av1StdPicture.frame_type == STD_VIDEO_AV1_FRAME_TYPE_KEY) {
             av1StdPicture.primary_ref_frame = STD_VIDEO_AV1_PRIMARY_REF_NONE;
             av1StdPicture.refresh_frame_flags = 0xFF;
         }
+        av1StdPicture.flags.showable_frame = av1StdPicture.frame_type != STD_VIDEO_AV1_FRAME_TYPE_KEY;
         if (av1StdPicture.refresh_frame_flags && !videoEncodeDesc.reconstructedPicture) {
             NRI_REPORT_ERROR(&device, "AV1 frames that refresh DPB slots require 'reconstructedPicture'");
             return;
@@ -2614,7 +2660,19 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
                 av1Picture.referenceNameSlotIndices[i] = referenceMapping.referenceNameSlotIndices[i];
                 av1StdPicture.ref_frame_idx[i] = referenceMapping.refFrameIndices[i];
             }
-            av1StdPicture.primary_ref_frame = GetVideoEncodeAV1ReferenceNameIndexVK(av1PictureDesc->primaryReferenceName);
+            const uint8_t primaryReferenceIndex = GetVideoEncodeAV1ReferenceNameIndexVK(av1PictureDesc->primaryReferenceName);
+            const int8_t primaryRefFrameIndex = primaryReferenceIndex < VK_MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR ? referenceMapping.refFrameIndices[primaryReferenceIndex] : -1;
+            if (primaryRefFrameIndex >= 0) {
+                for (int8_t& refFrameIndex : av1StdPicture.ref_frame_idx) {
+                    if (refFrameIndex < 0)
+                        refFrameIndex = primaryRefFrameIndex;
+                }
+            }
+            for (uint32_t i = 0; i < av1PictureDesc->referenceNum; i++) {
+                const VideoAV1ReferenceDesc& reference = av1PictureDesc->references[i];
+                av1StdPicture.ref_order_hint[reference.refFrameIndex] = reference.orderHint;
+            }
+            av1StdPicture.primary_ref_frame = primaryRefFrameIndex >= 0 ? (uint8_t)primaryRefFrameIndex : primaryReferenceIndex;
         } else if (videoEncodeDesc.referenceNum) {
             av1Picture.referenceNameSlotIndices[0] = (int32_t)videoEncodeDesc.references[0].slot;
             av1StdPicture.ref_frame_idx[0] = 0;
@@ -2624,16 +2682,30 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         av1TileInfo.TileCols = 1;
         av1TileInfo.TileRows = 1;
         av1TileInfo.tile_size_bytes_minus_1 = 3;
-        av1MiColStarts = {0, (uint16_t)((session.m_Desc.width + 3) / 4)};
-        av1MiRowStarts = {0, (uint16_t)((session.m_Desc.height + 3) / 4)};
-        av1WidthInSbsMinus1 = {(uint16_t)((session.m_Desc.width + 63) / 64 - 1)};
-        av1HeightInSbsMinus1 = {(uint16_t)((session.m_Desc.height + 63) / 64 - 1)};
+        av1MiColStarts[0] = 0;
+        av1MiColStarts[1] = (uint16_t)((session.m_Desc.width + 3) / 4);
+        av1MiRowStarts[0] = 0;
+        av1MiRowStarts[1] = (uint16_t)((session.m_Desc.height + 3) / 4);
+        av1WidthInSbsMinus1[0] = (uint16_t)((session.m_Desc.width + 63) / 64 - 1);
+        av1HeightInSbsMinus1[0] = (uint16_t)((session.m_Desc.height + 63) / 64 - 1);
         av1TileInfo.pMiColStarts = av1MiColStarts.data();
         av1TileInfo.pMiRowStarts = av1MiRowStarts.data();
         av1TileInfo.pWidthInSbsMinus1 = av1WidthInSbsMinus1.data();
         av1TileInfo.pHeightInSbsMinus1 = av1HeightInSbsMinus1.data();
-        av1Quantization.base_q_idx = GetVideoEncodeQPByFrameTypeVK(rateControlDesc, pictureDesc.frameType);
-        av1Cdef.cdef_damping_minus_3 = 3;
+        if (encodeAv1TileLayout) {
+            av1TileInfo.flags.uniform_tile_spacing_flag = encodeAv1TileLayout->uniformSpacing != 0;
+            av1TileInfo.TileCols = encodeAv1TileLayout->columnNum;
+            av1TileInfo.TileRows = encodeAv1TileLayout->rowNum;
+            av1TileInfo.context_update_tile_id = encodeAv1TileLayout->contextUpdateTileId;
+            av1TileInfo.tile_size_bytes_minus_1 = encodeAv1TileLayout->tileSizeBytesMinus1;
+            av1TileInfo.pMiColStarts = encodeAv1TileLayout->miColumnStarts;
+            av1TileInfo.pMiRowStarts = encodeAv1TileLayout->miRowStarts;
+            av1TileInfo.pWidthInSbsMinus1 = encodeAv1TileLayout->widthInSuperblocksMinus1;
+            av1TileInfo.pHeightInSbsMinus1 = encodeAv1TileLayout->heightInSuperblocksMinus1;
+        }
+        av1Quantization.base_q_idx = av1PictureDesc && av1PictureDesc->baseQIndex ? av1PictureDesc->baseQIndex : GetVideoEncodeQPByFrameTypeVK(rateControlDesc, pictureDesc.frameType);
+        av1Cdef.cdef_damping_minus_3 = av1PictureDesc && av1PictureDesc->cdefDampingMinus3 ? av1PictureDesc->cdefDampingMinus3 : 3;
+        av1Cdef.cdef_bits = av1PictureDesc ? av1PictureDesc->cdefBits : 0;
         av1StdPicture.pTileInfo = &av1TileInfo;
         av1StdPicture.pQuantization = &av1Quantization;
         av1StdPicture.pLoopFilter = &av1LoopFilter;
@@ -2652,7 +2724,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         av1Picture.pNext = &av1GopRemaining;
         codecPictureInfo = &av1Picture;
 
-        av1StdSetupReference.RefFrameId = av1StdPicture.current_frame_id;
+        av1StdSetupReference.RefFrameId = videoEncodeDesc.reconstructedSlot;
         av1StdSetupReference.frame_type = av1StdPicture.frame_type;
         av1StdSetupReference.OrderHint = av1StdPicture.order_hint;
         av1SetupReference.pStdReferenceInfo = &av1StdSetupReference;
@@ -2714,7 +2786,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
             const VideoAV1ReferenceDesc* referenceDesc = FindVideoEncodeAV1ReferenceDesc(videoEncodeDesc.av1PictureDesc, videoEncodeDesc.references[i].slot);
             av1StdReferences[i] = {};
             av1StdReferences[i].frame_type = referenceDesc ? GetVideoEncodeAV1FrameTypeVK(referenceDesc->frameType) : STD_VIDEO_AV1_FRAME_TYPE_KEY;
-            av1StdReferences[i].RefFrameId = referenceDesc ? referenceDesc->frameId : videoEncodeDesc.references[i].slot;
+            av1StdReferences[i].RefFrameId = videoEncodeDesc.references[i].slot;
             av1StdReferences[i].OrderHint = referenceDesc ? referenceDesc->orderHint : 0;
             av1References[i] = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_DPB_SLOT_INFO_KHR};
             av1References[i].pStdReferenceInfo = &av1StdReferences[i];

@@ -1169,6 +1169,7 @@ struct VideoSessionParametersD3D12 final {
 
         m_Session = (VideoSessionD3D12*)videoSessionParametersDesc.session;
         m_H264Parameters = videoSessionParametersDesc.h264Parameters;
+        m_AV1Parameters = videoSessionParametersDesc.av1Parameters;
         if (m_H264Parameters) {
             if ((m_H264Parameters->sequenceParameterSetNum && !m_H264Parameters->sequenceParameterSets) ||
                 (m_H264Parameters->pictureParameterSetNum && !m_H264Parameters->pictureParameterSets))
@@ -1185,6 +1186,10 @@ struct VideoSessionParametersD3D12 final {
             m_H264ParametersStorage.pictureParameterSets = m_H264PictureParameterSets.data();
             m_H264Parameters = &m_H264ParametersStorage;
         }
+        if (m_AV1Parameters) {
+            m_AV1ParametersStorage = *m_AV1Parameters;
+            m_AV1Parameters = &m_AV1ParametersStorage;
+        }
         return Result::SUCCESS;
     }
 
@@ -1194,6 +1199,8 @@ struct VideoSessionParametersD3D12 final {
     Vector<VideoH264SequenceParameterSetDesc> m_H264SequenceParameterSets;
     Vector<VideoH264PictureParameterSetDesc> m_H264PictureParameterSets;
     const VideoH264SessionParametersDesc* m_H264Parameters = nullptr;
+    VideoAV1SessionParametersDesc m_AV1ParametersStorage = {};
+    const VideoAV1SessionParametersDesc* m_AV1Parameters = nullptr;
 };
 
 // Older Windows SDK headers used by some builds do not name this newer support bit yet.
@@ -1721,33 +1728,71 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
             NRI_REPORT_ERROR(&device, "'av1PictureDesc' contains invalid tile or reference data");
             return;
         }
+        if (desc.tileLayout && (!desc.tileLayout->columnNum || !desc.tileLayout->rowNum || desc.tileLayout->columnNum > 64 || desc.tileLayout->rowNum > 64 ||
+                !desc.tileLayout->miColumnStarts || !desc.tileLayout->miRowStarts || !desc.tileLayout->widthInSuperblocksMinus1 || !desc.tileLayout->heightInSuperblocksMinus1)) {
+            NRI_REPORT_ERROR(&device, "'av1PictureDesc->tileLayout' is invalid");
+            return;
+        }
 
+        const VideoAV1SessionParametersDesc defaultAV1Parameters = {GetDefaultVideoAV1SequenceDescD3D12(session.m_Desc.width, session.m_Desc.height, session.m_Desc.format)};
+        const VideoAV1SessionParametersDesc& av1Parameters = parameters && parameters->m_AV1Parameters ? *parameters->m_AV1Parameters : defaultAV1Parameters;
+        const VideoAV1SequenceDesc& sequence = av1Parameters.sequence;
+        const VideoAV1PictureBits pictureFlags = desc.flags == VideoAV1PictureBits::NONE ? GetDefaultVideoAV1PictureFlags(false) : desc.flags;
         av1PictureParameters.width = session.m_Desc.width;
         av1PictureParameters.height = session.m_Desc.height;
-        av1PictureParameters.max_width = session.m_Desc.width;
-        av1PictureParameters.max_height = session.m_Desc.height;
+        av1PictureParameters.max_width = sequence.maxFrameWidthMinus1 + 1;
+        av1PictureParameters.max_height = sequence.maxFrameHeightMinus1 + 1;
         av1PictureParameters.CurrPicTextureIndex = (UCHAR)videoDecodeDesc.dstSlot;
-        av1PictureParameters.superres_denom = 8;
-        av1PictureParameters.bitdepth = session.m_Desc.format == Format::P010_UNORM || session.m_Desc.format == Format::P016_UNORM ? 10 : 8;
-        av1PictureParameters.seq_profile = 0;
+        av1PictureParameters.superres_denom = desc.superresDenom ? desc.superresDenom : 8;
+        av1PictureParameters.bitdepth = sequence.bitDepth;
+        av1PictureParameters.seq_profile = sequence.seqProfile;
         av1PictureParameters.tiles.cols = 1;
         av1PictureParameters.tiles.rows = 1;
         av1PictureParameters.tiles.widths[0] = (USHORT)((session.m_Desc.width + 63) / 64);
         av1PictureParameters.tiles.heights[0] = (USHORT)((session.m_Desc.height + 63) / 64);
-        av1PictureParameters.coding.screen_content_tools = 1;
-        av1PictureParameters.coding.integer_mv = 1;
-        av1PictureParameters.coding.cdef = 1;
-        av1PictureParameters.coding.restoration = 1;
-        av1PictureParameters.coding.tx_mode = 2;
+        if (desc.tileLayout) {
+            av1PictureParameters.tiles.cols = desc.tileLayout->columnNum;
+            av1PictureParameters.tiles.rows = desc.tileLayout->rowNum;
+            av1PictureParameters.tiles.context_update_id = desc.tileLayout->contextUpdateTileId;
+            for (uint32_t i = 0; i < desc.tileLayout->columnNum; i++)
+                av1PictureParameters.tiles.widths[i] = desc.tileLayout->widthInSuperblocksMinus1[i] + 1;
+            for (uint32_t i = 0; i < desc.tileLayout->rowNum; i++)
+                av1PictureParameters.tiles.heights[i] = desc.tileLayout->heightInSuperblocksMinus1[i] + 1;
+        }
+        av1PictureParameters.coding.use_128x128_superblock = !!(sequence.flags & VideoAV1SequenceBits::USE_128X128_SUPERBLOCK);
+        av1PictureParameters.coding.intra_edge_filter = !!(sequence.flags & VideoAV1SequenceBits::ENABLE_INTRA_EDGE_FILTER);
+        av1PictureParameters.coding.interintra_compound = !!(sequence.flags & VideoAV1SequenceBits::ENABLE_INTERINTRA_COMPOUND);
+        av1PictureParameters.coding.masked_compound = !!(sequence.flags & VideoAV1SequenceBits::ENABLE_MASKED_COMPOUND);
+        av1PictureParameters.coding.warped_motion = !!(sequence.flags & VideoAV1SequenceBits::ENABLE_WARPED_MOTION);
+        av1PictureParameters.coding.dual_filter = !!(sequence.flags & VideoAV1SequenceBits::ENABLE_DUAL_FILTER);
+        av1PictureParameters.coding.jnt_comp = !!(sequence.flags & VideoAV1SequenceBits::ENABLE_JNT_COMP);
+        av1PictureParameters.coding.enable_ref_frame_mvs = !!(sequence.flags & VideoAV1SequenceBits::ENABLE_REF_FRAME_MVS);
+        av1PictureParameters.coding.screen_content_tools = !!(pictureFlags & VideoAV1PictureBits::ALLOW_SCREEN_CONTENT_TOOLS);
+        av1PictureParameters.coding.integer_mv = !!(pictureFlags & VideoAV1PictureBits::FORCE_INTEGER_MV);
+        av1PictureParameters.coding.cdef = !!(sequence.flags & VideoAV1SequenceBits::ENABLE_CDEF);
+        av1PictureParameters.coding.restoration = !!(sequence.flags & VideoAV1SequenceBits::ENABLE_RESTORATION);
+        av1PictureParameters.coding.film_grain = !!(sequence.flags & VideoAV1SequenceBits::FILM_GRAIN_PARAMS_PRESENT);
+        av1PictureParameters.coding.intrabc = !!(pictureFlags & VideoAV1PictureBits::ALLOW_INTRABC);
+        av1PictureParameters.coding.high_precision_mv = !!(pictureFlags & VideoAV1PictureBits::ALLOW_HIGH_PRECISION_MV);
+        av1PictureParameters.coding.switchable_motion_mode = !!(pictureFlags & VideoAV1PictureBits::IS_MOTION_MODE_SWITCHABLE);
+        av1PictureParameters.coding.disable_frame_end_update_cdf = !!(pictureFlags & VideoAV1PictureBits::DISABLE_FRAME_END_UPDATE_CDF);
+        av1PictureParameters.coding.disable_cdf_update = !!(pictureFlags & VideoAV1PictureBits::DISABLE_CDF_UPDATE);
+        av1PictureParameters.coding.reference_mode = !!(pictureFlags & VideoAV1PictureBits::REFERENCE_SELECT);
+        av1PictureParameters.coding.skip_mode = !!(pictureFlags & VideoAV1PictureBits::SKIP_MODE_PRESENT);
+        av1PictureParameters.coding.reduced_tx_set = !!(pictureFlags & VideoAV1PictureBits::REDUCED_TX_SET);
+        av1PictureParameters.coding.superres = !!(pictureFlags & VideoAV1PictureBits::USE_SUPERRES);
+        av1PictureParameters.coding.tx_mode = desc.txMode ? desc.txMode : 2;
+        av1PictureParameters.coding.use_ref_frame_mvs = !!(pictureFlags & VideoAV1PictureBits::USE_REF_FRAME_MVS);
         av1PictureParameters.coding.reference_frame_update = desc.refreshFrameFlags != 0;
         av1PictureParameters.format.frame_type = GetVideoDecodeAV1FrameTypeD3D12(desc.frameType);
-        av1PictureParameters.format.show_frame = 1;
-        av1PictureParameters.format.showable_frame = 1;
-        av1PictureParameters.format.subsampling_x = 1;
-        av1PictureParameters.format.subsampling_y = 1;
+        av1PictureParameters.format.show_frame = !!(pictureFlags & VideoAV1PictureBits::SHOW_FRAME);
+        av1PictureParameters.format.showable_frame = !!(pictureFlags & VideoAV1PictureBits::SHOWABLE_FRAME);
+        av1PictureParameters.format.subsampling_x = sequence.subsamplingX;
+        av1PictureParameters.format.subsampling_y = sequence.subsamplingY;
+        av1PictureParameters.format.mono_chrome = !!(sequence.flags & VideoAV1SequenceBits::MONO_CHROME);
         av1PictureParameters.primary_ref_frame = GetVideoDecodeAV1ReferenceNameIndexD3D12(desc.primaryReferenceName);
         av1PictureParameters.order_hint = desc.orderHint;
-        av1PictureParameters.order_hint_bits = 8;
+        av1PictureParameters.order_hint_bits = sequence.orderHintBitsMinus1 + 1;
         std::memset(av1PictureParameters.RefFrameMapTextureIndex, 0xFF, sizeof(av1PictureParameters.RefFrameMapTextureIndex));
         for (uint32_t i = 0; i < 7; i++)
             av1PictureParameters.frame_refs[i].Index = 0xFF;
@@ -1766,9 +1811,19 @@ static void NRI_CALL CmdDecodeVideo(CommandBuffer& commandBuffer, const VideoDec
                 av1PictureParameters.frame_refs[referenceNameIndex].height = session.m_Desc.height;
             }
         }
+        av1PictureParameters.quantization.delta_q_present = !!(pictureFlags & VideoAV1PictureBits::DELTA_Q_PRESENT);
+        av1PictureParameters.quantization.delta_q_res = desc.deltaQRes;
         av1PictureParameters.quantization.base_qindex = desc.baseQIndex;
-        av1PictureParameters.cdef.damping = 3;
-        av1PictureParameters.interp_filter = 4;
+        av1PictureParameters.cdef.damping = desc.cdefDampingMinus3;
+        av1PictureParameters.cdef.bits = desc.cdefBits;
+        av1PictureParameters.interp_filter = desc.interpolationFilter ? desc.interpolationFilter : 4;
+        av1PictureParameters.loop_filter.delta_lf_present = !!(pictureFlags & VideoAV1PictureBits::DELTA_LF_PRESENT);
+        av1PictureParameters.loop_filter.delta_lf_multi = !!(pictureFlags & VideoAV1PictureBits::DELTA_LF_MULTI);
+        av1PictureParameters.loop_filter.delta_lf_res = desc.deltaLfRes;
+        av1PictureParameters.segmentation.enabled = !!(pictureFlags & VideoAV1PictureBits::SEGMENTATION_ENABLED);
+        av1PictureParameters.segmentation.update_map = !!(pictureFlags & VideoAV1PictureBits::SEGMENTATION_UPDATE_MAP);
+        av1PictureParameters.segmentation.update_data = !!(pictureFlags & VideoAV1PictureBits::SEGMENTATION_UPDATE_DATA);
+        av1PictureParameters.segmentation.temporal_update = !!(pictureFlags & VideoAV1PictureBits::SEGMENTATION_TEMPORAL_UPDATE);
         av1PictureParameters.StatusReportFeedbackNumber = 1;
 
         for (uint32_t i = 0; i < desc.tileNum; i++) {
@@ -2091,8 +2146,13 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     sequenceControl.CodecGopSequence = gop;
     D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_SUBREGIONS_LAYOUT_DATA_TILES av1Tiles = {};
     if (session.m_Desc.codec == VideoCodec::AV1) {
-        av1Tiles.RowCount = 1;
-        av1Tiles.ColCount = 1;
+        const VideoAV1TileLayoutDesc* tileLayout = videoEncodeDesc.av1PictureDesc ? videoEncodeDesc.av1PictureDesc->tileLayout : nullptr;
+        if (tileLayout && (!tileLayout->columnNum || !tileLayout->rowNum || tileLayout->columnNum > 64 || tileLayout->rowNum > 64)) {
+            NRI_REPORT_ERROR(&device, "'av1PictureDesc->tileLayout' is invalid");
+            return;
+        }
+        av1Tiles.RowCount = tileLayout ? tileLayout->rowNum : 1;
+        av1Tiles.ColCount = tileLayout ? tileLayout->columnNum : 1;
         sequenceControl.FrameSubregionsLayoutData.DataSize = sizeof(av1Tiles);
         sequenceControl.FrameSubregionsLayoutData.pTilesPartition_AV1 = &av1Tiles;
     }
@@ -2218,21 +2278,29 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         for (uint32_t& resourceIndex : av1DPBSlotResourceIndices)
             resourceIndex = UINT32_MAX;
 
-        av1Picture.Flags = D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_FLAG_ENABLE_ERROR_RESILIENT_MODE;
+        const VideoAV1PictureBits pictureFlags = videoEncodeDesc.av1PictureDesc && videoEncodeDesc.av1PictureDesc->flags != VideoAV1PictureBits::NONE
+            ? videoEncodeDesc.av1PictureDesc->flags
+            : GetDefaultVideoAV1PictureFlags(true);
+        if (pictureFlags & VideoAV1PictureBits::ERROR_RESILIENT_MODE)
+            av1Picture.Flags |= D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_FLAG_ENABLE_ERROR_RESILIENT_MODE;
         if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_LOOP_RESTORATION_FILTER) {
             for (auto& type : av1Picture.FrameRestorationConfig.FrameRestorationType)
                 type = D3D12_VIDEO_ENCODER_AV1_RESTORATION_TYPE_DISABLED;
             for (auto& tileSize : av1Picture.FrameRestorationConfig.LoopRestorationPixelSize)
                 tileSize = D3D12_VIDEO_ENCODER_AV1_RESTORATION_TILESIZE_DISABLED;
         }
-        if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_FORCED_INTEGER_MOTION_VECTORS)
+        if ((session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_FORCED_INTEGER_MOTION_VECTORS) && (pictureFlags & VideoAV1PictureBits::FORCE_INTEGER_MV))
             av1Picture.Flags |= D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_FLAG_FORCE_INTEGER_MOTION_VECTORS;
         if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_AUTO_SEGMENTATION)
             av1Picture.Flags |= D3D12_VIDEO_ENCODER_AV1_PICTURE_CONTROL_FLAG_ENABLE_FRAME_SEGMENTATION_AUTO;
         av1Picture.FrameType = frameType;
         av1Picture.CompoundPredictionType = D3D12_VIDEO_ENCODER_AV1_COMP_PREDICTION_TYPE_SINGLE_REFERENCE;
-        av1Picture.InterpolationFilter = D3D12_VIDEO_ENCODER_AV1_INTERPOLATION_FILTERS_SWITCHABLE;
-        av1Picture.TxMode = pictureDesc.frameType == VideoEncodeFrameType::P ? D3D12_VIDEO_ENCODER_AV1_TX_MODE_SELECT : D3D12_VIDEO_ENCODER_AV1_TX_MODE_LARGEST;
+        av1Picture.InterpolationFilter = videoEncodeDesc.av1PictureDesc && videoEncodeDesc.av1PictureDesc->interpolationFilter
+            ? (D3D12_VIDEO_ENCODER_AV1_INTERPOLATION_FILTERS)videoEncodeDesc.av1PictureDesc->interpolationFilter
+            : D3D12_VIDEO_ENCODER_AV1_INTERPOLATION_FILTERS_SWITCHABLE;
+        av1Picture.TxMode = videoEncodeDesc.av1PictureDesc && videoEncodeDesc.av1PictureDesc->txMode
+            ? (D3D12_VIDEO_ENCODER_AV1_TX_MODE)videoEncodeDesc.av1PictureDesc->txMode
+            : (pictureDesc.frameType == VideoEncodeFrameType::P ? D3D12_VIDEO_ENCODER_AV1_TX_MODE_SELECT : D3D12_VIDEO_ENCODER_AV1_TX_MODE_LARGEST);
         av1Picture.OrderHint = videoEncodeDesc.av1PictureDesc ? videoEncodeDesc.av1PictureDesc->orderHint : (UINT)pictureDesc.pictureOrderCount;
         av1Picture.PictureIndex = videoEncodeDesc.av1PictureDesc ? videoEncodeDesc.av1PictureDesc->currentFrameId : pictureDesc.frameIndex;
         av1Picture.TemporalLayerIndexPlus1 = pictureDesc.temporalLayer + 1;
@@ -2247,9 +2315,11 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
                 return;
             }
         }
-        av1Picture.Quantization.BaseQIndex = pictureDesc.frameType == VideoEncodeFrameType::P ? rateControlDesc.qpP : rateControlDesc.qpI;
+        av1Picture.Quantization.BaseQIndex = videoEncodeDesc.av1PictureDesc && videoEncodeDesc.av1PictureDesc->baseQIndex
+            ? videoEncodeDesc.av1PictureDesc->baseQIndex
+            : GetVideoEncodeQPByFrameTypeD3D12(rateControlDesc, pictureDesc.frameType);
         if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_QUANTIZATION_DELTAS)
-            av1Picture.QuantizationDelta.DeltaQPresent = 0;
+            av1Picture.QuantizationDelta.DeltaQPresent = !!(pictureFlags & VideoAV1PictureBits::DELTA_Q_PRESENT);
         if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_LOOP_FILTER_DELTAS) {
             av1Picture.LoopFilter.LoopFilterDeltaEnabled = 1;
             av1Picture.LoopFilter.UpdateRefDelta = 1;
@@ -2259,7 +2329,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
             av1Picture.LoopFilter.RefDeltas[7] = -1;
         }
         if (session.m_AV1FeatureFlags & D3D12_VIDEO_ENCODER_AV1_FEATURE_FLAG_CDEF_FILTERING)
-            av1Picture.CDEF.CdefDampingMinus3 = 3;
+            av1Picture.CDEF.CdefDampingMinus3 = videoEncodeDesc.av1PictureDesc && videoEncodeDesc.av1PictureDesc->cdefDampingMinus3 ? videoEncodeDesc.av1PictureDesc->cdefDampingMinus3 : 3;
 
         if (videoEncodeDesc.av1PictureDesc) {
             if (videoEncodeDesc.av1PictureDesc->referenceNum > 8) {

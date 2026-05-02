@@ -213,6 +213,41 @@ inline bool IsVideoEncodePictureUsedAsReferenceD3D12(VideoCodec codec, uint32_t 
     return codec != VideoCodec::AV1 || av1RefreshFrameFlags != 0;
 }
 
+inline uint8_t GetVideoEncodeQPByFrameTypeD3D12(const VideoEncodeRateControlDesc& rateControlDesc, VideoEncodeFrameType frameType) {
+    return frameType == VideoEncodeFrameType::B ? rateControlDesc.qpB : (frameType == VideoEncodeFrameType::P ? rateControlDesc.qpP : rateControlDesc.qpI);
+}
+
+inline VideoAV1SequenceDesc GetDefaultVideoAV1SequenceDescD3D12(uint32_t width, uint32_t height, Format format) {
+    VideoAV1SequenceDesc desc = {};
+    desc.flags = VideoAV1SequenceBits::ENABLE_ORDER_HINT |
+        VideoAV1SequenceBits::ENABLE_CDEF |
+        VideoAV1SequenceBits::ENABLE_RESTORATION |
+        VideoAV1SequenceBits::COLOR_DESCRIPTION_PRESENT;
+    desc.bitDepth = format == Format::P010_UNORM || format == Format::P016_UNORM ? 10 : 8;
+    desc.subsamplingX = 1;
+    desc.subsamplingY = 1;
+    desc.maxFrameWidthMinus1 = (uint16_t)(width - 1);
+    desc.maxFrameHeightMinus1 = (uint16_t)(height - 1);
+    desc.frameWidthBitsMinus1 = 15;
+    desc.frameHeightBitsMinus1 = 15;
+    desc.orderHintBitsMinus1 = 7;
+    desc.seqForceIntegerMv = 2;
+    desc.seqForceScreenContentTools = 2;
+    desc.colorPrimaries = 1;
+    desc.transferCharacteristics = 1;
+    desc.matrixCoefficients = 1;
+    desc.chromaSamplePosition = 1;
+    return desc;
+}
+
+inline VideoAV1PictureBits GetDefaultVideoAV1PictureFlags(bool) {
+    VideoAV1PictureBits flags = VideoAV1PictureBits::ERROR_RESILIENT_MODE |
+        VideoAV1PictureBits::DISABLE_CDF_UPDATE |
+        VideoAV1PictureBits::ALLOW_SCREEN_CONTENT_TOOLS |
+        VideoAV1PictureBits::FORCE_INTEGER_MV;
+    return flags;
+}
+
 struct VideoEncodeHEVCReferenceListsD3D12 {
     std::array<uint32_t, VIDEO_D3D12_HEVC_MAX_REFERENCE_NUM> list0 = {};
     std::array<uint32_t, VIDEO_D3D12_HEVC_MAX_REFERENCE_NUM> list1 = {};

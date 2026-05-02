@@ -15,3 +15,4 @@ _Build/
 _Shaders/
 _NRI_SDK/
 NRIAgilitySDK.h
+.codex/

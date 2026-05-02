@@ -98,6 +98,68 @@ NriEnum(VideoAV1ReferenceName, uint8_t,
     ALTREF
 );
 
+NriBits(VideoAV1SequenceBits, uint32_t,
+    NONE                                = 0,
+    STILL_PICTURE                       = NriBit(0),
+    REDUCED_STILL_PICTURE_HEADER        = NriBit(1),
+    USE_128X128_SUPERBLOCK              = NriBit(2),
+    ENABLE_FILTER_INTRA                 = NriBit(3),
+    ENABLE_INTRA_EDGE_FILTER            = NriBit(4),
+    ENABLE_INTERINTRA_COMPOUND          = NriBit(5),
+    ENABLE_MASKED_COMPOUND              = NriBit(6),
+    ENABLE_WARPED_MOTION                = NriBit(7),
+    ENABLE_DUAL_FILTER                  = NriBit(8),
+    ENABLE_ORDER_HINT                   = NriBit(9),
+    ENABLE_JNT_COMP                     = NriBit(10),
+    ENABLE_REF_FRAME_MVS                = NriBit(11),
+    FRAME_ID_NUMBERS_PRESENT            = NriBit(12),
+    ENABLE_SUPERRES                     = NriBit(13),
+    ENABLE_CDEF                         = NriBit(14),
+    ENABLE_RESTORATION                  = NriBit(15),
+    FILM_GRAIN_PARAMS_PRESENT           = NriBit(16),
+    TIMING_INFO_PRESENT                 = NriBit(17),
+    INITIAL_DISPLAY_DELAY_PRESENT       = NriBit(18),
+    MONO_CHROME                         = NriBit(19),
+    COLOR_RANGE                         = NriBit(20),
+    SEPARATE_UV_DELTA_Q                 = NriBit(21),
+    COLOR_DESCRIPTION_PRESENT           = NriBit(22)
+);
+
+NriBits(VideoAV1PictureBits, uint32_t,
+    NONE                                = 0,
+    ERROR_RESILIENT_MODE                = NriBit(0),
+    DISABLE_CDF_UPDATE                  = NriBit(1),
+    USE_SUPERRES                        = NriBit(2),
+    RENDER_AND_FRAME_SIZE_DIFFERENT     = NriBit(3),
+    ALLOW_SCREEN_CONTENT_TOOLS          = NriBit(4),
+    IS_FILTER_SWITCHABLE                = NriBit(5),
+    FORCE_INTEGER_MV                    = NriBit(6),
+    FRAME_SIZE_OVERRIDE                 = NriBit(7),
+    BUFFER_REMOVAL_TIME_PRESENT         = NriBit(8),
+    ALLOW_INTRABC                       = NriBit(9),
+    FRAME_REFS_SHORT_SIGNALING          = NriBit(10),
+    ALLOW_HIGH_PRECISION_MV             = NriBit(11),
+    IS_MOTION_MODE_SWITCHABLE           = NriBit(12),
+    USE_REF_FRAME_MVS                   = NriBit(13),
+    DISABLE_FRAME_END_UPDATE_CDF        = NriBit(14),
+    ALLOW_WARPED_MOTION                 = NriBit(15),
+    REDUCED_TX_SET                      = NriBit(16),
+    REFERENCE_SELECT                    = NriBit(17),
+    SKIP_MODE_PRESENT                   = NriBit(18),
+    DELTA_Q_PRESENT                     = NriBit(19),
+    DELTA_LF_PRESENT                    = NriBit(20),
+    DELTA_LF_MULTI                      = NriBit(21),
+    SEGMENTATION_ENABLED                = NriBit(22),
+    SEGMENTATION_UPDATE_MAP             = NriBit(23),
+    SEGMENTATION_TEMPORAL_UPDATE        = NriBit(24),
+    SEGMENTATION_UPDATE_DATA            = NriBit(25),
+    USES_LR                             = NriBit(26),
+    USES_CHROMA_LR                      = NriBit(27),
+    SHOW_FRAME                          = NriBit(28),
+    SHOWABLE_FRAME                      = NriBit(29),
+    APPLY_GRAIN                         = NriBit(30)
+);
+
 NriStruct(VideoSessionDesc) {
     Nri(VideoUsage) usage;
     Nri(VideoCodec) codec;
@@ -161,9 +223,39 @@ NriStruct(VideoH264SessionParametersDesc) {
     NriOptional uint32_t maxPictureParameterSetNum; // defaults to "pictureParameterSetNum"
 };
 
+NriStruct(VideoAV1SequenceDesc) {
+    Nri(VideoAV1SequenceBits) flags;
+    uint8_t seqProfile;
+    uint8_t bitDepth;
+    uint8_t subsamplingX;
+    uint8_t subsamplingY;
+    uint16_t maxFrameWidthMinus1;
+    uint16_t maxFrameHeightMinus1;
+    uint8_t frameWidthBitsMinus1;
+    uint8_t frameHeightBitsMinus1;
+    uint8_t deltaFrameIdLengthMinus2;
+    uint8_t additionalFrameIdLengthMinus1;
+    uint8_t orderHintBitsMinus1;
+    uint8_t seqForceIntegerMv;
+    uint8_t seqForceScreenContentTools;
+    uint8_t level;
+    uint8_t colorPrimaries;
+    uint8_t transferCharacteristics;
+    uint8_t matrixCoefficients;
+    uint8_t chromaSamplePosition;
+    uint32_t numUnitsInDisplayTick;
+    uint32_t timeScale;
+    uint32_t numTicksPerPictureMinus1;
+};
+
+NriStruct(VideoAV1SessionParametersDesc) {
+    Nri(VideoAV1SequenceDesc) sequence;
+};
+
 NriStruct(VideoSessionParametersDesc) {
     NriPtr(VideoSession) session;
     NriOptional const NriPtr(VideoH264SessionParametersDesc) h264Parameters;
+    NriOptional const NriPtr(VideoAV1SessionParametersDesc) av1Parameters;
 };
 
 NriStruct(VideoDecodeArgument) {
@@ -256,12 +348,36 @@ NriStruct(VideoAV1ReferenceDesc) {
     uint32_t slot;
 };
 
+NriStruct(VideoAV1TileLayoutDesc) {
+    uint8_t columnNum;
+    uint8_t rowNum;
+    uint8_t tileSizeBytesMinus1;
+    uint8_t uniformSpacing;
+    uint16_t contextUpdateTileId;
+    uint16_t reserved;
+    NriOptional const uint16_t* miColumnStarts; // if provided, must include "columnNum + 1" entries
+    NriOptional const uint16_t* miRowStarts; // if provided, must include "rowNum + 1" entries
+    NriOptional const uint16_t* widthInSuperblocksMinus1; // if provided, must include "columnNum" entries
+    NriOptional const uint16_t* heightInSuperblocksMinus1; // if provided, must include "rowNum" entries
+};
+
 NriStruct(VideoAV1PictureDesc) {
     uint32_t currentFrameId;
     uint8_t orderHint;
     uint8_t refreshFrameFlags;
     Nri(VideoAV1ReferenceName) primaryReferenceName;
-    uint8_t reserved;
+    Nri(VideoAV1PictureBits) flags;
+    uint16_t renderWidthMinus1;
+    uint16_t renderHeightMinus1;
+    uint8_t codedDenom;
+    uint8_t interpolationFilter;
+    uint8_t txMode;
+    uint8_t baseQIndex;
+    uint8_t cdefDampingMinus3;
+    uint8_t cdefBits;
+    uint8_t deltaQRes;
+    uint8_t deltaLfRes;
+    NriOptional const NriPtr(VideoAV1TileLayoutDesc) tileLayout;
     NriOptional const NriPtr(VideoAV1ReferenceDesc) references; // if provided, must include "referenceNum" DPB snapshot entries
     uint32_t referenceNum;
 };
@@ -282,8 +398,19 @@ NriStruct(VideoAV1DecodePictureDesc) {
     Nri(VideoAV1ReferenceName) primaryReferenceName;
     uint32_t currentFrameId;
     uint32_t frameHeaderOffset;
+    Nri(VideoAV1PictureBits) flags;
+    uint16_t renderWidthMinus1;
+    uint16_t renderHeightMinus1;
     uint8_t baseQIndex;
-    uint8_t reserved[3];
+    uint8_t superresDenom;
+    uint8_t codedDenom;
+    uint8_t interpolationFilter;
+    uint8_t txMode;
+    uint8_t cdefDampingMinus3;
+    uint8_t cdefBits;
+    uint8_t deltaQRes;
+    uint8_t deltaLfRes;
+    NriOptional const NriPtr(VideoAV1TileLayoutDesc) tileLayout;
     NriOptional const NriPtr(VideoAV1DecodeTileDesc) tiles; // if provided, must include "tileNum" entries
     uint32_t tileNum;
     NriOptional const NriPtr(VideoAV1ReferenceDesc) references; // if provided, must include "referenceNum" DPB snapshot entries
