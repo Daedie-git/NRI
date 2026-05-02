@@ -206,6 +206,13 @@ inline bool IsVideoEncodeFrameTypeSupportedByD3D12NoBGop(VideoCodec codec, Video
     return frameType != VideoEncodeFrameType::B || (codec != VideoCodec::H264 && codec != VideoCodec::H265);
 }
 
+inline bool IsVideoEncodePictureUsedAsReferenceD3D12(VideoCodec codec, uint32_t maxReferenceNum, bool hasReconstructedPicture, uint8_t av1RefreshFrameFlags) {
+    if (!maxReferenceNum || !hasReconstructedPicture)
+        return false;
+
+    return codec != VideoCodec::AV1 || av1RefreshFrameFlags != 0;
+}
+
 struct VideoEncodeHEVCReferenceListsD3D12 {
     std::array<uint32_t, VIDEO_D3D12_HEVC_MAX_REFERENCE_NUM> list0 = {};
     std::array<uint32_t, VIDEO_D3D12_HEVC_MAX_REFERENCE_NUM> list1 = {};

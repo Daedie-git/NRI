@@ -40,6 +40,13 @@ inline uint8_t GetVideoEncodeQPByFrameTypeVK(const VideoEncodeRateControlDesc& r
     return frameType == VideoEncodeFrameType::B ? rateControlDesc.qpB : (frameType == VideoEncodeFrameType::P ? rateControlDesc.qpP : rateControlDesc.qpI);
 }
 
+inline bool IsVideoEncodePictureUsedAsReferenceVK(VideoCodec codec, uint32_t maxReferenceNum, bool hasReconstructedPicture, uint8_t av1RefreshFrameFlags) {
+    if (!maxReferenceNum || !hasReconstructedPicture)
+        return false;
+
+    return codec != VideoCodec::AV1 || av1RefreshFrameFlags != 0;
+}
+
 inline StdVideoAV1FrameType GetVideoAV1FrameTypeVK(VideoEncodeFrameType frameType) {
     switch (frameType) {
     case VideoEncodeFrameType::IDR:

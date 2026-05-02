@@ -2295,8 +2295,8 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     DeviceVK& device = commandBufferVK.GetDevice();
     const auto& vk = device.GetDispatchTable();
 
-    if (!videoEncodeDesc.session || !videoEncodeDesc.parameters || !videoEncodeDesc.srcPicture || !videoEncodeDesc.dstBitstream || !videoEncodeDesc.reconstructedPicture) {
-        NRI_REPORT_ERROR(&device, "'session', 'parameters', 'srcPicture', 'dstBitstream' and 'reconstructedPicture' must be valid");
+    if (!videoEncodeDesc.session || !videoEncodeDesc.parameters || !videoEncodeDesc.srcPicture || !videoEncodeDesc.dstBitstream) {
+        NRI_REPORT_ERROR(&device, "'session', 'parameters', 'srcPicture' and 'dstBitstream' must be valid");
         return;
     }
 
@@ -2313,7 +2313,6 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     VideoSessionVK& session = *(VideoSessionVK*)videoEncodeDesc.session;
     VideoSessionParametersVK& parameters = *(VideoSessionParametersVK*)videoEncodeDesc.parameters;
     VideoPictureVK& srcPicture = *(VideoPictureVK*)videoEncodeDesc.srcPicture;
-    VideoPictureVK& reconstructedPicture = *(VideoPictureVK*)videoEncodeDesc.reconstructedPicture;
     if (parameters.m_Session != &session) {
         NRI_REPORT_ERROR(&device, "'parameters' must belong to 'session'");
         return;
@@ -2382,6 +2381,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     std::array<uint16_t, 1> av1HeightInSbsMinus1 = {};
 
     const void* codecPictureInfo = nullptr;
+    bool isUsedAsReferencePicture = false;
     switch (session.m_Desc.codec) {
     case VideoCodec::H264: {
         for (uint8_t& ref : h264ReferenceLists.RefPicList0)
@@ -2436,7 +2436,9 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         }
 
         h264StdPicture.flags.IdrPicFlag = pictureDesc.frameType == VideoEncodeFrameType::IDR;
-        h264StdPicture.flags.is_reference = session.m_Desc.maxReferenceNum != 0;
+        isUsedAsReferencePicture = IsVideoEncodePictureUsedAsReferenceVK(session.m_Desc.codec, session.m_Desc.maxReferenceNum,
+            videoEncodeDesc.reconstructedPicture != nullptr, 0);
+        h264StdPicture.flags.is_reference = isUsedAsReferencePicture;
         h264StdPicture.flags.no_output_of_prior_pics_flag = pictureDesc.frameType == VideoEncodeFrameType::IDR;
         h264StdPicture.seq_parameter_set_id = videoEncodeDesc.h264PictureDesc ? videoEncodeDesc.h264PictureDesc->sequenceParameterSetId : 0;
         h264StdPicture.pic_parameter_set_id = videoEncodeDesc.h264PictureDesc ? videoEncodeDesc.h264PictureDesc->pictureParameterSetId : 0;
@@ -2475,7 +2477,9 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         h265StdPicture.PicOrderCntVal = pictureDesc.pictureOrderCount;
         h265StdPicture.TemporalId = pictureDesc.temporalLayer;
         h265StdPicture.flags.IrapPicFlag = pictureDesc.frameType == VideoEncodeFrameType::IDR || pictureDesc.frameType == VideoEncodeFrameType::I;
-        h265StdPicture.flags.is_reference = session.m_Desc.maxReferenceNum != 0;
+        isUsedAsReferencePicture = IsVideoEncodePictureUsedAsReferenceVK(session.m_Desc.codec, session.m_Desc.maxReferenceNum,
+            videoEncodeDesc.reconstructedPicture != nullptr, 0);
+        h265StdPicture.flags.is_reference = isUsedAsReferencePicture;
         h265StdPicture.flags.pic_output_flag = true;
         h265StdPicture.flags.no_output_of_prior_pics_flag = pictureDesc.frameType == VideoEncodeFrameType::IDR;
         h265StdPicture.flags.short_term_ref_pic_set_sps_flag = false;
@@ -2585,6 +2589,12 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
             av1StdPicture.primary_ref_frame = STD_VIDEO_AV1_PRIMARY_REF_NONE;
             av1StdPicture.refresh_frame_flags = 0xFF;
         }
+        if (av1StdPicture.refresh_frame_flags && !videoEncodeDesc.reconstructedPicture) {
+            NRI_REPORT_ERROR(&device, "AV1 frames that refresh DPB slots require 'reconstructedPicture'");
+            return;
+        }
+        isUsedAsReferencePicture = IsVideoEncodePictureUsedAsReferenceVK(session.m_Desc.codec, session.m_Desc.maxReferenceNum,
+            videoEncodeDesc.reconstructedPicture != nullptr, av1StdPicture.refresh_frame_flags);
 
         if (av1PictureDesc) {
             VideoEncodeAV1ReferenceMappingVK referenceMapping = {};
@@ -2713,7 +2723,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     }
 
     VkVideoReferenceSlotInfoKHR setupReferenceSlot = {VK_STRUCTURE_TYPE_VIDEO_REFERENCE_SLOT_INFO_KHR};
-    if (session.m_Desc.maxReferenceNum) {
+    if (isUsedAsReferencePicture) {
         if (session.m_Desc.codec == VideoCodec::H264)
             setupReferenceSlot.pNext = &h264SetupReference;
         else if (session.m_Desc.codec == VideoCodec::H265)
@@ -2721,8 +2731,11 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         else if (session.m_Desc.codec == VideoCodec::AV1)
             setupReferenceSlot.pNext = &av1SetupReference;
     }
-    setupReferenceSlot.slotIndex = session.m_Desc.maxReferenceNum ? (int32_t)videoEncodeDesc.reconstructedSlot : -1;
-    setupReferenceSlot.pPictureResource = &reconstructedPicture.m_Resource;
+    setupReferenceSlot.slotIndex = isUsedAsReferencePicture ? (int32_t)videoEncodeDesc.reconstructedSlot : -1;
+    if (isUsedAsReferencePicture) {
+        VideoPictureVK& reconstructedPicture = *(VideoPictureVK*)videoEncodeDesc.reconstructedPicture;
+        setupReferenceSlot.pPictureResource = &reconstructedPicture.m_Resource;
+    }
 
     VkVideoEncodeInfoKHR encodeInfo = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_INFO_KHR};
     encodeInfo.pNext = codecPictureInfo;
@@ -2736,11 +2749,11 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     encodeInfo.dstBufferOffset = videoEncodeDesc.dstBitstreamOffset;
     encodeInfo.dstBufferRange = dstBitstream.GetDesc().size - videoEncodeDesc.dstBitstreamOffset;
     encodeInfo.srcPictureResource = srcPicture.m_Resource;
-    encodeInfo.pSetupReferenceSlot = session.m_Desc.maxReferenceNum ? &setupReferenceSlot : nullptr;
+    encodeInfo.pSetupReferenceSlot = isUsedAsReferencePicture ? &setupReferenceSlot : nullptr;
     encodeInfo.referenceSlotCount = videoEncodeDesc.referenceNum;
     encodeInfo.pReferenceSlots = referenceSlots;
 
-    if (session.m_Desc.maxReferenceNum) {
+    if (isUsedAsReferencePicture) {
         referenceSlots[videoEncodeDesc.referenceNum] = setupReferenceSlot;
         referenceSlots[videoEncodeDesc.referenceNum].slotIndex = -1;
         referenceSlots[videoEncodeDesc.referenceNum].pNext = nullptr;
@@ -2749,7 +2762,7 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     VkVideoBeginCodingInfoKHR beginInfo = {VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR};
     beginInfo.videoSession = session.m_Handle;
     beginInfo.videoSessionParameters = parameters.m_Handle;
-    beginInfo.referenceSlotCount = videoEncodeDesc.referenceNum + (session.m_Desc.maxReferenceNum ? 1 : 0);
+    beginInfo.referenceSlotCount = videoEncodeDesc.referenceNum + (isUsedAsReferencePicture ? 1 : 0);
     beginInfo.pReferenceSlots = referenceSlots;
 
     VkVideoEndCodingInfoKHR endInfo = {VK_STRUCTURE_TYPE_VIDEO_END_CODING_INFO_KHR};

@@ -1936,8 +1936,8 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     CommandBufferD3D12& commandBufferD3D12 = (CommandBufferD3D12&)commandBuffer;
     DeviceD3D12& device = commandBufferD3D12.GetDevice();
 
-    if (!videoEncodeDesc.session || !videoEncodeDesc.srcPicture || !videoEncodeDesc.dstBitstream || !videoEncodeDesc.reconstructedPicture || !videoEncodeDesc.metadata) {
-        NRI_REPORT_ERROR(&device, "'session', 'srcPicture', 'dstBitstream', 'reconstructedPicture' and 'metadata' must be valid");
+    if (!videoEncodeDesc.session || !videoEncodeDesc.srcPicture || !videoEncodeDesc.dstBitstream || !videoEncodeDesc.metadata) {
+        NRI_REPORT_ERROR(&device, "'session', 'srcPicture', 'dstBitstream' and 'metadata' must be valid");
         return;
     }
 
@@ -2364,9 +2364,17 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
         pictureCodecData.pAV1PicData = &av1Picture;
     }
 
-    D3D12_VIDEO_ENCODER_PICTURE_CONTROL_DESC pictureControl = {};
     const bool isAV1NonReferencePicture = session.m_Desc.codec == VideoCodec::AV1 && av1Picture.RefreshFrameFlags == 0;
-    if (session.m_Desc.maxReferenceNum && !isAV1NonReferencePicture)
+    if (session.m_Desc.codec == VideoCodec::AV1 && !isAV1NonReferencePicture && !videoEncodeDesc.reconstructedPicture) {
+        NRI_REPORT_ERROR(&device, "AV1 frames that refresh DPB slots require 'reconstructedPicture'");
+        return;
+    }
+
+    const bool isUsedAsReferencePicture = IsVideoEncodePictureUsedAsReferenceD3D12(session.m_Desc.codec, session.m_Desc.maxReferenceNum,
+        videoEncodeDesc.reconstructedPicture != nullptr, (uint8_t)av1Picture.RefreshFrameFlags);
+
+    D3D12_VIDEO_ENCODER_PICTURE_CONTROL_DESC pictureControl = {};
+    if (isUsedAsReferencePicture)
         pictureControl.Flags |= D3D12_VIDEO_ENCODER_PICTURE_CONTROL_FLAG_USED_AS_REFERENCE_PICTURE;
     pictureControl.PictureControlCodecData = pictureCodecData;
     pictureControl.ReferenceFrames.NumTexture2Ds = videoEncodeDesc.referenceNum;
@@ -2384,9 +2392,11 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
     D3D12_VIDEO_ENCODER_ENCODEFRAME_OUTPUT_ARGUMENTS output = {};
     output.Bitstream.pBuffer = (ID3D12Resource*)(*(BufferD3D12*)videoEncodeDesc.dstBitstream);
     output.Bitstream.FrameStartOffset = videoEncodeDesc.dstBitstreamOffset;
-    VideoPictureD3D12& reconstructedPicture = *(VideoPictureD3D12*)videoEncodeDesc.reconstructedPicture;
-    output.ReconstructedPicture.pReconstructedPicture = (ID3D12Resource*)(*reconstructedPicture.m_Texture);
-    output.ReconstructedPicture.ReconstructedPictureSubresource = reconstructedPicture.m_Subresource;
+    if (videoEncodeDesc.reconstructedPicture) {
+        VideoPictureD3D12& reconstructedPicture = *(VideoPictureD3D12*)videoEncodeDesc.reconstructedPicture;
+        output.ReconstructedPicture.pReconstructedPicture = (ID3D12Resource*)(*reconstructedPicture.m_Texture);
+        output.ReconstructedPicture.ReconstructedPictureSubresource = reconstructedPicture.m_Subresource;
+    }
     output.EncoderOutputMetadata.pBuffer = (ID3D12Resource*)(*(BufferD3D12*)videoEncodeDesc.metadata);
     output.EncoderOutputMetadata.Offset = videoEncodeDesc.metadataOffset;
 
