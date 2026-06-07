@@ -937,11 +937,6 @@ NRI_INLINE void CommandBufferVal::EncodeVideo(const VideoEncodeDesc& videoEncode
         return;
     }
 
-    if (videoEncodeDesc.flags & VideoEncodeBits::END_OF_STREAM) {
-        NRI_REPORT_ERROR(&m_Device, "'END_OF_STREAM' must be serialized with 'WriteVideoAnnexBEndOfStream' after encode feedback is available");
-        return;
-    }
-
     if (!videoEncodeDesc.session || !videoEncodeDesc.parameters || !videoEncodeDesc.srcPicture || !videoEncodeDesc.dstBitstream.buffer || !videoEncodeDesc.dstBitstream.size) {
         NRI_REPORT_ERROR(&m_Device, "'session', 'parameters', 'srcPicture', 'dstBitstream.buffer' and 'dstBitstream.size' must be valid");
         return;
@@ -987,6 +982,45 @@ NRI_INLINE void CommandBufferVal::EncodeVideo(const VideoEncodeDesc& videoEncode
     }
 
     GetVideoInterfaceImpl().CmdEncodeVideo(*GetImpl(), videoEncodeDescImpl);
+}
+
+NRI_INLINE void CommandBufferVal::FinalizeVideoEncodeEndOfStream(const VideoEncodeEndOfStreamFinalizeDesc& desc) {
+    if (desc.codec != VideoCodec::H264 && desc.codec != VideoCodec::H265) {
+        NRI_REPORT_ERROR(&m_Device, "'codec' must be H.264 or H.265");
+        return;
+    }
+    if (!desc.dstBitstream.buffer || !desc.feedback || !desc.eosUploadBuffer) {
+        NRI_REPORT_ERROR(&m_Device, "'dstBitstream.buffer', 'feedback' and 'eosUploadBuffer' must be valid");
+        return;
+    }
+    if (desc.feedback->errorFlags) {
+        NRI_REPORT_ERROR(&m_Device, "'feedback' contains encode errors");
+        return;
+    }
+
+    VideoAnnexBEndOfStreamDesc eosDesc = {desc.codec};
+    if (WriteVideoAnnexBEndOfStreamShared(eosDesc) != Result::SUCCESS) {
+        NRI_REPORT_ERROR(&m_Device, "'codec' is unsupported for Annex-B end-of-stream finalization");
+        return;
+    }
+
+    const BufferDesc& dstDesc = ((BufferVal*)desc.dstBitstream.buffer)->GetDesc();
+    const BufferDesc& uploadDesc = ((BufferVal*)desc.eosUploadBuffer)->GetDesc();
+    const uint64_t appendOffset = desc.dstBitstream.offset + desc.feedback->encodedBitstreamOffset + desc.feedback->encodedBitstreamWrittenBytes;
+    if (appendOffset < desc.dstBitstream.offset || appendOffset + eosDesc.writtenSize < appendOffset || appendOffset + eosDesc.writtenSize > desc.dstBitstream.offset + desc.dstBitstream.size
+        || appendOffset + eosDesc.writtenSize > dstDesc.size) {
+        NRI_REPORT_ERROR(&m_Device, "Annex-B end-of-stream bytes do not fit at the feedback-derived append offset");
+        return;
+    }
+    if (desc.eosUploadOffset + eosDesc.writtenSize < desc.eosUploadOffset || desc.eosUploadOffset + eosDesc.writtenSize > uploadDesc.size) {
+        NRI_REPORT_ERROR(&m_Device, "'eosUploadBuffer' does not have enough space for Annex-B end-of-stream bytes");
+        return;
+    }
+
+    VideoEncodeEndOfStreamFinalizeDesc descImpl = desc;
+    descImpl.dstBitstream.buffer = NRI_GET_IMPL(Buffer, desc.dstBitstream.buffer);
+    descImpl.eosUploadBuffer = NRI_GET_IMPL(Buffer, desc.eosUploadBuffer);
+    GetVideoInterfaceImpl().CmdFinalizeVideoEncodeEndOfStream(*GetImpl(), descImpl);
 }
 
 NRI_INLINE void CommandBufferVal::ValidateReadonlyDepthStencil() {

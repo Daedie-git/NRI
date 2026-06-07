@@ -1583,6 +1583,24 @@ NRI_INLINE void CommandBufferD3D12::EncodeVideo(const VideoEncodeDesc& videoEnco
     }
 }
 
+NRI_INLINE void CommandBufferD3D12::FinalizeVideoEncodeEndOfStream(const VideoEncodeEndOfStreamFinalizeDesc& desc) {
+    uint8_t eosBytes[16] = {};
+    VideoAnnexBEndOfStreamDesc eosDesc = {desc.codec, eosBytes, sizeof(eosBytes), 0};
+    if (WriteVideoAnnexBEndOfStreamShared(eosDesc) != Result::SUCCESS)
+        return;
+
+    BufferD3D12& upload = *(BufferD3D12*)desc.eosUploadBuffer;
+    void* uploadData = upload.Map(desc.eosUploadOffset);
+    if (!uploadData) {
+        NRI_REPORT_ERROR(&m_Device, "Failed to map 'eosUploadBuffer'");
+        return;
+    }
+    memcpy(uploadData, eosBytes, eosDesc.writtenSize);
+
+    GetVideoEncodeCommandList()->CopyBufferRegion((ID3D12ResourceBest*)(*(BufferD3D12*)desc.dstBitstream.buffer),
+        desc.dstBitstream.offset + desc.feedback->encodedBitstreamOffset + desc.feedback->encodedBitstreamWrittenBytes, (ID3D12ResourceBest*)upload, desc.eosUploadOffset, eosDesc.writtenSize);
+}
+
 NRI_INLINE void CommandBufferD3D12::SetViewports(const Viewport* viewports, uint32_t viewportNum) {
     Scratch<D3D12_VIEWPORT> d3dViewports = NRI_ALLOCATE_SCRATCH(m_Device, D3D12_VIEWPORT, viewportNum);
     for (uint32_t i = 0; i < viewportNum; i++) {

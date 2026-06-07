@@ -1233,6 +1233,10 @@ static void NRI_CALL CmdResolveVideoEncodeFeedback(CommandBuffer& commandBuffer,
     ((CommandBufferVK&)commandBuffer).ResolveVideoEncodeFeedback(videoSession, resolvedMetadata, resolvedMetadataOffset);
 }
 
+static void NRI_CALL CmdFinalizeVideoEncodeEndOfStream(CommandBuffer& commandBuffer, const VideoEncodeEndOfStreamFinalizeDesc& desc) {
+    ((CommandBufferVK&)commandBuffer).FinalizeVideoEncodeEndOfStream(desc);
+}
+
 static Result NRI_CALL GetVideoEncodeFeedback(VideoSession& videoSession, Buffer& resolvedMetadataReadback, uint64_t resolvedMetadataOffset, VideoEncodeFeedback& feedback) {
     VideoSessionVK& session = (VideoSessionVK&)videoSession;
     if (session.m_EncodeFeedbackQueryPool == VK_NULL_HANDLE)
@@ -1289,6 +1293,7 @@ Result DeviceVK::FillFunctionTable(VideoInterface& table) const {
     table.CmdDecodeVideo = ::CmdDecodeVideo;
     table.CmdEncodeVideo = ::CmdEncodeVideo;
     table.CmdResolveVideoEncodeFeedback = ::CmdResolveVideoEncodeFeedback;
+    table.CmdFinalizeVideoEncodeEndOfStream = ::CmdFinalizeVideoEncodeEndOfStream;
     table.GetVideoEncodeFeedback = ::GetVideoEncodeFeedback;
     table.GetVideoEncodeAV1DecodeInfo = ::GetVideoEncodeAV1DecodeInfo;
 

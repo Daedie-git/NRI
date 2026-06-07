@@ -142,6 +142,7 @@ struct CommandBufferD3D12 final : public DebugNameBase {
     void DrawMeshTasksIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset);
     void DecodeVideo(const VideoDecodeDesc& videoDecodeDesc);
     void EncodeVideo(const VideoEncodeDesc& videoEncodeDesc);
+    void FinalizeVideoEncodeEndOfStream(const VideoEncodeEndOfStreamFinalizeDesc& desc);
 
 private:
     DeviceD3D12& m_Device;

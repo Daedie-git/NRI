@@ -1278,6 +1278,10 @@ static void NRI_CALL CmdEncodeVideo(CommandBuffer& commandBuffer, const VideoEnc
 static void NRI_CALL CmdResolveVideoEncodeFeedback(CommandBuffer&, VideoSession&, Buffer&, uint64_t) {
 }
 
+static void NRI_CALL CmdFinalizeVideoEncodeEndOfStream(CommandBuffer& commandBuffer, const VideoEncodeEndOfStreamFinalizeDesc& desc) {
+    ((CommandBufferD3D12&)commandBuffer).FinalizeVideoEncodeEndOfStream(desc);
+}
+
 static Result NRI_CALL GetVideoEncodeFeedback(VideoSession&, Buffer& resolvedMetadataReadback, uint64_t resolvedMetadataOffset, VideoEncodeFeedback& feedback) {
     BufferD3D12& resolvedMetadataReadbackD3D12 = (BufferD3D12&)resolvedMetadataReadback;
     constexpr uint64_t requiredMetadataSize = sizeof(D3D12_VIDEO_ENCODER_OUTPUT_METADATA) + sizeof(D3D12_VIDEO_ENCODER_FRAME_SUBREGION_METADATA);
@@ -1537,6 +1541,7 @@ Result DeviceD3D12::FillFunctionTable(VideoInterface& table) const {
     table.CmdDecodeVideo = ::CmdDecodeVideo;
     table.CmdEncodeVideo = ::CmdEncodeVideo;
     table.CmdResolveVideoEncodeFeedback = ::CmdResolveVideoEncodeFeedback;
+    table.CmdFinalizeVideoEncodeEndOfStream = ::CmdFinalizeVideoEncodeEndOfStream;
     table.GetVideoEncodeFeedback = ::GetVideoEncodeFeedback;
     table.GetVideoEncodeAV1DecodeInfo = ::GetVideoEncodeAV1DecodeInfo;
 

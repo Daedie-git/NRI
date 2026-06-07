@@ -830,7 +830,7 @@ NRI_INLINE void CommandBufferVK::EncodeVideo(const VideoEncodeDesc& videoEncodeD
                 av1StdPicture.render_width_minus_1 = av1PictureDesc->renderWidthMinus1 ? av1PictureDesc->renderWidthMinus1 : av1StdPicture.render_width_minus_1;
                 av1StdPicture.render_height_minus_1 = av1PictureDesc->renderHeightMinus1 ? av1PictureDesc->renderHeightMinus1 : av1StdPicture.render_height_minus_1;
                 av1StdPicture.interpolation_filter = (StdVideoAV1InterpolationFilter)av1PictureDesc->interpolationFilter;
-                av1StdPicture.TxMode = (StdVideoAV1TxMode)(av1PictureDesc->txMode ? av1PictureDesc->txMode : STD_VIDEO_AV1_TX_MODE_SELECT);
+                av1StdPicture.TxMode = av1PictureDesc->txMode ? (StdVideoAV1TxMode)av1PictureDesc->txMode : STD_VIDEO_AV1_TX_MODE_SELECT;
                 av1StdPicture.coded_denom = av1PictureDesc->codedDenom;
                 av1StdPicture.delta_q_res = av1PictureDesc->deltaQRes;
                 av1StdPicture.delta_lf_res = av1PictureDesc->deltaLfRes;
@@ -1182,6 +1182,35 @@ NRI_INLINE void CommandBufferVK::ResolveVideoEncodeFeedback(VideoSession& videoS
             }
         }
     }
+}
+
+NRI_INLINE void CommandBufferVK::FinalizeVideoEncodeEndOfStream(const VideoEncodeEndOfStreamFinalizeDesc& desc) {
+    uint8_t eosBytes[16] = {};
+    VideoAnnexBEndOfStreamDesc eosDesc = {desc.codec, eosBytes, sizeof(eosBytes), 0};
+    if (WriteVideoAnnexBEndOfStreamShared(eosDesc) != Result::SUCCESS)
+        return;
+
+    BufferVK& upload = *(BufferVK*)desc.eosUploadBuffer;
+    void* uploadData = upload.Map(desc.eosUploadOffset, eosDesc.writtenSize);
+    if (!uploadData) {
+        NRI_REPORT_ERROR(&m_Device, "Failed to map 'eosUploadBuffer'");
+        return;
+    }
+    memcpy(uploadData, eosBytes, eosDesc.writtenSize);
+    upload.Unmap();
+
+    VkBufferCopy2 region = {VK_STRUCTURE_TYPE_BUFFER_COPY_2};
+    region.srcOffset = desc.eosUploadOffset;
+    region.dstOffset = desc.dstBitstream.offset + desc.feedback->encodedBitstreamOffset + desc.feedback->encodedBitstreamWrittenBytes;
+    region.size = eosDesc.writtenSize;
+
+    VkCopyBufferInfo2 copyInfo = {VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2};
+    copyInfo.srcBuffer = upload.GetHandle();
+    copyInfo.dstBuffer = ((BufferVK*)desc.dstBitstream.buffer)->GetHandle();
+    copyInfo.regionCount = 1;
+    copyInfo.pRegions = &region;
+
+    m_Device.GetDispatchTable().CmdCopyBuffer2(m_Handle, &copyInfo);
 }
 
 NRI_INLINE void CommandBufferVK::SetViewports(const Viewport* viewports, uint32_t viewportNum) {

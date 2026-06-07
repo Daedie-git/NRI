@@ -178,8 +178,7 @@ NriBits(VideoH265ShortTermRefPicSetBits, uint8_t,
 
 NriBits(VideoEncodeBits, uint8_t,
     NONE                                    = 0,
-    FORCE_KEY_FRAME                         = NriBit(0),
-    END_OF_STREAM                           = NriBit(1) // Use WriteVideoAnnexBEndOfStream after encode feedback is available.
+    FORCE_KEY_FRAME                         = NriBit(0)
 );
 
 NriBits(VideoAV1SequenceBits, uint32_t,
@@ -809,6 +808,14 @@ NriStruct(VideoEncodeFeedback) {
     uint64_t encodedBitstreamOffset; // offset of valid encoded data relative to VideoEncodeDesc::dstBitstream.offset
 };
 
+NriStruct(VideoEncodeEndOfStreamFinalizeDesc) {
+    Nri(VideoCodec) codec;
+    Nri(VideoBitstreamRange) dstBitstream;
+    const NriPtr(VideoEncodeFeedback) feedback;
+    NriPtr(Buffer) eosUploadBuffer;
+    uint64_t eosUploadOffset;
+};
+
 NriStruct(VideoAV1EncodeDecodeInfoDesc) {
     const NriPtr(VideoEncodeFeedback) feedback;
     const NriPtr(VideoAV1SequenceDesc) sequence;
@@ -893,6 +900,7 @@ NriStruct(VideoInterface) {
         // VK: resolves feedback for the encode that used the same "resolvedMetadata" buffer and offset; the query must be host-available before this command is recorded.
         // D3D12: resolves feedback during "CmdEncodeVideo".
         void            (NRI_CALL *CmdResolveVideoEncodeFeedback)   (NriRef(CommandBuffer) commandBuffer, NriRef(VideoSession) videoSession, NriRef(Buffer) resolvedMetadata, uint64_t resolvedMetadataOffset);
+        void            (NRI_CALL *CmdFinalizeVideoEncodeEndOfStream)(NriRef(CommandBuffer) commandBuffer, const NriRef(VideoEncodeEndOfStreamFinalizeDesc) videoEncodeEndOfStreamFinalizeDesc);
         Nri(Result)     (NRI_CALL *GetVideoEncodeFeedback)          (NriRef(VideoSession) videoSession, NriRef(Buffer) resolvedMetadataReadback, uint64_t resolvedMetadataOffset, NriOut NriRef(VideoEncodeFeedback) feedback);
         Nri(Result)     (NRI_CALL *GetVideoEncodeAV1DecodeInfo)     (NriRef(VideoSession) videoSession, NriRef(Buffer) resolvedMetadataReadback, uint64_t resolvedMetadataOffset, const NriRef(VideoAV1EncodeDecodeInfoDesc) desc, NriOut NriRef(VideoAV1EncodeDecodeInfo) info);
     // }

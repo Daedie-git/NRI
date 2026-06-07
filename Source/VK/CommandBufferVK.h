@@ -91,6 +91,7 @@ struct CommandBufferVK final : public DebugNameBase {
     void DecodeVideo(const VideoDecodeDesc& videoDecodeDesc);
     void EncodeVideo(const VideoEncodeDesc& videoEncodeDesc);
     void ResolveVideoEncodeFeedback(VideoSession& videoSession, Buffer& resolvedMetadata, uint64_t resolvedMetadataOffset);
+    void FinalizeVideoEncodeEndOfStream(const VideoEncodeEndOfStreamFinalizeDesc& desc);
 
 private:
     DeviceVK& m_Device;

@@ -90,6 +90,7 @@ struct CommandBufferVal final : public ObjectVal {
     void DrawMeshTasksIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset);
     void DecodeVideo(const VideoDecodeDesc& videoDecodeDesc);
     void EncodeVideo(const VideoEncodeDesc& videoEncodeDesc);
+    void FinalizeVideoEncodeEndOfStream(const VideoEncodeEndOfStreamFinalizeDesc& desc);
 
 private:
     void ValidateReadonlyDepthStencil();
