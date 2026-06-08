@@ -53,7 +53,7 @@ inline D3D12_VIDEO_ENCODER_RATE_CONTROL_MODE GetVideoEncodeRateControlModeD3D12(
             return D3D12_VIDEO_ENCODER_RATE_CONTROL_MODE_CBR;
         case VideoEncodeRateControlMode::VBR:
             return D3D12_VIDEO_ENCODER_RATE_CONTROL_MODE_VBR;
-        case VideoEncodeRateControlMode::MAX_NUM:
+        default:
             break;
     }
 
@@ -134,7 +134,7 @@ inline void FillVideoEncodeRateControlD3D12(const VideoEncodeRateControlDesc& de
             state.rateControl.ConfigParams.DataSize = sizeof(state.vbr);
             state.rateControl.ConfigParams.pConfiguration_VBR = &state.vbr;
             break;
-        case VideoEncodeRateControlMode::MAX_NUM:
+        default:
             break;
     }
 }
@@ -647,7 +647,7 @@ inline GUID GetVideoDecodeProfileD3D12(VideoCodec codec, Format format) {
         case VideoCodec::AV1:
             return D3D12_VIDEO_DECODE_PROFILE_AV1_PROFILE0;
         case VideoCodec::NONE:
-        case VideoCodec::MAX_NUM:
+        default:
             return {};
     }
 
@@ -667,7 +667,7 @@ inline D3D12_VIDEO_ENCODER_CODEC GetVideoEncodeCodecD3D12(VideoCodec codec) {
             return (D3D12_VIDEO_ENCODER_CODEC)-1;
 #endif
         case VideoCodec::NONE:
-        case VideoCodec::MAX_NUM:
+        default:
             return (D3D12_VIDEO_ENCODER_CODEC)-1;
     }
 

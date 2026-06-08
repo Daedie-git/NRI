@@ -10,7 +10,7 @@ static VkVideoCodecOperationFlagBitsKHR GetVideoCodecOperationVK(const VideoSess
             case VideoCodec::AV1:
                 return VK_VIDEO_CODEC_OPERATION_DECODE_AV1_BIT_KHR;
             case VideoCodec::NONE:
-            case VideoCodec::MAX_NUM:
+            default:
                 return (VkVideoCodecOperationFlagBitsKHR)0;
         }
     } else if (videoSessionDesc.type == VideoSessionType::ENCODE) {
@@ -22,7 +22,7 @@ static VkVideoCodecOperationFlagBitsKHR GetVideoCodecOperationVK(const VideoSess
             case VideoCodec::AV1:
                 return VK_VIDEO_CODEC_OPERATION_ENCODE_AV1_BIT_KHR;
             case VideoCodec::NONE:
-            case VideoCodec::MAX_NUM:
+            default:
                 return (VkVideoCodecOperationFlagBitsKHR)0;
         }
     }
@@ -54,7 +54,7 @@ static void* FillVideoProfileCodecInfoVK(const VideoSessionDesc& videoSessionDes
                 return &info;
             }
             case VideoCodec::NONE:
-            case VideoCodec::MAX_NUM:
+            default:
                 return nullptr;
         }
     } else if (videoSessionDesc.type == VideoSessionType::ENCODE) {
@@ -78,7 +78,7 @@ static void* FillVideoProfileCodecInfoVK(const VideoSessionDesc& videoSessionDes
                 return &info;
             }
             case VideoCodec::NONE:
-            case VideoCodec::MAX_NUM:
+            default:
                 return nullptr;
         }
     }
@@ -193,7 +193,7 @@ Result VideoSessionVK::Create(const VideoSessionDesc& videoSessionDesc) {
                 decodeCapabilities.pNext = &decodeAV1Capabilities;
                 break;
             case VideoCodec::NONE:
-            case VideoCodec::MAX_NUM:
+            default:
                 break;
         }
     } else {
@@ -209,7 +209,7 @@ Result VideoSessionVK::Create(const VideoSessionDesc& videoSessionDesc) {
                 encodeCapabilities.pNext = &encodeAV1Capabilities;
                 break;
             case VideoCodec::NONE:
-            case VideoCodec::MAX_NUM:
+            default:
                 break;
         }
     }
@@ -266,7 +266,7 @@ Result VideoSessionVK::Create(const VideoSessionDesc& videoSessionDesc) {
                 createInfo.pNext = &encodeAV1SessionCreateInfo;
                 break;
             case VideoCodec::NONE:
-            case VideoCodec::MAX_NUM:
+            default:
                 break;
         }
     }
@@ -396,7 +396,7 @@ static Result NRI_CALL GetVideoCapabilities(const Device& device, const VideoSes
                 decodeCapabilities.pNext = &decodeAV1Capabilities;
                 break;
             case VideoCodec::NONE:
-            case VideoCodec::MAX_NUM:
+            default:
                 break;
         }
     } else {
@@ -412,7 +412,7 @@ static Result NRI_CALL GetVideoCapabilities(const Device& device, const VideoSes
                 encodeCapabilities.pNext = &encodeAV1Capabilities;
                 break;
             case VideoCodec::NONE:
-            case VideoCodec::MAX_NUM:
+            default:
                 break;
         }
     }

@@ -1,0 +1,4 @@
+interface:
+  display_name: "NRI Review"
+  short_description: "Review NRI code with repo-specific rules"
+  default_prompt: "Use $nri-review to review the current NRI changes."

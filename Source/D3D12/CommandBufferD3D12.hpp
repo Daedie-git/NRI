@@ -531,7 +531,7 @@ static uint32_t GetVideoDecodeAV1ReferenceNameIndexD3D12(VideoAV1ReferenceName n
             return 5;
         case VideoAV1ReferenceName::ALTREF:
             return 6;
-        case VideoAV1ReferenceName::MAX_NUM:
+        default:
             return 7;
     }
 
@@ -976,7 +976,7 @@ static D3D12_VIDEO_ENCODER_AV1_FRAME_TYPE GetVideoEncodeAV1FrameTypeD3D12(VideoE
         case VideoEncodeFrameType::P:
         case VideoEncodeFrameType::B:
             return D3D12_VIDEO_ENCODER_AV1_FRAME_TYPE_INTER_FRAME;
-        case VideoEncodeFrameType::MAX_NUM:
+        default:
             return (D3D12_VIDEO_ENCODER_AV1_FRAME_TYPE)-1;
     }
 
@@ -1001,7 +1001,7 @@ static uint32_t GetVideoEncodeAV1ReferenceNameIndexD3D12(VideoAV1ReferenceName n
             return 5;
         case VideoAV1ReferenceName::ALTREF:
             return 6;
-        case VideoAV1ReferenceName::MAX_NUM:
+        default:
             return 7;
     }
 
@@ -1227,7 +1227,7 @@ NRI_INLINE void CommandBufferD3D12::EncodeVideo(const VideoEncodeDesc& videoEnco
         case VideoEncodeFrameType::B:
             h264Picture.FrameType = D3D12_VIDEO_ENCODER_FRAME_TYPE_H264_B_FRAME;
             break;
-        case VideoEncodeFrameType::MAX_NUM:
+        default:
             NRI_REPORT_ERROR(&m_Device, "Unsupported video encode frame type");
             return;
     }
@@ -1256,7 +1256,7 @@ NRI_INLINE void CommandBufferD3D12::EncodeVideo(const VideoEncodeDesc& videoEnco
         case VideoEncodeFrameType::B:
             hevcPicture.FrameType = D3D12_VIDEO_ENCODER_FRAME_TYPE_HEVC_B_FRAME;
             break;
-        case VideoEncodeFrameType::MAX_NUM:
+        default:
             NRI_REPORT_ERROR(&m_Device, "Unsupported video encode frame type");
             return;
     }

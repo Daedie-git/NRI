@@ -23,7 +23,7 @@ inline VkVideoEncodeRateControlModeFlagBitsKHR GetVideoEncodeRateControlModeVK(V
             return VK_VIDEO_ENCODE_RATE_CONTROL_MODE_CBR_BIT_KHR;
         case VideoEncodeRateControlMode::VBR:
             return VK_VIDEO_ENCODE_RATE_CONTROL_MODE_VBR_BIT_KHR;
-        case VideoEncodeRateControlMode::MAX_NUM:
+        default:
             break;
     }
 
@@ -104,7 +104,7 @@ inline uint8_t GetVideoAV1ReferenceNameIndexVK(VideoAV1ReferenceName name) {
             return 5;
         case VideoAV1ReferenceName::ALTREF:
             return 6;
-        case VideoAV1ReferenceName::MAX_NUM:
+        default:
             return STD_VIDEO_AV1_PRIMARY_REF_NONE;
     }
 
@@ -546,7 +546,7 @@ inline StdVideoAV1FrameType GetVideoAV1FrameTypeVK(VideoEncodeFrameType frameTyp
         case VideoEncodeFrameType::P:
         case VideoEncodeFrameType::B:
             return STD_VIDEO_AV1_FRAME_TYPE_INTER;
-        case VideoEncodeFrameType::MAX_NUM:
+        default:
             return STD_VIDEO_AV1_FRAME_TYPE_INVALID;
     }
 
