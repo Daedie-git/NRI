@@ -1025,8 +1025,10 @@ Result PipelineLayoutWGPU::CreatePipelineLayout(const ShaderDesc* shaderDescs, u
     WGPUPipelineLayoutDescriptor desc = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     desc.bindGroupLayoutCount = bindGroupLayoutNum;
     desc.bindGroupLayouts = bindGroupLayoutNum ? (WGPUBindGroupLayout*)bindGroupLayouts : nullptr;
+#if !defined(__EMSCRIPTEN__)
     // TODO: Immediate data is a wgpu-native feature used to emulate NRI root constants.
     desc.immediateSize = m_ImmediateDataSize;
+#endif
 
     pipelineLayout = wgpuDeviceCreatePipelineLayout(m_Device, &desc);
 

@@ -450,6 +450,11 @@ void CommandBufferWGPU::FlushDeferredEncoderAnnotationPops() {
 }
 
 WGPURenderPipeline CommandBufferWGPU::GetClearPipeline(uint32_t colorAttachmentIndex, PlaneBits planes, WGPUPipelineLayout& pipelineLayout) {
+#if defined(__EMSCRIPTEN__)
+    MaybeUnused(colorAttachmentIndex, planes, pipelineLayout);
+    NRI_REPORT_ERROR(&m_Device, "ClearAttachments is not supported because core WebGPU has no immediate data");
+    return nullptr;
+#else
     for (ClearPipelineWGPU& clearPipeline : m_ClearPipelines) {
         bool isSame = clearPipeline.depthStencilFormat == m_RenderDepthStencilFormat
             && clearPipeline.colorNum == m_RenderColorNum
@@ -602,6 +607,7 @@ WGPURenderPipeline CommandBufferWGPU::GetClearPipeline(uint32_t colorAttachmentI
     m_ClearPipelines.push_back(clearPipeline);
 
     return pipeline;
+#endif
 }
 
 struct ClearStorageBufferConstantsWGPU {
@@ -623,6 +629,11 @@ struct ClearStorageTextureConstantsWGPU {
 };
 
 WGPUComputePipeline CommandBufferWGPU::GetClearStorageBufferPipeline(WGPUBindGroupLayout& bindGroupLayout) {
+#if defined(__EMSCRIPTEN__)
+    MaybeUnused(bindGroupLayout);
+    NRI_REPORT_ERROR(&m_Device, "Storage buffer clears are not supported because core WebGPU has no immediate data");
+    return nullptr;
+#else
     bindGroupLayout = m_ClearStorageBufferPipeline.bindGroupLayout;
     if (m_ClearStorageBufferPipeline.pipeline)
         return m_ClearStorageBufferPipeline.pipeline;
@@ -706,9 +717,15 @@ WGPUComputePipeline CommandBufferWGPU::GetClearStorageBufferPipeline(WGPUBindGro
     bindGroupLayout = layout;
 
     return pipeline;
+#endif
 }
 
 WGPUComputePipeline CommandBufferWGPU::GetClearStorageTexturePipeline(Format format, WGPUTextureViewDimension dimension, WGPUBindGroupLayout& bindGroupLayout) {
+#if defined(__EMSCRIPTEN__)
+    MaybeUnused(format, dimension, bindGroupLayout);
+    NRI_REPORT_ERROR(&m_Device, "Storage texture clears are not supported because core WebGPU has no immediate data");
+    return nullptr;
+#else
     for (ClearStorageTexturePipelineWGPU& clearPipeline : m_ClearStorageTexturePipelines) {
         if (clearPipeline.format == format && clearPipeline.dimension == dimension) {
             bindGroupLayout = clearPipeline.bindGroupLayout;
@@ -800,6 +817,7 @@ WGPUComputePipeline CommandBufferWGPU::GetClearStorageTexturePipeline(Format for
     bindGroupLayout = layout;
 
     return pipeline;
+#endif
 }
 
 Result CommandBufferWGPU::Create(const CommandAllocator& commandAllocator) {
@@ -1200,6 +1218,9 @@ RootConstantStateWGPU& CommandBufferWGPU::GetRootConstantState(BindPoint bindPoi
 }
 
 void CommandBufferWGPU::RestoreRootConstants(BindPoint bindPoint) {
+#if defined(__EMSCRIPTEN__)
+    MaybeUnused(bindPoint);
+#else
     RootConstantStateWGPU& state = GetRootConstantState(bindPoint);
     if (state.mask.empty())
         return;
@@ -1229,9 +1250,14 @@ void CommandBufferWGPU::RestoreRootConstants(BindPoint bindPoint) {
 
         begin = end;
     }
+#endif
 }
 
 void CommandBufferWGPU::SetRootConstants(const SetRootConstantsDesc& setRootConstantsDesc) {
+#if defined(__EMSCRIPTEN__)
+    MaybeUnused(setRootConstantsDesc);
+    NRI_REPORT_ERROR(&m_Device, "Root constants are not supported by core WebGPU");
+#else
     BindPoint bindPoint = setRootConstantsDesc.bindPoint == BindPoint::INHERIT ? m_BindPoint : setRootConstantsDesc.bindPoint;
     RootConstantStateWGPU& state = GetRootConstantState(bindPoint);
     uint32_t offset = (m_PipelineLayout ? m_PipelineLayout->GetRootConstantOffset(setRootConstantsDesc.rootConstantIndex) : 0) + setRootConstantsDesc.offset;
@@ -1251,6 +1277,7 @@ void CommandBufferWGPU::SetRootConstants(const SetRootConstantsDesc& setRootCons
 
     if (m_ComputePass && m_BoundComputePipeline && bindPoint == BindPoint::COMPUTE)
         wgpuComputePassEncoderSetImmediates(m_ComputePass, offset, setRootConstantsDesc.data, setRootConstantsDesc.size);
+#endif
 }
 
 void CommandBufferWGPU::SetRootDescriptor(const SetRootDescriptorDesc& setRootDescriptorDesc) {
@@ -1458,7 +1485,11 @@ void CommandBufferWGPU::ClearAttachments(const ClearAttachmentDesc* clearAttachm
                 const void* clearData = props.isInteger ? (props.isSigned ? (const void*)&clearAttachmentDesc.value.color.i : (const void*)&clearAttachmentDesc.value.color.ui) : (const void*)&clearAttachmentDesc.value.color.f;
 
                 wgpuRenderPassEncoderSetPipeline(m_RenderPass, clearPipeline);
+#if !defined(__EMSCRIPTEN__)
                 wgpuRenderPassEncoderSetImmediates(m_RenderPass, 0, clearData, sizeof(clearAttachmentDesc.value.color));
+#else
+                MaybeUnused(clearData);
+#endif
                 drawClear(rects, rectNum);
             }
         }
@@ -1471,7 +1502,11 @@ void CommandBufferWGPU::ClearAttachments(const ClearAttachmentDesc* clearAttachm
             if (clearPipeline) {
                 Color32f clearValue = {clearAttachmentDesc.value.depthStencil.depth, 0.0f, 0.0f, 0.0f};
                 wgpuRenderPassEncoderSetPipeline(m_RenderPass, clearPipeline);
+#if !defined(__EMSCRIPTEN__)
                 wgpuRenderPassEncoderSetImmediates(m_RenderPass, 0, &clearValue, sizeof(clearValue));
+#else
+                MaybeUnused(clearValue);
+#endif
                 if (depthStencilPlanes & PlaneBits::STENCIL)
                     wgpuRenderPassEncoderSetStencilReference(m_RenderPass, clearAttachmentDesc.value.depthStencil.stencil);
 
@@ -1782,7 +1817,9 @@ void CommandBufferWGPU::ClearStorage(const ClearStorageDesc& clearStorageDesc) {
         if (pass) {
             wgpuComputePassEncoderSetPipeline(pass, pipeline);
             wgpuComputePassEncoderSetBindGroup(pass, 0, bindGroup, 0, nullptr);
+#if !defined(__EMSCRIPTEN__)
             wgpuComputePassEncoderSetImmediates(pass, 0, &constants, sizeof(constants));
+#endif
             wgpuComputePassEncoderDispatchWorkgroups(pass, DivideUpWGPU(constants.wordNum, 64u), 1, 1);
             wgpuComputePassEncoderEnd(pass);
             wgpuComputePassEncoderRelease(pass);
@@ -1843,7 +1880,9 @@ void CommandBufferWGPU::ClearStorage(const ClearStorageDesc& clearStorageDesc) {
     if (pass) {
         wgpuComputePassEncoderSetPipeline(pass, pipeline);
         wgpuComputePassEncoderSetBindGroup(pass, 0, bindGroup, 0, nullptr);
+#if !defined(__EMSCRIPTEN__)
         wgpuComputePassEncoderSetImmediates(pass, 0, &constants, sizeof(constants));
+#endif
         wgpuComputePassEncoderDispatchWorkgroups(pass, DivideUpWGPU(width, 8u), DivideUpWGPU(constants.height, 8u), depth);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);

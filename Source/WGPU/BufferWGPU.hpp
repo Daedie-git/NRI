@@ -69,7 +69,11 @@ void* BufferWGPU::Map(uint64_t offset, uint64_t size) {
         } context = {};
 
         WGPUBufferMapCallbackInfo callbackInfo = WGPU_BUFFER_MAP_CALLBACK_INFO_INIT;
+#if defined(__EMSCRIPTEN__)
+        callbackInfo.mode = WGPUCallbackMode_WaitAnyOnly;
+#else
         callbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+#endif
         callbackInfo.userdata1 = &context;
         callbackInfo.callback = [](WGPUMapAsyncStatus status, WGPUStringView, void* userdata1, void*) {
             MapContext& context = *(MapContext*)userdata1;
@@ -79,13 +83,17 @@ void* BufferWGPU::Map(uint64_t offset, uint64_t size) {
 
         size_t mapOffset = (size_t)(m_MapOffset & ~7ull);
         size_t mapSize = (size_t)Align(m_MapOffset + m_MapSize - mapOffset, 4);
-        wgpuBufferMapAsync(m_Buffer, WGPUMapMode_Read, mapOffset, mapSize, callbackInfo);
+        WGPUFuture mapFuture = wgpuBufferMapAsync(m_Buffer, WGPUMapMode_Read, mapOffset, mapSize, callbackInfo);
 
         // TODO: Readback map is blocking and pumps the device until completion.
+#if defined(__EMSCRIPTEN__)
+        WaitForFuture(m_Device.GetInstance(), mapFuture);
+#else
         while (!context.completed) {
             wgpuDevicePoll(m_Device, WGPU_TRUE, nullptr);
             wgpuInstanceProcessEvents(m_Device.GetInstance());
         }
+#endif
 
         if (context.status != WGPUMapAsyncStatus_Success) {
             m_MapOffset = 0;
