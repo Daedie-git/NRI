@@ -40,6 +40,10 @@ struct DeviceWGPU final : public DeviceBase {
         return m_Queue;
     }
 
+    inline Lock& GetQueueLock() const {
+        return m_QueueLock;
+    }
+
     inline const CoreInterface& GetCoreInterface() const {
         return m_iCore;
     }
@@ -114,6 +118,7 @@ private:
     WGPUDevice m_Device = nullptr;
     WGPUQueue m_Queue = nullptr;
     VKBindingOffsets m_BindingOffsets = {};
+    mutable Lock m_QueueLock;
     bool m_IsTimestampQueryInsidePassesSupported = false;
     bool m_IsSubgroupsSupported = false;
     Lock m_HostCopyContextLock;

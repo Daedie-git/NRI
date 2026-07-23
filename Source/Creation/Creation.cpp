@@ -613,6 +613,8 @@ static void UpdateAdaptersWGPU(AdapterDesc* adapterDescs, uint32_t& adapterDescN
             AdapterDesc& adapterDesc = adapterDescs[adapterDescNum++];
             adapterDesc.sharedSystemMemorySize = 128ull << 30;
             adapterDesc.queueNum[(uint32_t)QueueType::GRAPHICS] = 1;
+            adapterDesc.queueNum[(uint32_t)QueueType::COMPUTE] = 1;
+            adapterDesc.queueNum[(uint32_t)QueueType::COPY] = 1;
             adapterDesc.vendor = GetVendorFromID(adapterInfo.vendorID);
             adapterDesc.architecture = GetArchitecture(adapterInfo.adapterType);
             adapterDesc.deviceId = adapterInfo.deviceID;
@@ -687,8 +689,8 @@ static void UpdateAdaptersWGPU(AdapterDesc* adapterDescs, uint32_t& adapterDescN
             AdapterDesc& adapterDesc = adapterDescs[adapterDescNum++];
             adapterDesc.sharedSystemMemorySize = 128ull << 30;
             adapterDesc.queueNum[(uint32_t)QueueType::GRAPHICS] = 1;
-            adapterDesc.queueNum[(uint32_t)QueueType::COMPUTE] = 0;
-            adapterDesc.queueNum[(uint32_t)QueueType::COPY] = 0;
+            adapterDesc.queueNum[(uint32_t)QueueType::COMPUTE] = 1;
+            adapterDesc.queueNum[(uint32_t)QueueType::COPY] = 1;
             adapterDesc.vendor = vendor;
             adapterDesc.architecture = GetArchitecture(adapterInfo.adapterType);
             adapterDesc.deviceId = adapterInfo.deviceID;
