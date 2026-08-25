@@ -642,8 +642,15 @@ Result DeviceWGPU::UploadHostMemoryToTexture(const UploadHostMemoryToTextureDesc
         wgpuQueueWriteTexture(m_Queue, &dst, copyDesc.srcData, dataSize, &src.layout, &extent);
     }
 
+#if defined(__EMSCRIPTEN__)
+    WGPUQueueWorkDoneCallbackInfo callbackInfo = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+    callbackInfo.mode = WGPUCallbackMode_WaitAnyOnly;
+    callbackInfo.callback = [](WGPUQueueWorkDoneStatus, WGPUStringView, void*, void*) {};
+    WaitForFuture(m_Instance, wgpuQueueOnSubmittedWorkDone(m_Queue, callbackInfo));
+#else
     WGPUSubmissionIndex submissionIndex = wgpuQueueSubmitForIndex(m_Queue, 0, nullptr);
     wgpuDevicePoll(m_Device, WGPU_TRUE, &submissionIndex);
+#endif
 
     return Result::SUCCESS;
 }
@@ -704,8 +711,13 @@ Result DeviceWGPU::ReadbackTextureToHostMemory(const ReadbackTextureToHostMemory
             result = Result::FAILURE;
     }
 
-    if (result == Result::SUCCESS)
+    if (result == Result::SUCCESS) {
+#if defined(__EMSCRIPTEN__)
+        wgpuQueueSubmit(m_Queue, 1, &commandBuffer);
+#else
         wgpuQueueSubmitForIndex(m_Queue, 1, &commandBuffer);
+#endif
+    }
 
     if (commandBuffer)
         wgpuCommandBufferRelease(commandBuffer);
