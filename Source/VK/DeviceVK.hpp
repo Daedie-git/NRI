@@ -827,6 +827,16 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
         }
     }
 
+    // FURY-PATCH(vk-copy-queue, until the upstream NRI ticket lands): clamp each requested queue count to what its selected
+    // family offers, so a request sized for a shared family stays valid on a dedicated one (the reported count follows).
+    Scratch<QueueFamilyDesc> queueFamilyDescs = NRI_ALLOCATE_SCRATCH(*this, QueueFamilyDesc, desc.queueFamilyNum ? desc.queueFamilyNum : 1);
+    for (uint32_t i = 0; i < desc.queueFamilyNum; i++) {
+        queueFamilyDescs[i] = desc.queueFamilies[i];
+        const uint32_t familyIndex = queueFamilyIndices[(size_t)queueFamilyDescs[i].queueType];
+        if (!isWrapper && familyIndex != INVALID_FAMILY_INDEX)
+            queueFamilyDescs[i].queueNum = std::min(queueFamilyDescs[i].queueNum, familyProps2[familyIndex].queueFamilyProperties.queueCount);
+    }
+
     { // Memory props
         VkPhysicalDeviceMemoryProperties2 memoryProps = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
         m_VK.GetPhysicalDeviceMemoryProperties2(m_PhysicalDevice, &memoryProps);
@@ -1038,7 +1048,7 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
             deviceCreateInfo.enabledExtensionCount = (uint32_t)desiredDeviceExts.size();
             deviceCreateInfo.ppEnabledExtensionNames = desiredDeviceExts.data();
 
-            deviceCreateInfo.queueCreateInfoCount = BuildQueueCreateInfos(desc.queueFamilies, desc.queueFamilyNum, queueFamilyIndices, queueCreateInfos, queuePriorities);
+            deviceCreateInfo.queueCreateInfoCount = BuildQueueCreateInfos(queueFamilyDescs, desc.queueFamilyNum, queueFamilyIndices, queueCreateInfos, queuePriorities);
 
             VkResult vkResult = m_VK.CreateDevice(m_PhysicalDevice, &deviceCreateInfo, m_AllocationCallbackPtr, &m_Device);
             NRI_RETURN_ON_BAD_VKRESULT(this, vkResult, "vkCreateDevice");
@@ -1079,7 +1089,7 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
         }
     } else {
         for (uint32_t i = 0; i < desc.queueFamilyNum; i++) {
-            const QueueFamilyDesc& queueFamilyDesc = desc.queueFamilies[i];
+            const QueueFamilyDesc& queueFamilyDesc = queueFamilyDescs[i];
             auto& queueFamily = m_QueueFamilies[(size_t)queueFamilyDesc.queueType];
             uint32_t queueFamilyIndex = queueFamilyIndices[(size_t)queueFamilyDesc.queueType];
 

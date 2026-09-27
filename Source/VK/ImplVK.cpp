@@ -1498,6 +1498,14 @@ static void* NRI_CALL GetDeviceProcAddrVK(const Device& device) {
     return (void*)((DeviceVK&)device).GetDispatchTable().GetDeviceProcAddr;
 }
 
+// FURY-PATCH(vk-copy-queue): see "GetQueryPoolResultsVK" in NRIWrapperVK.h.
+static Result NRI_CALL GetQueryPoolResultsVK(const QueryPool& queryPool, uint32_t offset, uint32_t num, uint64_t* results) {
+    const QueryPoolVK& queryPoolVK = (const QueryPoolVK&)queryPool;
+    const DeviceVK& device = queryPoolVK.GetDevice();
+    const VkResult result = device.GetDispatchTable().GetQueryPoolResults(device, queryPoolVK.GetHandle(), offset, num, sizeof(uint64_t) * num, results, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+    return result == VK_SUCCESS ? Result::SUCCESS : Result::FAILURE;
+}
+
 Result DeviceVK::FillFunctionTable(WrapperVKInterface& table) const {
     table.CreateCommandAllocatorVK = ::CreateCommandAllocatorVK;
     table.CreateCommandBufferVK = ::CreateCommandBufferVK;
@@ -1514,6 +1522,7 @@ Result DeviceVK::FillFunctionTable(WrapperVKInterface& table) const {
     table.GetInstanceVK = ::GetInstanceVK;
     table.GetDeviceProcAddrVK = ::GetDeviceProcAddrVK;
     table.GetInstanceProcAddrVK = ::GetInstanceProcAddrVK;
+    table.GetQueryPoolResultsVK = ::GetQueryPoolResultsVK;
 
     return Result::SUCCESS;
 }

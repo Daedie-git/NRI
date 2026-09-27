@@ -2331,6 +2331,12 @@ static void* NRI_CALL GetDeviceProcAddrVK(const Device& device) {
     return ((DeviceVal&)device).GetWrapperVKInterfaceImpl().GetDeviceProcAddrVK(((DeviceVal&)device).GetImpl());
 }
 
+// FURY-PATCH(vk-copy-queue): see "GetQueryPoolResultsVK" in NRIWrapperVK.h.
+static Result NRI_CALL GetQueryPoolResultsVK(const QueryPool& queryPool, uint32_t offset, uint32_t num, uint64_t* results) {
+    const QueryPoolVal& queryPoolVal = (const QueryPoolVal&)queryPool;
+    return queryPoolVal.GetDevice().GetWrapperVKInterfaceImpl().GetQueryPoolResultsVK(*queryPoolVal.GetImpl(), offset, num, results);
+}
+
 #endif
 
 Result DeviceVal::FillFunctionTable(WrapperVKInterface& table) const {
@@ -2353,6 +2359,7 @@ Result DeviceVal::FillFunctionTable(WrapperVKInterface& table) const {
     table.GetInstanceVK = ::GetInstanceVK;
     table.GetDeviceProcAddrVK = ::GetDeviceProcAddrVK;
     table.GetInstanceProcAddrVK = ::GetInstanceProcAddrVK;
+    table.GetQueryPoolResultsVK = ::GetQueryPoolResultsVK;
 
     return Result::SUCCESS;
 #else

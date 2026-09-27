@@ -129,6 +129,10 @@ NriStruct(WrapperVKInterface) {
     VKHandle    (NRI_CALL *GetInstanceVK)                   (const NriRef(Device) device);
     void*       (NRI_CALL *GetInstanceProcAddrVK)           (const NriRef(Device) device);
     void*       (NRI_CALL *GetDeviceProcAddrVK)             (const NriRef(Device) device);
+
+    // FURY-PATCH(vk-copy-queue, until the upstream NRI ticket lands): host read of 64-bit query results, for timestamps written
+    // on a copy-only queue, which can neither reset nor copy queries. Fails without waiting while any is unavailable.
+    Nri(Result) (NRI_CALL *GetQueryPoolResultsVK)           (const NriRef(QueryPool) queryPool, uint32_t offset, uint32_t num, NriPtr(uint64_t) results);
 };
 
 NRI_API Nri(Result) NRI_CALL nriCreateDeviceFromVKDevice(const NriRef(DeviceCreationVKDesc) deviceDesc, NriOut NriRef(Device*) device);

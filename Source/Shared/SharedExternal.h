@@ -673,8 +673,10 @@ inline QueueType TrySelectPreferredQueueType(const QueueFamilyProps& props, std:
     }
 
     { // Prefer copy-only
+        // FURY-PATCH(vk-copy-queue, until the upstream NRI ticket lands): a dedicated copy family (the DMA engine) outranks
+        // queue count. Upstream weighs "100 * queueCount" above dedication, which picks NVIDIA's 16-queue graphics family.
         size_t index = (size_t)QueueType::COPY;
-        uint32_t score = ((!props.graphics ? 10 : 0) + (!props.compute ? 10 : 0) + (props.copy ? 100 * props.queueCount : 0) + (props.sparse ? 5 : 0) + (!props.videoDecode ? 2 : 0) + (!props.videoEncode ? 2 : 0) + (props.protect ? 1 : 0) + (!props.opticalFlow ? 1 : 0));
+        uint32_t score = ((!props.graphics ? 1000 : 0) + (!props.compute ? 1000 : 0) + (props.copy ? 100 * props.queueCount : 0) + (props.sparse ? 5 : 0) + (!props.videoDecode ? 2 : 0) + (!props.videoEncode ? 2 : 0) + (props.protect ? 1 : 0) + (!props.opticalFlow ? 1 : 0));
 
         if (props.copy && score > scores[index]) {
             scores[index] = score;
