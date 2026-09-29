@@ -280,7 +280,7 @@ private:
     void ProcessInstanceExtensions(Vector<const char*>& desiredInstanceExts);
     void ProcessDeviceExtensions(Vector<const char*>& desiredDeviceExts, bool disableRayTracing, DeviceLostInfoLevel deviceLostInfoLevel);
     void ReportMemoryTypes();
-    Result CreateInstance(bool enableGraphicsAPIValidation, const Vector<const char*>& desiredInstanceExts);
+    Result CreateInstance(bool enableGraphicsAPIValidation, bool disableValidationHandleWrapping, const Vector<const char*>& desiredInstanceExts);
     Result ResolvePreInstanceDispatchTable();
     Result ResolveInstanceDispatchTable(const Vector<const char*>& desiredInstanceExts);
     Result ResolveDispatchTable(const Vector<const char*>& desiredDeviceExts);
