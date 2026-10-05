@@ -8,7 +8,7 @@
 #include "NRI.h"
 
 #include "Extensions/NRIVideo.h"
-#include "VideoAnnexB.h"
+#include "SharedExternal.h"
 
 TEST_CASE("VID-SOAK-001 serializer soak", "[video][soak]") {
     nri::VideoAnnexBEndOfStreamDesc desc = {};
@@ -22,7 +22,7 @@ TEST_CASE("VID-SOAK-001 serializer soak", "[video][soak]") {
     uint64_t iterationNum = 0;
 
     while (std::chrono::steady_clock::now() < deadline) {
-        REQUIRE(nri::WriteVideoAnnexBEndOfStreamShared(desc) == nri::Result::SUCCESS);
+        REQUIRE(nri::video::WriteAnnexBEndOfStream(desc) == nri::Result::SUCCESS);
         desc.codec = desc.codec == nri::VideoCodec::H264 ? nri::VideoCodec::H265 : nri::VideoCodec::H264;
         iterationNum++;
     }

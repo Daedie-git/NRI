@@ -50,10 +50,22 @@ TEST_CASE("VID-INT-001 VideoInterface export validates names, sizes, and outputs
     for (const char* name : {"VideoInterface", "nri::VideoInterface", "NriVideoInterface"}) {
         nri::VideoInterface video;
         std::memset(&video, 0xA5, sizeof(video));
-        REQUIRE(nri::nriGetInterface(*owner.device, name, sizeof(video), &video) == nri::Result::UNSUPPORTED);
+        REQUIRE(nri::nriGetInterface(*owner.device, name, sizeof(video), &video) == nri::Result::SUCCESS);
 
-        const std::array<uint8_t, sizeof(video)> zero = {};
-        REQUIRE(std::memcmp(&video, zero.data(), sizeof(video)) == 0);
+        REQUIRE(video.GetVideoCapabilities);
+        REQUIRE(video.CreateVideoSession);
+        REQUIRE(video.CmdDecodeVideo);
+        REQUIRE(video.CmdEncodeVideo);
+        REQUIRE(video.GetVideoAV1EncodeDecodeInfo);
+        nri::VideoSessionDesc sessionDesc = {};
+        sessionDesc.codec = nri::VideoCodec::H264;
+        sessionDesc.format = nri::Format::NV12_UNORM;
+        sessionDesc.width = 1920;
+        sessionDesc.height = 1080;
+        nri::VideoCapabilities capabilities = {};
+        REQUIRE(video.GetVideoCapabilities(*owner.device, sessionDesc, capabilities) == nri::Result::SUCCESS);
+        REQUIRE(capabilities.decodeNativeArgumentsSupported);
+        REQUIRE(capabilities.encodeFeedbackSupported);
     }
 
     std::array<uint8_t, sizeof(nri::VideoInterface)> bytes = {};

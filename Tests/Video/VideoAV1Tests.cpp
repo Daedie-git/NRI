@@ -10,8 +10,7 @@
 #include "NRI.h"
 
 #include "Extensions/NRIVideo.h"
-#include "VideoAV1.h"
-#include "VideoAnnexB.h"
+#include "SharedExternal.h"
 
 namespace {
 
@@ -47,7 +46,7 @@ struct BitWriter {
 
 std::vector<uint8_t> MakeFrameObu(const std::vector<uint8_t>& payload) {
     std::vector<uint8_t> obu;
-    obu.push_back((uint8_t(nri::video_av1::ObuType::Frame) << 3u) | 0x02u);
+    obu.push_back((uint8_t(nri::video::av1::ObuType::Frame) << 3u) | 0x02u);
     size_t value = payload.size();
     do {
         uint8_t byte = uint8_t(value & 0x7Fu);
@@ -130,7 +129,7 @@ std::array<nri::VideoAV1ReferenceDesc, 8> MakeReferences() {
     for (uint32_t i = 0; i < references.size(); i++) {
         references[i].slot = i + 10;
         references[i].refFrameIndex = (uint8_t)i;
-        references[i].frameType = i == 0 ? nri::VideoEncodeFrameType::IDR : nri::VideoEncodeFrameType::P;
+        references[i].frameType = i == 0 ? nri::VideoFrameType::IDR : nri::VideoFrameType::P;
         references[i].orderHint = (uint8_t)i;
         references[i].frameId = 100 + i;
     }
@@ -184,18 +183,18 @@ void ClearInternalPointers(nri::VideoAV1EncodeDecodeInfo& info) {
 TEST_CASE("VID-SER-002 AV1 OBU size queries and bounds are exact", "[video][serializer][short]") {
     nri::VideoAV1ObuHeadersDesc desc = {};
     desc.sequence = MakeSequence();
-    REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::SUCCESS);
     REQUIRE(desc.writtenSize != 0);
 
     std::vector<uint8_t> bytes(desc.writtenSize + 2, 0xA5);
     desc.dst = bytes.data() + 1;
     desc.dstSize = desc.writtenSize - 1;
-    REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+    REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
     REQUIRE(bytes.front() == 0xA5);
     REQUIRE(bytes.back() == 0xA5);
 
     desc.dstSize = desc.writtenSize;
-    REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::SUCCESS);
     REQUIRE(bytes.front() == 0xA5);
     REQUIRE(bytes.back() == 0xA5);
 }
@@ -208,8 +207,8 @@ TEST_CASE("VID-PAR-001 AV1 inter-frame metadata parses all references", "[video]
     const nri::VideoAV1EncodeDecodeInfoDesc desc = MakeDecodeInfoDesc(feedback, sequence, payload, payload.size(), references);
 
     nri::VideoAV1EncodeDecodeInfo info = {};
-    REQUIRE(nri::video_av1::GetVideoEncodeAV1DecodeInfoFromHeader(desc, info) == nri::Result::SUCCESS);
-    REQUIRE(info.picture.frameType == nri::VideoEncodeFrameType::P);
+    REQUIRE(nri::video::av1::GetEncodeDecodeInfoFromHeader(desc, info) == nri::Result::SUCCESS);
+    REQUIRE(info.picture.frameType == nri::VideoFrameType::P);
     REQUIRE(info.picture.refreshFrameFlags == 0x24);
     REQUIRE(info.picture.primaryReferenceName == nri::VideoAV1ReferenceName::GOLDEN);
     REQUIRE(info.picture.referenceNum == 7);
@@ -233,8 +232,8 @@ TEST_CASE("VID-REG-003 AV1 parse result does not depend on caller bytes", "[vide
     nri::VideoAV1EncodeDecodeInfo zeroed = {};
     nri::VideoAV1EncodeDecodeInfo poisoned;
     std::memset(&poisoned, 0xCD, sizeof(poisoned));
-    REQUIRE(nri::video_av1::GetVideoEncodeAV1DecodeInfoFromHeader(desc, zeroed) == nri::Result::SUCCESS);
-    REQUIRE(nri::video_av1::GetVideoEncodeAV1DecodeInfoFromHeader(desc, poisoned) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::av1::GetEncodeDecodeInfoFromHeader(desc, zeroed) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::av1::GetEncodeDecodeInfoFromHeader(desc, poisoned) == nri::Result::SUCCESS);
 
     REQUIRE(zeroed.picture.tileLayout == &zeroed.tileLayout);
     REQUIRE(poisoned.picture.tileLayout == &poisoned.tileLayout);
@@ -251,41 +250,41 @@ TEST_CASE("VID-REG-020 invalid AV1 dependent fields are rejected", "[video][seri
     desc.sequence = MakeSequence();
 
     desc.sequence.orderHintBitsMinus1 = 8;
-    REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+    REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
 
     desc.sequence = MakeSequence();
     desc.sequence.flags |= nri::VideoAV1SequenceBits::TIMING_INFO_PRESENT;
     desc.sequence.numTicksPerPictureMinus1 = UINT32_MAX;
-    REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+    REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
 
     desc.sequence = MakeSequence();
     desc.sequence.seqProfile = 0;
     desc.sequence.bitDepth = 12;
-    REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+    REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
 }
 
 TEST_CASE("VID-PAR-002 AV1 OBU scanner rejects cursor and extension hazards", "[video][parser][short]") {
-    nri::video_av1::ObuSpan span = {};
+    nri::video::av1::ObuSpan span = {};
     const std::array<uint8_t, 4> obu = {
-        uint8_t((uint8_t(nri::video_av1::ObuType::Frame) << 3u) | 0x06u),
+        uint8_t((uint8_t(nri::video::av1::ObuType::Frame) << 3u) | 0x06u),
         0x01,
         0x01,
         0x00,
     };
 
     size_t cursor = obu.size();
-    REQUIRE_FALSE(nri::video_av1::ReadObuHeader(obu.data(), obu.size(), cursor, span));
+    REQUIRE_FALSE(nri::video::av1::ReadObuHeader(obu.data(), obu.size(), cursor, span));
 
     cursor = obu.size() + 1;
-    REQUIRE_FALSE(nri::video_av1::ReadObuHeader(obu.data(), obu.size(), cursor, span));
+    REQUIRE_FALSE(nri::video::av1::ReadObuHeader(obu.data(), obu.size(), cursor, span));
 
     cursor = 0;
-    REQUIRE_FALSE(nri::video_av1::ReadObuHeader(obu.data(), obu.size(), cursor, span));
+    REQUIRE_FALSE(nri::video::av1::ReadObuHeader(obu.data(), obu.size(), cursor, span));
 
     std::array<uint8_t, 4> valid = obu;
     valid[1] = 0;
     cursor = 0;
-    REQUIRE(nri::video_av1::ReadObuHeader(valid.data(), valid.size(), cursor, span));
+    REQUIRE(nri::video::av1::ReadObuHeader(valid.data(), valid.size(), cursor, span));
     REQUIRE(span.payloadOffset == 3);
     REQUIRE(span.payloadSize == 1);
 }
@@ -302,7 +301,7 @@ TEST_CASE("VID-PAR-003 AV1 parser is failure-atomic for every short prefix", "[v
         nri::VideoAV1EncodeDecodeInfo info;
         std::memset(&info, 0xA5, sizeof(info));
         const nri::VideoAV1EncodeDecodeInfo original = info;
-        const nri::Result result = nri::video_av1::GetVideoEncodeAV1DecodeInfoFromHeader(desc, info);
+        const nri::Result result = nri::video::av1::GetEncodeDecodeInfoFromHeader(desc, info);
 
         if (result != nri::Result::SUCCESS)
             REQUIRE(std::memcmp(&info, &original, sizeof(info)) == 0);
@@ -319,32 +318,32 @@ TEST_CASE("VID-SER-006 AV1 sequence dependency matrix rejects invalid combinatio
 
     SECTION("reduced still picture dependencies") {
         desc.sequence.flags = nri::VideoAV1SequenceBits::REDUCED_STILL_PICTURE_HEADER;
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
 
         desc.sequence.flags |= nri::VideoAV1SequenceBits::STILL_PICTURE | nri::VideoAV1SequenceBits::ENABLE_ORDER_HINT;
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
     }
 
     SECTION("profile one color constraints") {
         desc.sequence.seqProfile = 1;
         desc.sequence.subsamplingX = 1;
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
     }
 
     SECTION("frame dimensions fit declared widths") {
         desc.sequence.frameWidthBitsMinus1 = 0;
         desc.sequence.maxFrameWidthMinus1 = 2;
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
     }
 
     SECTION("screen-content selectors") {
         desc.sequence.seqForceScreenContentTools = 3;
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
     }
 
     SECTION("monochrome inferred fields") {
         desc.sequence.flags |= nri::VideoAV1SequenceBits::MONO_CHROME | nri::VideoAV1SequenceBits::SEPARATE_UV_DELTA_Q;
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
     }
 
     SECTION("identity-matrix inferred fields") {
@@ -355,14 +354,14 @@ TEST_CASE("VID-SER-006 AV1 sequence dependency matrix rejects invalid combinatio
         desc.sequence.colorPrimaries = 1;           // BT.709
         desc.sequence.transferCharacteristics = 13; // sRGB
         desc.sequence.matrixCoefficients = 0;       // identity
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::INVALID_ARGUMENT);
     }
 }
 
 TEST_CASE("VID-SER-008 AV1 representative OBU headers match golden bytes", "[video][serializer][short]") {
     nri::VideoAV1ObuHeadersDesc desc = {};
     desc.sequence = MakeSequence();
-    REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::SUCCESS);
 
     const std::array<uint8_t, 14> golden = {
         0x12,
@@ -385,7 +384,7 @@ TEST_CASE("VID-SER-008 AV1 representative OBU headers match golden bytes", "[vid
     std::array<uint8_t, 14> bytes = {};
     desc.dst = bytes.data();
     desc.dstSize = bytes.size();
-    REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::SUCCESS);
     REQUIRE(bytes == golden);
 }
 
@@ -414,7 +413,7 @@ TEST_CASE("VID-REG-027 AV1 inferred color syntax matches the specification", "[v
         std::array<uint8_t, 14> bytes = {};
         desc.dst = bytes.data();
         desc.dstSize = bytes.size();
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::SUCCESS);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::SUCCESS);
         REQUIRE(desc.writtenSize == golden.size());
         REQUIRE(bytes == golden);
     }
@@ -452,7 +451,7 @@ TEST_CASE("VID-REG-027 AV1 inferred color syntax matches the specification", "[v
         std::array<uint8_t, 17> bytes = {};
         desc.dst = bytes.data();
         desc.dstSize = bytes.size();
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::SUCCESS);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::SUCCESS);
         REQUIRE(desc.writtenSize == golden.size());
         REQUIRE(bytes == golden);
     }

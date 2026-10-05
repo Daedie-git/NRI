@@ -7,7 +7,7 @@
 // VID-API-001: the complete public video facade must compile as C11.
 
 _Static_assert(sizeof(NriVideoSessionType) == sizeof(uint8_t), "VideoSessionType ABI changed");
-_Static_assert(sizeof(NriVideoEncodeFrameType) == sizeof(uint8_t), "VideoEncodeFrameType ABI changed");
+_Static_assert(sizeof(NriVideoFrameType) == sizeof(uint8_t), "VideoEncodeFrameType ABI changed");
 _Static_assert(sizeof(NriVideoInterface) % sizeof(void*) == 0, "VideoInterface must contain only complete function slots");
 
 void nriVideoCHeaderTest(void) {

@@ -8,7 +8,7 @@
 #include "NRI.h"
 
 #include "Extensions/NRIVideo.h"
-#include "VideoAnnexB.h"
+#include "SharedExternal.h"
 
 TEST_CASE("VID-STRESS-001 serializers remain stable across repeated calls", "[video][stress]") {
     uint32_t iterationNum = 1000000;
@@ -30,13 +30,13 @@ TEST_CASE("VID-STRESS-001 serializers remain stable across repeated calls", "[vi
     std::array<uint8_t, 256> output = {};
     desc.dst = output.data();
     desc.dstSize = output.size();
-    REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::SUCCESS);
     const uint64_t expectedSize = desc.writtenSize;
     const std::array<uint8_t, 256> expected = output;
 
     for (uint32_t i = 0; i < iterationNum; i++) {
         output.fill(0);
-        REQUIRE(nri::WriteVideoAV1ObuHeadersShared(desc) == nri::Result::SUCCESS);
+        REQUIRE(nri::video::WriteAV1ObuHeaders(desc) == nri::Result::SUCCESS);
         REQUIRE(desc.writtenSize == expectedSize);
         REQUIRE(output == expected);
     }

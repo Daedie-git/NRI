@@ -11,7 +11,7 @@
 #include "NRI.h"
 
 #include "Extensions/NRIVideo.h"
-#include "VideoAnnexB.h"
+#include "SharedExternal.h"
 
 namespace {
 
@@ -46,13 +46,13 @@ std::vector<uint8_t> WriteH264(const nri::VideoH264SequenceParameterSetDesc& sps
     desc.codec = nri::VideoCodec::H264;
     desc.h264Sps = &sps;
     desc.h264Pps = &pps;
-    REQUIRE(nri::WriteVideoAnnexBParameterSetsShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAnnexBParameterSets(desc) == nri::Result::SUCCESS);
     REQUIRE(desc.writtenSize != 0);
 
     std::vector<uint8_t> bytes(desc.writtenSize);
     desc.dst = bytes.data();
     desc.dstSize = bytes.size();
-    REQUIRE(nri::WriteVideoAnnexBParameterSetsShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAnnexBParameterSets(desc) == nri::Result::SUCCESS);
     REQUIRE(desc.writtenSize == bytes.size());
 
     return bytes;
@@ -98,12 +98,12 @@ std::vector<uint8_t> WriteH265(const nri::VideoH265VideoParameterSetDesc& vps, c
     desc.h265Vps = &vps;
     desc.h265Sps = &sps;
     desc.h265Pps = &pps;
-    REQUIRE(nri::WriteVideoAnnexBParameterSetsShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAnnexBParameterSets(desc) == nri::Result::SUCCESS);
 
     std::vector<uint8_t> bytes(desc.writtenSize);
     desc.dst = bytes.data();
     desc.dstSize = bytes.size();
-    REQUIRE(nri::WriteVideoAnnexBParameterSetsShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAnnexBParameterSets(desc) == nri::Result::SUCCESS);
 
     return bytes;
 }
@@ -122,12 +122,12 @@ TEST_CASE("VID-SER-001 Annex-B size queries and bounds are exact", "[video][seri
     desc.h264Pps = &pps;
     desc.dst = guarded.data() + 1;
     desc.dstSize = expected.size() - 1;
-    REQUIRE(nri::WriteVideoAnnexBParameterSetsShared(desc) == nri::Result::INVALID_ARGUMENT);
+    REQUIRE(nri::video::WriteAnnexBParameterSets(desc) == nri::Result::INVALID_ARGUMENT);
     REQUIRE(guarded.front() == 0xA5);
     REQUIRE(guarded.back() == 0xA5);
 
     desc.dstSize = expected.size();
-    REQUIRE(nri::WriteVideoAnnexBParameterSetsShared(desc) == nri::Result::SUCCESS);
+    REQUIRE(nri::video::WriteAnnexBParameterSets(desc) == nri::Result::SUCCESS);
     REQUIRE(std::equal(expected.begin(), expected.end(), guarded.begin() + 1));
     REQUIRE(guarded.front() == 0xA5);
     REQUIRE(guarded.back() == 0xA5);
@@ -168,7 +168,7 @@ TEST_CASE("VID-REG-005 H.265 represented syntax is encoded or rejected", "[video
     desc.h265Vps = &vps;
     desc.h265Sps = &sps;
     desc.h265Pps = &pps;
-    const nri::Result result = nri::WriteVideoAnnexBParameterSetsShared(desc);
+    const nri::Result result = nri::video::WriteAnnexBParameterSets(desc);
     REQUIRE((result == nri::Result::SUCCESS || result == nri::Result::UNSUPPORTED));
 
     if (result == nri::Result::SUCCESS)
@@ -182,28 +182,28 @@ TEST_CASE("VID-REG-005 H.265 represented syntax is encoded or rejected", "[video
     invalidSubLayers.h265Pps = &pps;
 
     vps.maxSubLayersMinus1 = 7;
-    CHECK(nri::WriteVideoAnnexBParameterSetsShared(invalidSubLayers) == nri::Result::INVALID_ARGUMENT);
+    CHECK(nri::video::WriteAnnexBParameterSets(invalidSubLayers) == nri::Result::INVALID_ARGUMENT);
 
     vps = MakeH265Vps();
     sps.maxSubLayersMinus1 = 7;
-    CHECK(nri::WriteVideoAnnexBParameterSetsShared(invalidSubLayers) == nri::Result::INVALID_ARGUMENT);
+    CHECK(nri::video::WriteAnnexBParameterSets(invalidSubLayers) == nri::Result::INVALID_ARGUMENT);
 }
 
 TEST_CASE("VID-SER-003 Annex-B end markers have exact transactional writes", "[video][serializer][short]") {
     for (nri::VideoCodec codec : {nri::VideoCodec::H264, nri::VideoCodec::H265}) {
         nri::VideoAnnexBEndOfStreamDesc desc = {};
         desc.codec = codec;
-        REQUIRE(nri::WriteVideoAnnexBEndOfStreamShared(desc) == nri::Result::SUCCESS);
+        REQUIRE(nri::video::WriteAnnexBEndOfStream(desc) == nri::Result::SUCCESS);
         REQUIRE(desc.writtenSize != 0);
 
         std::vector<uint8_t> bytes(desc.writtenSize + 2, 0xA5);
         desc.dst = bytes.data() + 1;
         desc.dstSize = desc.writtenSize - 1;
-        REQUIRE(nri::WriteVideoAnnexBEndOfStreamShared(desc) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(nri::video::WriteAnnexBEndOfStream(desc) == nri::Result::INVALID_ARGUMENT);
         REQUIRE(std::all_of(bytes.begin(), bytes.end(), [](uint8_t value) { return value == 0xA5; }));
 
         desc.dstSize++;
-        REQUIRE(nri::WriteVideoAnnexBEndOfStreamShared(desc) == nri::Result::SUCCESS);
+        REQUIRE(nri::video::WriteAnnexBEndOfStream(desc) == nri::Result::SUCCESS);
         REQUIRE(bytes.front() == 0xA5);
         REQUIRE(bytes.back() == 0xA5);
     }
@@ -211,13 +211,13 @@ TEST_CASE("VID-SER-003 Annex-B end markers have exact transactional writes", "[v
     nri::VideoAnnexBEndOfStreamDesc invalid = {};
     invalid.codec = (nri::VideoCodec)UINT8_MAX;
     invalid.writtenSize = 0xA5A5;
-    REQUIRE(nri::WriteVideoAnnexBEndOfStreamShared(invalid) == nri::Result::UNSUPPORTED);
+    REQUIRE(nri::video::WriteAnnexBEndOfStream(invalid) == nri::Result::UNSUPPORTED);
     REQUIRE(invalid.writtenSize == 0xA5A5);
 }
 
 TEST_CASE("VID-SER-004 RBSP integer extremes and emulation prevention are lossless", "[video][serializer][short]") {
-    nri::video_annex_b::ByteWriter bytes = {};
-    nri::video_annex_b::RbspBitWriter writer = {bytes};
+    nri::video::bitstream::ByteWriter bytes = {};
+    nri::video::bitstream::RbspBitWriter writer = {bytes};
     writer.WriteUe(UINT32_MAX);
     writer.WriteSe(INT32_MIN);
     writer.WriteSe(INT32_MAX);
@@ -226,8 +226,8 @@ TEST_CASE("VID-SER-004 RBSP integer extremes and emulation prevention are lossle
     REQUIRE(bytes.writtenSize != 0);
 
     std::array<uint8_t, 8> output = {};
-    nri::video_annex_b::ByteWriter escapedBytes = {output.data(), output.size()};
-    nri::video_annex_b::RbspBitWriter escapedWriter = {escapedBytes};
+    nri::video::bitstream::ByteWriter escapedBytes = {output.data(), output.size()};
+    nri::video::bitstream::RbspBitWriter escapedWriter = {escapedBytes};
     escapedWriter.WriteRbspByte(0);
     escapedWriter.WriteRbspByte(0);
     escapedWriter.WriteRbspByte(1);
@@ -253,7 +253,7 @@ TEST_CASE("VID-SER-005 unsupported parameter sets fail before writing", "[video]
     h264.writtenSize = 0x11223344;
 
     h264Sps.pictureOrderCountType = 3;
-    REQUIRE(nri::WriteVideoAnnexBParameterSetsShared(h264) == nri::Result::UNSUPPORTED);
+    REQUIRE(nri::video::WriteAnnexBParameterSets(h264) == nri::Result::UNSUPPORTED);
     REQUIRE(h264.writtenSize == 0x11223344);
     REQUIRE(std::all_of(dst.begin(), dst.end(), [](uint8_t value) { return value == 0xA5; }));
 
@@ -270,7 +270,7 @@ TEST_CASE("VID-SER-005 unsupported parameter sets fail before writing", "[video]
     h265.dst = dst.data();
     h265.dstSize = dst.size();
     h265.writtenSize = 0x55667788;
-    REQUIRE(nri::WriteVideoAnnexBParameterSetsShared(h265) == nri::Result::UNSUPPORTED);
+    REQUIRE(nri::video::WriteAnnexBParameterSets(h265) == nri::Result::UNSUPPORTED);
     REQUIRE(h265.writtenSize == 0x55667788);
     REQUIRE(std::all_of(dst.begin(), dst.end(), [](uint8_t value) { return value == 0xA5; }));
 }

@@ -9,7 +9,7 @@
 #include "NRI.h"
 
 #include "Extensions/NRIVideo.h"
-#include "VideoAnnexB.h"
+#include "SharedExternal.h"
 
 TEST_CASE("VID-FUZZ-001 deterministic AV1 sequence descriptor fuzz", "[video][fuzz]") {
     uint32_t iterationNum = 250000;
@@ -37,7 +37,7 @@ TEST_CASE("VID-FUZZ-001 deterministic AV1 sequence descriptor fuzz", "[video][fu
         guarded.fill(0xA5);
         desc.dst = guarded.data() + 1;
         desc.dstSize = guarded.size() - 2;
-        const nri::Result result = nri::WriteVideoAV1ObuHeadersShared(desc);
+        const nri::Result result = nri::video::WriteAV1ObuHeaders(desc);
         REQUIRE((result == nri::Result::SUCCESS || result == nri::Result::INVALID_ARGUMENT));
         REQUIRE(guarded.front() == 0xA5);
         REQUIRE(guarded.back() == 0xA5);

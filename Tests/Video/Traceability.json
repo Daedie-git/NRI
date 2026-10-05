@@ -32,7 +32,7 @@
         {"id": "VID-REG-012", "surface": "video-metadata-checked-ranges", "tests": ["VID-REG-012"]},
         {"id": "VID-REG-013", "surface": "video-picture-session-format-and-extent", "tests": ["VID-REG-013"]},
         {"id": "VID-REG-020", "surface": "av1-sequence-validation", "tests": ["VID-REG-020"]},
-        {"id": "VID-REG-021", "surface": "optional-default-session-parameters", "tests": ["VID-REG-021"]},
+        {"id": "VID-REG-021", "surface": "h264-parameters-required-except-native-decode", "tests": ["VID-REG-021"]},
         {"id": "VID-REG-022", "surface": "resolved-video-metadata-buffer-usage", "tests": ["VID-REG-022"]},
         {"id": "VID-REG-023", "surface": "codec-reference-count-session-capacity", "tests": ["VID-REG-023"]},
         {"id": "VID-REG-024", "surface": "d3d12-av1-post-encode-metadata-layout", "tests": ["VID-REG-024"]},

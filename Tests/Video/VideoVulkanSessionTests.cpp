@@ -103,20 +103,20 @@ TEST_CASE("VID-REG-009 Vulkan session reset releases abandoned feedback queries"
     nri::BufferVK* metadata = (nri::BufferVK*)&harness;
 
     for (uint32_t i = 0; i < 64; i++)
-        REQUIRE(harness.session.AllocateEncodeFeedbackQuery(metadata, i * 16, 0) != UINT32_MAX);
-    REQUIRE(harness.session.AllocateEncodeFeedbackQuery(metadata, 1024, 0) == UINT32_MAX);
-    REQUIRE(harness.session.HasPendingEncodeFeedbackQuery(metadata, 0));
+        REQUIRE(harness.session.AllocateEncodeFeedbackQuery(metadata, i * 16) != UINT32_MAX);
+    REQUIRE(harness.session.AllocateEncodeFeedbackQuery(metadata, 1024) == UINT32_MAX);
+    REQUIRE(harness.session.FindEncodeFeedbackQuery(metadata, 0) != UINT32_MAX);
 
     harness.session.Reset();
-    REQUIRE_FALSE(harness.session.HasPendingEncodeFeedbackQuery(metadata, 0));
-    REQUIRE(harness.session.AllocateEncodeFeedbackQuery(metadata, 0, 0) != UINT32_MAX);
+    REQUIRE(harness.session.FindEncodeFeedbackQuery(metadata, 0) == UINT32_MAX);
+    REQUIRE(harness.session.AllocateEncodeFeedbackQuery(metadata, 0) != UINT32_MAX);
 }
 
 TEST_CASE("VID-REG-025 Vulkan AV1 decode info requires an explicit payload header", "[video][vulkan][regression][short]") {
     SessionHarness harness;
     std::array<uint8_t, sizeof(nri::VideoEncodeFeedback) + sizeof(uint32_t) * 3> metadata = {};
     nri::DeviceDesc& deviceDesc = const_cast<nri::DeviceDesc&>(harness.device.GetDesc());
-    deviceDesc.adapterDesc.queueNum[(size_t)nri::QueueType::VIDEO_ENCODE] = 1;
+    deviceDesc.features.video = true;
     nri::VideoInterface video = {};
     REQUIRE(harness.device.FillFunctionTable(video) == nri::Result::SUCCESS);
 
@@ -137,5 +137,5 @@ TEST_CASE("VID-REG-025 Vulkan AV1 decode info requires an explicit payload heade
     desc.sequence = &sequence;
     nri::VideoAV1EncodeDecodeInfo info = {};
 
-    REQUIRE(video.GetVideoEncodeAV1DecodeInfo((nri::VideoSession&)harness.session, (nri::Buffer&)buffer, 0, desc, info) == nri::Result::UNSUPPORTED);
+    REQUIRE(video.GetVideoAV1EncodeDecodeInfo((nri::VideoSession&)harness.session, (nri::Buffer&)buffer, 0, desc, info) == nri::Result::UNSUPPORTED);
 }
