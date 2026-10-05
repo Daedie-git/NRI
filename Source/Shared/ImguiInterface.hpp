@@ -289,6 +289,7 @@ struct ImTextureData {
     int UniqueID;
     ImTextureStatus Status;
     void* BackendUserData;
+    void* QueueUserData;
     ImTextureID TexID;
     ImTextureFormat Format;
     int Width;
@@ -329,7 +330,21 @@ struct ImDrawList {
     // rest is unreferenced
 };
 
+struct ImguiDrawCmd {
+    ImVec4 clipRect;
+    DrawIndexedDesc drawIndexedDesc;
+    Descriptor* descriptor;
+    float hdrScale;
+    bool isHdrScaleOverride;
+};
+
+static inline uint64_t GetImguiTextureKey(const ImTextureData& imTextureData) {
+    return (uint64_t)&imTextureData | ((uint64_t)imTextureData.UniqueID << 54ull);
+}
+
 // Implementation
+
+Lock ImguiImpl::s_TextureLock;
 
 ImguiImpl::~ImguiImpl() {
     for (auto& entry : m_Textures) {
@@ -444,11 +459,26 @@ Result ImguiImpl::Create(const ImguiDesc& imguiDesc) {
     return Result::SUCCESS;
 }
 
-void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, const CopyImguiDataDesc& copyImguiDataDesc) {
+void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, const CopyImguiDataDesc& copyImguiDataDesc, ImguiRenderData& imguiRenderData) {
     ExclusiveScope lock(m_Lock);
+
+    CmdCopyDataInternal(commandBuffer, streamer, copyImguiDataDesc, imguiRenderData);
+}
+
+void ImguiImpl::CmdDraw(CommandBuffer& commandBuffer, const ImguiRenderData& imguiRenderData, const DrawImguiDesc& drawImguiDesc) {
+    ExclusiveScope lock(m_Lock);
+
+    CmdDrawInternal(commandBuffer, imguiRenderData, drawImguiDesc);
+}
+
+void ImguiImpl::CmdCopyDataInternal(CommandBuffer& commandBuffer, Streamer& streamer, const CopyImguiDataDesc& copyImguiDataDesc, ImguiRenderData& imguiRenderData) {
+    imguiRenderData = {};
+    imguiRenderData.imgui = (Imgui*)this;
 
     if (!copyImguiDataDesc.drawListNum)
         return;
+
+    StreamerCopyBatch copyBatch = 0;
 
     Scratch<TextureBarrierDesc> textureBarriers = NRI_ALLOCATE_SCRATCH((DeviceBase&)m_Device, TextureBarrierDesc, copyImguiDataDesc.textureNum);
     uint32_t textureBarrierNum = 0;
@@ -459,11 +489,16 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
     // Update textures
     for (uint32_t i = 0; i < copyImguiDataDesc.textureNum; i++) {
         ImTextureData* imTextureData = copyImguiDataDesc.textures[i];
-        uint64_t key = (uint64_t)imTextureData | ((uint64_t)imTextureData->UniqueID << 54ull);
+        uint64_t key = GetImguiTextureKey(*imTextureData);
 
-        ImTextureStatus currentStatus = imTextureData->Status;
+        ImTextureStatus currentStatus;
+        uint64_t updateTick;
 
-        { // Phase 1: satisfy ImGui - naively assumes that the only one device renders a UI instance
+        { // Phase 1: satisfy ImGui
+            ExclusiveScope lock(s_TextureLock);
+
+            currentStatus = imTextureData->Status;
+
             // Destroy
             if (currentStatus == ImTextureStatus_WantDestroy && imTextureData->UnusedFrames > 8) { // TODO: keep an eye on 8...
                 imTextureData->TexID = ImTextureID_Invalid;
@@ -477,6 +512,8 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
                 imTextureData->BackendUserData = (void*)((uint64_t)imTextureData->BackendUserData + 1); // increment counter
                 imTextureData->Status = ImTextureStatus_OK;
             }
+
+            updateTick = (uint64_t)imTextureData->BackendUserData;
         }
 
         { // Phase 2: real logic - NRI supports rendering of the same UI instance on multiple devices
@@ -486,7 +523,6 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
 
             ImguiTexture& imguiTexture = entry->second;
             Format format = imTextureData->Format == ImTextureFormat_RGBA32 ? Format::RGBA8_UNORM : Format::R8_UNORM;
-            uint64_t updateTick = (uint64_t)imTextureData->BackendUserData;
 
             // Destroy
             if (updateTick == 0) {
@@ -529,6 +565,9 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
             NRI_CHECK(imguiTexture.texture && imguiTexture.descriptor, "Unexpected");
 
             if (imguiTexture.updateTick < updateTick) {
+                if (!copyBatch)
+                    copyBatch = m_iStreamer.BeginStreamerCopyBatch(streamer);
+
                 const FormatProps& formatProps = GetFormatProps(format);
 
                 if (imguiTexture.updateTick == 0) {
@@ -537,6 +576,7 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
                     streamTextureDataDesc.data = imTextureData->Pixels;
                     streamTextureDataDesc.dataRowPitch = imTextureData->Width * formatProps.stride;
                     streamTextureDataDesc.dataSlicePitch = imTextureData->Height * streamTextureDataDesc.dataRowPitch;
+                    streamTextureDataDesc.copyBatch = copyBatch;
                     streamTextureDataDesc.dstTexture = imguiTexture.texture;
 
                     m_iStreamer.StreamTextureData(streamer, streamTextureDataDesc);
@@ -549,6 +589,7 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
                         streamTextureDataDesc.data = imTextureData->Pixels + (rect.x + rect.y * imTextureData->Width) * formatProps.stride;
                         streamTextureDataDesc.dataRowPitch = imTextureData->Width * formatProps.stride;
                         streamTextureDataDesc.dataSlicePitch = imTextureData->Height * streamTextureDataDesc.dataRowPitch;
+                        streamTextureDataDesc.copyBatch = copyBatch;
                         streamTextureDataDesc.dstTexture = imguiTexture.texture;
                         streamTextureDataDesc.dstRegion.x = rect.x;
                         streamTextureDataDesc.dstRegion.y = rect.y;
@@ -565,6 +606,7 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
                     streamTextureDataDesc.data = imTextureData->Pixels + (rect.x + rect.y * imTextureData->Width) * formatProps.stride;
                     streamTextureDataDesc.dataRowPitch = imTextureData->Width * formatProps.stride;
                     streamTextureDataDesc.dataSlicePitch = imTextureData->Height * streamTextureDataDesc.dataRowPitch;
+                    streamTextureDataDesc.copyBatch = copyBatch;
                     streamTextureDataDesc.dstTexture = imguiTexture.texture;
                     streamTextureDataDesc.dstRegion.x = rect.x;
                     streamTextureDataDesc.dstRegion.y = rect.y;
@@ -592,35 +634,87 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
         }
     }
 
-    { // Stream buffer data
-        uint32_t dataChunkNum = copyImguiDataDesc.drawListNum * 2;
-        Scratch<DataSize> dataChunks = NRI_ALLOCATE_SCRATCH((DeviceBase&)m_Device, DataSize, dataChunkNum);
+    { // Stream draw commands and buffer data
+        uint32_t drawCmdNum = 0;
+        for (uint32_t n = 0; n < copyImguiDataDesc.drawListNum; n++)
+            drawCmdNum += copyImguiDataDesc.drawLists[n]->CmdBuffer.Size;
 
-        StreamBufferDataDesc streamBufferDataDesc = {};
-        streamBufferDataDesc.dataChunkNum = dataChunkNum;
-        streamBufferDataDesc.dataChunks = dataChunks;
-        streamBufferDataDesc.placementAlignment = 4;
+        Scratch<ImguiDrawCmd> drawCmds = NRI_ALLOCATE_SCRATCH((DeviceBase&)m_Device, ImguiDrawCmd, drawCmdNum);
 
-        uint64_t totalVertexDataSize = 0;
+        uint32_t drawCmdIndex = 0;
+        uint32_t vertexOffset = 0;
+        uint32_t indexOffset = 0;
         for (uint32_t n = 0; n < copyImguiDataDesc.drawListNum; n++) {
             const ImDrawList* imDrawList = copyImguiDataDesc.drawLists[n];
 
-            DataSize& vertexDataChunk = dataChunks[n];
-            vertexDataChunk.data = imDrawList->VtxBuffer.Data;
-            vertexDataChunk.size = imDrawList->VtxBuffer.Size * sizeof(ImDrawVert);
+            for (int32_t i = 0; i < imDrawList->CmdBuffer.Size; i++) {
+                const ImDrawCmd& src = imDrawList->CmdBuffer.Data[i];
+                ImguiDrawCmd& dst = drawCmds[drawCmdIndex++];
 
-            DataSize& indexDataChunk = dataChunks[copyImguiDataDesc.drawListNum + n];
-            indexDataChunk.data = imDrawList->IdxBuffer.Data;
-            indexDataChunk.size = imDrawList->IdxBuffer.Size * sizeof(ImDrawIdx);
+                dst = {};
+                dst.clipRect = src.ClipRect;
 
-            totalVertexDataSize += vertexDataChunk.size;
+                if (src.UserCallback) {
+                    dst.hdrScale = *(float*)&src.UserCallbackData;
+                    dst.isHdrScaleOverride = true;
+                } else {
+                    dst.drawIndexedDesc.indexNum = src.ElemCount;
+                    dst.drawIndexedDesc.instanceNum = 1;
+                    dst.drawIndexedDesc.baseIndex = src.IdxOffset + indexOffset;
+                    dst.drawIndexedDesc.baseVertex = src.VtxOffset + vertexOffset;
+
+                    if (src.TexRef.TexData) {
+                        auto entry = m_Textures.find(GetImguiTextureKey(*src.TexRef.TexData));
+                        NRI_CHECK(entry != m_Textures.end(), "Unexpected");
+                        dst.descriptor = entry->second.descriptor;
+                    } else
+                        dst.descriptor = (Descriptor*)src.TexRef.TexID;
+                }
+            }
+
+            vertexOffset += imDrawList->VtxBuffer.Size;
+            indexOffset += imDrawList->IdxBuffer.Size;
         }
 
-        BufferOffset bufferOffset = m_iStreamer.StreamBufferData(streamer, streamBufferDataDesc);
+        const void* drawCommands = nullptr;
+        if (drawCmdNum)
+            drawCommands = m_iStreamer.StreamHostData(streamer, drawCmds, drawCmdNum * sizeof(ImguiDrawCmd), alignof(ImguiDrawCmd));
 
-        m_VbOffset = bufferOffset.offset;
-        m_IbOffset = m_VbOffset + totalVertexDataSize;
-        m_CurrentBuffer = bufferOffset.buffer;
+        if (drawCommands) {
+            uint32_t dataChunkNum = copyImguiDataDesc.drawListNum * 2;
+            Scratch<DataSize> dataChunks = NRI_ALLOCATE_SCRATCH((DeviceBase&)m_Device, DataSize, dataChunkNum);
+
+            StreamBufferDataDesc streamBufferDataDesc = {};
+            streamBufferDataDesc.dataChunkNum = dataChunkNum;
+            streamBufferDataDesc.dataChunks = dataChunks;
+            streamBufferDataDesc.placementAlignment = std::max((uint32_t)alignof(ImDrawVert), (uint32_t)alignof(ImDrawIdx));
+
+            uint64_t totalVertexDataSize = 0;
+            for (uint32_t n = 0; n < copyImguiDataDesc.drawListNum; n++) {
+                const ImDrawList* imDrawList = copyImguiDataDesc.drawLists[n];
+
+                DataSize& vertexDataChunk = dataChunks[n];
+                vertexDataChunk = {};
+                vertexDataChunk.data = imDrawList->VtxBuffer.Data;
+                vertexDataChunk.size = imDrawList->VtxBuffer.Size * sizeof(ImDrawVert);
+
+                DataSize& indexDataChunk = dataChunks[copyImguiDataDesc.drawListNum + n];
+                indexDataChunk = {};
+                indexDataChunk.data = imDrawList->IdxBuffer.Data;
+                indexDataChunk.size = imDrawList->IdxBuffer.Size * sizeof(ImDrawIdx);
+
+                totalVertexDataSize += vertexDataChunk.size;
+            }
+
+            BufferOffset vertices = m_iStreamer.StreamBufferData(streamer, streamBufferDataDesc);
+
+            if (vertices.buffer) {
+                imguiRenderData.drawCommands = drawCommands;
+                imguiRenderData.vertices = vertices;
+                imguiRenderData.indexBufferOffset = vertices.offset + totalVertexDataSize;
+                imguiRenderData.drawCmdNum = drawCmdNum;
+            }
+        }
     }
 
     // Copy texture data
@@ -631,7 +725,7 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
 
         m_iCore.CmdBarrier(commandBuffer, barrierDesc);
 
-        m_iStreamer.CmdCopyStreamedData(commandBuffer, streamer);
+        m_iStreamer.CmdCopyStreamedData(commandBuffer, streamer, copyBatch);
 
         for (uint32_t i = 0; i < textureBarrierNum; i++) {
             textureBarriers[i].before = copyState;
@@ -642,10 +736,8 @@ void ImguiImpl::CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, co
     }
 }
 
-void ImguiImpl::CmdDraw(CommandBuffer& commandBuffer, const DrawImguiDesc& drawImguiDesc) {
-    ExclusiveScope lock(m_Lock);
-
-    if (!drawImguiDesc.drawListNum)
+void ImguiImpl::CmdDrawInternal(CommandBuffer& commandBuffer, const ImguiRenderData& imguiRenderData, const DrawImguiDesc& drawImguiDesc) {
+    if (!imguiRenderData.drawCmdNum)
         return;
 
     // Pipeline
@@ -755,14 +847,14 @@ void ImguiImpl::CmdDraw(CommandBuffer& commandBuffer, const DrawImguiDesc& drawI
     m_iCore.CmdSetDescriptorPool(commandBuffer, *m_DescriptorPool);
     m_iCore.CmdSetPipelineLayout(commandBuffer, BindPoint::GRAPHICS, *m_PipelineLayout);
     m_iCore.CmdSetPipeline(commandBuffer, *pipeline);
-    m_iCore.CmdSetIndexBuffer(commandBuffer, *m_CurrentBuffer, m_IbOffset, IndexType::UINT16);
+    m_iCore.CmdSetIndexBuffer(commandBuffer, *imguiRenderData.vertices.buffer, imguiRenderData.indexBufferOffset, IndexType::UINT16);
 
     SetDescriptorSetDesc samplerBindingDesc = {IMGUI_SAMPLER_SET, m_DescriptorSet0_sampler};
     m_iCore.CmdSetDescriptorSet(commandBuffer, samplerBindingDesc);
 
     VertexBufferDesc vertexBufferDesc = {};
-    vertexBufferDesc.buffer = m_CurrentBuffer;
-    vertexBufferDesc.offset = m_VbOffset;
+    vertexBufferDesc.buffer = imguiRenderData.vertices.buffer;
+    vertexBufferDesc.offset = imguiRenderData.vertices.offset;
     vertexBufferDesc.stride = sizeof(ImDrawVert);
 
     m_iCore.CmdSetVertexBuffers(commandBuffer, 0, &vertexBufferDesc, 1);
@@ -786,87 +878,63 @@ void ImguiImpl::CmdDraw(CommandBuffer& commandBuffer, const DrawImguiDesc& drawI
     SetRootConstantsDesc setRootConstantsDesc = {0, &constants, sizeof(constants)};
     m_iCore.CmdSetRootConstants(commandBuffer, setRootConstantsDesc);
 
-    // For each draw list
+    // For each draw command
     Descriptor* currentDescriptor = nullptr;
     float currentHdrScale = -1.0f;
     float hdrScale = 0.0f;
-    uint32_t vertexOffset = 0;
-    uint32_t indexOffset = 0;
+    const ImguiDrawCmd* drawCmds = (const ImguiDrawCmd*)imguiRenderData.drawCommands;
 
-    for (uint32_t n = 0; n < drawImguiDesc.drawListNum; n++) {
-        const ImDrawList* imDrawList = drawImguiDesc.drawLists[n];
+    for (uint32_t i = 0; i < imguiRenderData.drawCmdNum; i++) {
+        const ImguiDrawCmd& drawCmd = drawCmds[i];
+        ImVec4 clipRect = drawCmd.clipRect; // min.x, min.y, max.x, max.y
 
-        // For each draw command
-        for (int32_t i = 0; i < imDrawList->CmdBuffer.Size; i++) {
-            const ImDrawCmd& drawCmd = imDrawList->CmdBuffer.Data[i];
-            ImVec4 clipRect = drawCmd.ClipRect; // min.x, min.y, max.x, max.y
+        // VK doesn't allow negative values
+        clipRect.x = std::max(clipRect.x, 0.0f);
+        clipRect.y = std::max(clipRect.y, 0.0f);
 
-            // VK doesn't allow negative values
-            clipRect.x = std::max(clipRect.x, 0.0f);
-            clipRect.y = std::max(clipRect.y, 0.0f);
+        // Clipped?
+        if (clipRect.z <= clipRect.x || clipRect.w <= clipRect.y)
+            continue;
 
-            // Clipped?
-            if (clipRect.z <= clipRect.x || clipRect.w <= clipRect.y)
-                continue;
+        if (drawCmd.isHdrScaleOverride) {
+            // Nothing to render, just update HDR scale
+            hdrScale = drawCmd.hdrScale;
+        } else {
+            // Change HDR scale
+            if (hdrScale != currentHdrScale) {
+                currentHdrScale = hdrScale;
 
-            if (drawCmd.UserCallback) {
-                // Nothing to render, just update HDR scale
-                hdrScale = *(float*)&drawCmd.UserCallbackData;
-            } else {
-                // Change HDR scale
-                if (hdrScale != currentHdrScale) {
-                    currentHdrScale = hdrScale;
+                constants.hdrScale = currentHdrScale == 0.0f ? defaultHdrScale : currentHdrScale;
 
-                    constants.hdrScale = currentHdrScale == 0.0f ? defaultHdrScale : currentHdrScale;
-
-                    m_iCore.CmdSetRootConstants(commandBuffer, setRootConstantsDesc);
-                }
-
-                // Change texture
-                Descriptor* descriptor = nullptr;
-                if (drawCmd.TexRef.TexData) {
-                    // Font atlas texture
-                    ImTextureID key = drawCmd.TexRef.TexData->TexID;
-                    descriptor = m_Textures[key].descriptor;
-                } else {
-                    // User passed texture
-                    descriptor = (Descriptor*)drawCmd.TexRef.TexID;
-                }
-
-                if (descriptor != currentDescriptor) {
-                    currentDescriptor = descriptor;
-
-                    DescriptorSet* descriptorSet = m_DescriptorSets1[m_DescriptorSetIndex];
-                    m_DescriptorSetIndex = (m_DescriptorSetIndex + 1) % m_DescriptorSets1.size();
-
-                    SetDescriptorSetDesc textureBindingDesc = {IMGUI_TEXTURE_SET, descriptorSet};
-                    m_iCore.CmdSetDescriptorSet(commandBuffer, textureBindingDesc);
-
-                    UpdateDescriptorRangeDesc updateDescriptorRangeDesc = {descriptorSet, 0, 0, &currentDescriptor, 1};
-                    m_iCore.UpdateDescriptorRanges(&updateDescriptorRangeDesc, 1);
-                }
-
-                // Draw
-                DrawIndexedDesc drawIndexedDesc = {};
-                drawIndexedDesc.indexNum = drawCmd.ElemCount;
-                drawIndexedDesc.instanceNum = 1;
-                drawIndexedDesc.baseIndex = drawCmd.IdxOffset + indexOffset;
-                drawIndexedDesc.baseVertex = drawCmd.VtxOffset + vertexOffset;
-
-                Rect rect = {
-                    (int16_t)clipRect.x,
-                    (int16_t)clipRect.y,
-                    (Dim_t)(clipRect.z - clipRect.x),
-                    (Dim_t)(clipRect.w - clipRect.y),
-                };
-
-                m_iCore.CmdSetScissors(commandBuffer, &rect, 1);
-                m_iCore.CmdDrawIndexed(commandBuffer, drawIndexedDesc);
+                m_iCore.CmdSetRootConstants(commandBuffer, setRootConstantsDesc);
             }
-        }
 
-        vertexOffset += imDrawList->VtxBuffer.Size;
-        indexOffset += imDrawList->IdxBuffer.Size;
+            // Change texture
+            Descriptor* descriptor = drawCmd.descriptor;
+
+            if (descriptor != currentDescriptor) {
+                currentDescriptor = descriptor;
+
+                DescriptorSet* descriptorSet = m_DescriptorSets1[m_DescriptorSetIndex];
+                m_DescriptorSetIndex = (m_DescriptorSetIndex + 1) % m_DescriptorSets1.size();
+
+                SetDescriptorSetDesc textureBindingDesc = {IMGUI_TEXTURE_SET, descriptorSet};
+                m_iCore.CmdSetDescriptorSet(commandBuffer, textureBindingDesc);
+
+                UpdateDescriptorRangeDesc updateDescriptorRangeDesc = {descriptorSet, 0, 0, &currentDescriptor, 1};
+                m_iCore.UpdateDescriptorRanges(&updateDescriptorRangeDesc, 1);
+            }
+
+            Rect rect = {
+                (int16_t)clipRect.x,
+                (int16_t)clipRect.y,
+                (Dim_t)(clipRect.z - clipRect.x),
+                (Dim_t)(clipRect.w - clipRect.y),
+            };
+
+            m_iCore.CmdSetScissors(commandBuffer, &rect, 1);
+            m_iCore.CmdDrawIndexed(commandBuffer, drawCmd.drawIndexedDesc);
+        }
     }
 }
 

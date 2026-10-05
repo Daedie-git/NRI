@@ -418,6 +418,11 @@ static bool IsVideoAV1EncodePictureDescValid(const VideoEncodeDesc& videoEncodeD
 NRI_INLINE Result CommandBufferVal::Begin(const DescriptorPool* descriptorPool) {
     NRI_RETURN_ON_FAILURE(&m_Device, !m_IsRecordingStarted, Result::FAILURE, "already in the recording state");
 
+    if (descriptorPool) {
+        const DescriptorPoolVal& descriptorPoolVal = *(DescriptorPoolVal*)descriptorPool;
+        NRI_RETURN_ON_FAILURE(&m_Device, !descriptorPoolVal.IsCopySource(), Result::INVALID_ARGUMENT, "'descriptorPool' must not have 'DescriptorPoolBits::COPY_SOURCE'");
+    }
+
     DescriptorPool* descriptorPoolImpl = NRI_GET_IMPL(DescriptorPool, descriptorPool);
 
     Result result = GetCoreInterfaceImpl().BeginCommandBuffer(*GetImpl(), descriptorPoolImpl);
@@ -540,6 +545,8 @@ NRI_INLINE void CommandBufferVal::ClearAttachments(const ClearAttachmentDesc* cl
         bool isColor = clearAttachmentDesc.planes & PlaneBits::COLOR;
         bool isDepthStencil = clearAttachmentDesc.planes & (PlaneBits::DEPTH | PlaneBits::STENCIL);
         NRI_RETURN_ON_FAILURE(&m_Device, isColor != isDepthStencil, ReturnVoid(), "'[%u].planes' must represent a color or a depth-stencil", i);
+        NRI_RETURN_ON_FAILURE(&m_Device, !rectNum || !isColor || deviceDesc.features.rectColorClears, ReturnVoid(), "'features.rectColorClears' is false");
+        NRI_RETURN_ON_FAILURE(&m_Device, !rectNum || !isDepthStencil || deviceDesc.features.rectDepthStencilClears, ReturnVoid(), "'features.rectDepthStencilClears' is false");
 
         if (clearAttachmentDesc.planes & PlaneBits::COLOR) {
             NRI_RETURN_ON_FAILURE(&m_Device, clearAttachmentDesc.colorAttachmentIndex < deviceDesc.shaderStage.fragment.attachmentMaxNum, ReturnVoid(), "'[%u].colorAttachmentIndex=%u' is out of bounds", i, clearAttachmentDesc.colorAttachmentIndex);
@@ -726,9 +733,21 @@ NRI_INLINE void CommandBufferVal::SetPipeline(const Pipeline& pipeline) {
 NRI_INLINE void CommandBufferVal::SetDescriptorPool(const DescriptorPool& descriptorPool) {
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
 
+    const DescriptorPoolVal& descriptorPoolVal = (const DescriptorPoolVal&)descriptorPool;
+    NRI_RETURN_ON_FAILURE(&m_Device, !descriptorPoolVal.IsCopySource(), ReturnVoid(), "'descriptorPool' must not have 'DescriptorPoolBits::COPY_SOURCE'");
+
     DescriptorPool* descriptorPoolImpl = NRI_GET_IMPL(DescriptorPool, &descriptorPool);
 
     GetCoreInterfaceImpl().CmdSetDescriptorPool(*GetImpl(), *descriptorPoolImpl);
+}
+
+NRI_INLINE void CommandBufferVal::SetDescriptorHeap(const DescriptorHeap& descriptorHeap) {
+    NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
+    NRI_RETURN_ON_FAILURE(&m_Device, m_QueueType == QueueType::GRAPHICS || m_QueueType == QueueType::COMPUTE, ReturnVoid(), "the command buffer must belong to a GRAPHICS or COMPUTE queue");
+
+    ResetDescriptorSets();
+
+    m_Device.GetDescriptorHeapInterfaceImpl().CmdSetDescriptorHeap(*GetImpl(), descriptorHeap);
 }
 
 NRI_INLINE void CommandBufferVal::SetDescriptorSet(const SetDescriptorSetDesc& setDescriptorSetDesc) {
@@ -737,6 +756,9 @@ NRI_INLINE void CommandBufferVal::SetDescriptorSet(const SetDescriptorSetDesc& s
     NRI_RETURN_ON_FAILURE(&m_Device, setDescriptorSetDesc.descriptorSet, ReturnVoid(), "'descriptorSet' is NULL");
     NRI_RETURN_ON_FAILURE(&m_Device, setDescriptorSetDesc.bindPoint < BindPoint::MAX_NUM, ReturnVoid(), "'bindPoint' is invalid");
     NRI_RETURN_ON_FAILURE(&m_Device, setDescriptorSetDesc.setIndex < m_DescriptorSets.size(), ReturnVoid(), "'setIndex=%u' is out of bounds", setDescriptorSetDesc.setIndex);
+
+    const DescriptorSetVal& descriptorSetVal = *(DescriptorSetVal*)setDescriptorSetDesc.descriptorSet;
+    NRI_RETURN_ON_FAILURE(&m_Device, !descriptorSetVal.IsCopySource(), ReturnVoid(), "'descriptorSet' must not be allocated from a pool with 'DescriptorPoolBits::COPY_SOURCE'");
 
     auto descriptorSetBindingDescImpl = setDescriptorSetDesc;
     descriptorSetBindingDescImpl.descriptorSet = NRI_GET_IMPL(DescriptorSet, setDescriptorSetDesc.descriptorSet);
@@ -751,8 +773,17 @@ NRI_INLINE void CommandBufferVal::SetRootConstants(const SetRootConstantsDesc& s
 
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
     NRI_RETURN_ON_FAILURE(&m_Device, m_PipelineLayout, ReturnVoid(), "'SetPipelineLayout' has not been called");
+    NRI_RETURN_ON_FAILURE(&m_Device, setRootConstantsDesc.data, ReturnVoid(), "'data' is NULL");
+    NRI_RETURN_ON_FAILURE(&m_Device, setRootConstantsDesc.size != 0, ReturnVoid(), "'size' is 0");
     NRI_RETURN_ON_FAILURE(&m_Device, setRootConstantsDesc.offset == 0 || deviceDesc.features.rootConstantsOffset, ReturnVoid(), "Non-zero 'setRootConstantsDesc.offset' is not supported");
     NRI_RETURN_ON_FAILURE(&m_Device, setRootConstantsDesc.bindPoint < BindPoint::MAX_NUM, ReturnVoid(), "'bindPoint' is invalid");
+
+    const PipelineLayoutDesc& pipelineLayoutDesc = m_PipelineLayout->GetPipelineLayoutDesc();
+    NRI_RETURN_ON_FAILURE(&m_Device, setRootConstantsDesc.rootConstantIndex < pipelineLayoutDesc.rootConstantNum, ReturnVoid(), "'rootConstantIndex=%u' is out of bounds", setRootConstantsDesc.rootConstantIndex);
+
+    const RootConstantDesc& rootConstantDesc = pipelineLayoutDesc.rootConstants[setRootConstantsDesc.rootConstantIndex];
+    NRI_RETURN_ON_FAILURE(&m_Device, setRootConstantsDesc.offset <= rootConstantDesc.size && setRootConstantsDesc.size <= rootConstantDesc.size - setRootConstantsDesc.offset, ReturnVoid(), "'offset=%u' + 'size=%u' must be <= root constant 'size=%u'", setRootConstantsDesc.offset, setRootConstantsDesc.size, rootConstantDesc.size);
+    NRI_RETURN_ON_FAILURE(&m_Device, IsAligned(setRootConstantsDesc.offset, 4) && IsAligned(setRootConstantsDesc.size, 4), ReturnVoid(), "'offset=%u' and 'size=%u' must be 4-byte aligned", setRootConstantsDesc.offset, setRootConstantsDesc.size);
 
     GetCoreInterfaceImpl().CmdSetRootConstants(*GetImpl(), setRootConstantsDesc);
 }
@@ -763,13 +794,22 @@ NRI_INLINE void CommandBufferVal::SetRootDescriptor(const SetRootDescriptorDesc&
     NRI_RETURN_ON_FAILURE(&m_Device, setRootDescriptorDesc.descriptor, ReturnVoid(), "'descriptor' is NULL");
     NRI_RETURN_ON_FAILURE(&m_Device, setRootDescriptorDesc.bindPoint < BindPoint::MAX_NUM, ReturnVoid(), "'bindPoint' is invalid");
 
+    const PipelineLayoutDesc& pipelineLayoutDesc = m_PipelineLayout->GetPipelineLayoutDesc();
+    NRI_RETURN_ON_FAILURE(&m_Device, setRootDescriptorDesc.rootDescriptorIndex < pipelineLayoutDesc.rootDescriptorNum, ReturnVoid(), "'rootDescriptorIndex=%u' is out of bounds", setRootDescriptorDesc.rootDescriptorIndex);
+
     const DescriptorVal& descriptorVal = *(DescriptorVal*)setRootDescriptorDesc.descriptor;
     const DeviceDesc& deviceDesc = m_Device.GetDesc();
+    const RootDescriptorDesc& rootDescriptorDesc = pipelineLayoutDesc.rootDescriptors[setRootDescriptorDesc.rootDescriptorIndex];
 
+    NRI_RETURN_ON_FAILURE(&m_Device, &descriptorVal.GetDevice() == &m_Device, ReturnVoid(), "'descriptor' belongs to another device");
     NRI_RETURN_ON_FAILURE(&m_Device, descriptorVal.CanBeRoot(), ReturnVoid(), "'descriptor' must be a non-typed buffer or an acceleration structure");
+    NRI_RETURN_ON_FAILURE(&m_Device, descriptorVal.GetType() == rootDescriptorDesc.descriptorType, ReturnVoid(), "'descriptor' type doesn't match 'rootDescriptors[%u].descriptorType'", setRootDescriptorDesc.rootDescriptorIndex);
 
     if (!descriptorVal.IsConstantBuffer())
         NRI_RETURN_ON_FAILURE(&m_Device, setRootDescriptorDesc.offset == 0 || deviceDesc.features.nonConstantBufferRootDescriptorOffset, ReturnVoid(), "Non-zero 'setRootDescriptorDesc.offset' for non-'CONSTANT_BUFFER' descriptors requires 'features.nonConstantBufferRootDescriptorOffset'");
+
+    if (rootDescriptorDesc.descriptorType != DescriptorType::ACCELERATION_STRUCTURE)
+        NRI_RETURN_ON_FAILURE(&m_Device, setRootDescriptorDesc.offset <= descriptorVal.GetRootDescriptorOffsetMax(), ReturnVoid(), "'offset=%u' must be <= maximum root descriptor 'offset=%" PRIu64 "'", setRootDescriptorDesc.offset, descriptorVal.GetRootDescriptorOffsetMax());
 
     auto rootDescriptorBindingDescImpl = setRootDescriptorDesc;
     rootDescriptorBindingDescImpl.descriptor = NRI_GET_IMPL(Descriptor, setRootDescriptorDesc.descriptor);
@@ -979,7 +1019,8 @@ NRI_INLINE void CommandBufferVal::BeginQuery(QueryPool& queryPool, uint32_t offs
     QueryPoolVal& queryPoolVal = (QueryPoolVal&)queryPool;
 
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
-    NRI_RETURN_ON_FAILURE(&m_Device, queryPoolVal.GetQueryType() != QueryType::TIMESTAMP, ReturnVoid(), "'BeginQuery' is not supported for timestamp queries");
+    QueryType queryType = queryPoolVal.GetQueryType();
+    NRI_RETURN_ON_FAILURE(&m_Device, queryType != QueryType::TIMESTAMP && queryType != QueryType::TIMESTAMP_COPY_QUEUE, ReturnVoid(), "'BeginQuery' is not supported for timestamp queries");
 
     if (!queryPoolVal.IsImported())
         NRI_RETURN_ON_FAILURE(&m_Device, offset < queryPoolVal.GetQueryNum(), ReturnVoid(), "'offset=%u' is out of range", offset);
@@ -1005,6 +1046,13 @@ NRI_INLINE void CommandBufferVal::CopyQueries(const QueryPool& queryPool, uint32
     NRI_RETURN_ON_FAILURE(&m_Device, !m_IsRenderPass, ReturnVoid(), "must be called outside of 'CmdBeginRendering/CmdEndRendering'");
 
     const QueryPoolVal& queryPoolVal = (QueryPoolVal&)queryPool;
+    if (queryPoolVal.GetQueryType() == QueryType::TIMESTAMP_COPY_QUEUE) {
+        bool resolveOnCopyQueue = m_Device.GetDesc().other.timestampCopyQueueResolveOnCopyQueue;
+        bool validQueue = resolveOnCopyQueue ? m_QueueType == QueueType::COPY : (m_QueueType == QueueType::GRAPHICS || m_QueueType == QueueType::COMPUTE);
+        NRI_RETURN_ON_FAILURE(&m_Device, validQueue, ReturnVoid(), "the command buffer queue cannot resolve 'TIMESTAMP_COPY_QUEUE' queries");
+    } else if (queryPoolVal.GetQueryType() == QueryType::TIMESTAMP)
+        NRI_RETURN_ON_FAILURE(&m_Device, m_QueueType == QueueType::GRAPHICS || m_QueueType == QueueType::COMPUTE, ReturnVoid(), "the command buffer must belong to a 'GRAPHICS' or 'COMPUTE' queue");
+
     if (!queryPoolVal.IsImported())
         NRI_RETURN_ON_FAILURE(&m_Device, offset + num <= queryPoolVal.GetQueryNum(), ReturnVoid(), "'offset + num = %u' is out of range", offset + num);
 
@@ -1016,6 +1064,7 @@ NRI_INLINE void CommandBufferVal::CopyQueries(const QueryPool& queryPool, uint32
 
 NRI_INLINE void CommandBufferVal::ResetQueries(QueryPool& queryPool, uint32_t offset, uint32_t num) {
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
+    NRI_RETURN_ON_FAILURE(&m_Device, m_QueueType != QueueType::COPY, ReturnVoid(), "the command buffer must not belong to a COPY queue");
     NRI_RETURN_ON_FAILURE(&m_Device, !m_IsRenderPass, ReturnVoid(), "must be called outside of 'CmdBeginRendering/CmdEndRendering'");
 
     QueryPoolVal& queryPoolVal = (QueryPoolVal&)queryPool;
@@ -1105,10 +1154,10 @@ NRI_INLINE void CommandBufferVal::BuildBottomLevelAccelerationStructure(const Bu
 
     Scratch<BuildBottomLevelAccelerationStructureDesc> buildBottomLevelAccelerationStructureDescsImpl = NRI_ALLOCATE_SCRATCH(m_Device, BuildBottomLevelAccelerationStructureDesc, buildBottomLevelAccelerationStructureDescNum);
     Scratch<BottomLevelGeometryDesc> geometriesImplScratch = NRI_ALLOCATE_SCRATCH(m_Device, BottomLevelGeometryDesc, geometryTotalNum);
-    Scratch<BottomLevelMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(m_Device, BottomLevelMicromapDesc, micromapTotalNum);
+    Scratch<BottomLevelTrianglesMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(m_Device, BottomLevelTrianglesMicromapDesc, micromapTotalNum);
 
     BottomLevelGeometryDesc* geometriesImpl = geometriesImplScratch;
-    BottomLevelMicromapDesc* micromapsImpl = micromapsImplScratch;
+    BottomLevelTrianglesMicromapDesc* micromapsImpl = micromapsImplScratch;
 
     for (uint32_t i = 0; i < buildBottomLevelAccelerationStructureDescNum; i++) {
         const BuildBottomLevelAccelerationStructureDesc& in = buildBottomLevelAccelerationStructureDescs[i];
@@ -1126,7 +1175,7 @@ NRI_INLINE void CommandBufferVal::BuildBottomLevelAccelerationStructure(const Bu
         out.geometries = geometriesImpl;
         out.scratchBuffer = NRI_GET_IMPL(Buffer, in.scratchBuffer);
 
-        ConvertBotomLevelGeometries(in.geometries, in.geometryNum, geometriesImpl, micromapsImpl);
+        ConvertBottomLevelGeometries(in.geometries, in.geometryNum, geometriesImpl, micromapsImpl);
     }
 
     GetRayTracingInterfaceImpl().CmdBuildBottomLevelAccelerationStructures(*GetImpl(), buildBottomLevelAccelerationStructureDescsImpl, buildBottomLevelAccelerationStructureDescNum);
@@ -1185,13 +1234,17 @@ NRI_INLINE void CommandBufferVal::CopyAccelerationStructure(AccelerationStructur
     GetRayTracingInterfaceImpl().CmdCopyAccelerationStructure(*GetImpl(), dstImpl, srcImpl, copyMode);
 }
 
-NRI_INLINE void CommandBufferVal::WriteMicromapsSizes(const Micromap* const* micromaps, uint32_t micromapNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
+NRI_INLINE void CommandBufferVal::WriteMicromapSizes(const Micromap* const* micromaps, uint32_t micromapNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
     const QueryPoolVal& queryPoolVal = (QueryPoolVal&)queryPool;
     bool isTypeValid = queryPoolVal.GetQueryType() == QueryType::MICROMAP_COMPACTED_SIZE;
 
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
     NRI_RETURN_ON_FAILURE(&m_Device, !m_IsRenderPass, ReturnVoid(), "must be called outside of 'CmdBeginRendering/CmdEndRendering'");
     NRI_RETURN_ON_FAILURE(&m_Device, isTypeValid, ReturnVoid(), "'queryPool' query type must be 'MICROMAP_COMPACTED_SIZE'");
+    NRI_RETURN_ON_FAILURE(&m_Device, micromapNum == 0 || micromaps, ReturnVoid(), "'micromaps' is NULL");
+
+    if (!queryPoolVal.IsImported())
+        NRI_RETURN_ON_FAILURE(&m_Device, queryPoolOffset <= queryPoolVal.GetQueryNum() && micromapNum <= queryPoolVal.GetQueryNum() - queryPoolOffset, ReturnVoid(), "'queryPoolOffset=%u' + 'micromapNum=%u' must be <= query pool 'queryNum=%u'", queryPoolOffset, micromapNum, queryPoolVal.GetQueryNum());
 
     Scratch<Micromap*> micromapsImpl = NRI_ALLOCATE_SCRATCH(m_Device, Micromap*, micromapNum);
     for (uint32_t i = 0; i < micromapNum; i++) {
@@ -1202,16 +1255,20 @@ NRI_INLINE void CommandBufferVal::WriteMicromapsSizes(const Micromap* const* mic
 
     QueryPool& queryPoolImpl = *NRI_GET_IMPL(QueryPool, &queryPool);
 
-    GetRayTracingInterfaceImpl().CmdWriteMicromapsSizes(*GetImpl(), micromapsImpl, micromapNum, queryPoolImpl, queryPoolOffset);
+    GetRayTracingInterfaceImpl().CmdWriteMicromapSizes(*GetImpl(), micromapsImpl, micromapNum, queryPoolImpl, queryPoolOffset);
 }
 
-NRI_INLINE void CommandBufferVal::WriteAccelerationStructuresSizes(const AccelerationStructure* const* accelerationStructures, uint32_t accelerationStructureNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
+NRI_INLINE void CommandBufferVal::WriteAccelerationStructureSizes(const AccelerationStructure* const* accelerationStructures, uint32_t accelerationStructureNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
     const QueryPoolVal& queryPoolVal = (QueryPoolVal&)queryPool;
     bool isTypeValid = queryPoolVal.GetQueryType() == QueryType::ACCELERATION_STRUCTURE_SIZE || queryPoolVal.GetQueryType() == QueryType::ACCELERATION_STRUCTURE_COMPACTED_SIZE;
 
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
     NRI_RETURN_ON_FAILURE(&m_Device, !m_IsRenderPass, ReturnVoid(), "must be called outside of 'CmdBeginRendering/CmdEndRendering'");
     NRI_RETURN_ON_FAILURE(&m_Device, isTypeValid, ReturnVoid(), "'queryPool' query type must be 'ACCELERATION_STRUCTURE_SIZE' or 'ACCELERATION_STRUCTURE_COMPACTED_SIZE'");
+    NRI_RETURN_ON_FAILURE(&m_Device, accelerationStructureNum == 0 || accelerationStructures, ReturnVoid(), "'accelerationStructures' is NULL");
+
+    if (!queryPoolVal.IsImported())
+        NRI_RETURN_ON_FAILURE(&m_Device, queryPoolOffset <= queryPoolVal.GetQueryNum() && accelerationStructureNum <= queryPoolVal.GetQueryNum() - queryPoolOffset, ReturnVoid(), "'queryPoolOffset=%u' + 'accelerationStructureNum=%u' must be <= query pool 'queryNum=%u'", queryPoolOffset, accelerationStructureNum, queryPoolVal.GetQueryNum());
 
     Scratch<AccelerationStructure*> accelerationStructuresImpl = NRI_ALLOCATE_SCRATCH(m_Device, AccelerationStructure*, accelerationStructureNum);
     for (uint32_t i = 0; i < accelerationStructureNum; i++) {
@@ -1222,7 +1279,7 @@ NRI_INLINE void CommandBufferVal::WriteAccelerationStructuresSizes(const Acceler
 
     QueryPool& queryPoolImpl = *NRI_GET_IMPL(QueryPool, &queryPool);
 
-    GetRayTracingInterfaceImpl().CmdWriteAccelerationStructuresSizes(*GetImpl(), accelerationStructuresImpl, accelerationStructureNum, queryPoolImpl, queryPoolOffset);
+    GetRayTracingInterfaceImpl().CmdWriteAccelerationStructureSizes(*GetImpl(), accelerationStructuresImpl, accelerationStructureNum, queryPoolImpl, queryPoolOffset);
 }
 
 NRI_INLINE void CommandBufferVal::DispatchRays(const DispatchRaysDesc& dispatchRaysDesc) {
@@ -1231,18 +1288,18 @@ NRI_INLINE void CommandBufferVal::DispatchRays(const DispatchRaysDesc& dispatchR
 
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
     NRI_RETURN_ON_FAILURE(&m_Device, !m_IsRenderPass, ReturnVoid(), "must be called outside of 'CmdBeginRendering/CmdEndRendering'");
-    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.raygenShader.buffer, ReturnVoid(), "'raygenShader.buffer' is NULL");
-    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.raygenShader.size != 0, ReturnVoid(), "'raygenShader.size' is 0");
-    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.raygenShader.offset % align == 0, ReturnVoid(), "'raygenShader.offset' is misaligned");
-    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.missShaders.offset % align == 0, ReturnVoid(), "'missShaders.offset' is misaligned");
-    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.hitShaderGroups.offset % align == 0, ReturnVoid(), "'hitShaderGroups.offset' is misaligned");
-    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.callableShaders.offset % align == 0, ReturnVoid(), "'callableShaders.offset' is misaligned");
+    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.raygenShaderRecord.buffer, ReturnVoid(), "'raygenShaderRecord.buffer' is NULL");
+    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.raygenShaderRecord.size != 0, ReturnVoid(), "'raygenShaderRecord.size' is 0");
+    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.raygenShaderRecord.offset % align == 0, ReturnVoid(), "'raygenShaderRecord.offset' is misaligned");
+    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.missShaderBindingTable.offset % align == 0, ReturnVoid(), "'missShaderBindingTable.offset' is misaligned");
+    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.hitShaderBindingTable.offset % align == 0, ReturnVoid(), "'hitShaderBindingTable.offset' is misaligned");
+    NRI_RETURN_ON_FAILURE(&m_Device, dispatchRaysDesc.callableShaderBindingTable.offset % align == 0, ReturnVoid(), "'callableShaderBindingTable.offset' is misaligned");
 
     auto dispatchRaysDescImpl = dispatchRaysDesc;
-    dispatchRaysDescImpl.raygenShader.buffer = NRI_GET_IMPL(Buffer, dispatchRaysDesc.raygenShader.buffer);
-    dispatchRaysDescImpl.missShaders.buffer = NRI_GET_IMPL(Buffer, dispatchRaysDesc.missShaders.buffer);
-    dispatchRaysDescImpl.hitShaderGroups.buffer = NRI_GET_IMPL(Buffer, dispatchRaysDesc.hitShaderGroups.buffer);
-    dispatchRaysDescImpl.callableShaders.buffer = NRI_GET_IMPL(Buffer, dispatchRaysDesc.callableShaders.buffer);
+    dispatchRaysDescImpl.raygenShaderRecord.buffer = NRI_GET_IMPL(Buffer, dispatchRaysDesc.raygenShaderRecord.buffer);
+    dispatchRaysDescImpl.missShaderBindingTable.buffer = NRI_GET_IMPL(Buffer, dispatchRaysDesc.missShaderBindingTable.buffer);
+    dispatchRaysDescImpl.hitShaderBindingTable.buffer = NRI_GET_IMPL(Buffer, dispatchRaysDesc.hitShaderBindingTable.buffer);
+    dispatchRaysDescImpl.callableShaderBindingTable.buffer = NRI_GET_IMPL(Buffer, dispatchRaysDesc.callableShaderBindingTable.buffer);
 
     GetRayTracingInterfaceImpl().CmdDispatchRays(*GetImpl(), dispatchRaysDescImpl);
 }

@@ -33,8 +33,8 @@ struct ImguiImpl final : public DebugNameBase {
     }
 
     Result Create(const ImguiDesc& imguiDesc);
-    void CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, const CopyImguiDataDesc& copyImguiDataDesc);
-    void CmdDraw(CommandBuffer& commandBuffer, const DrawImguiDesc& drawImguiDesc);
+    void CmdCopyData(CommandBuffer& commandBuffer, Streamer& streamer, const CopyImguiDataDesc& copyImguiDataDesc, ImguiRenderData& imguiRenderData);
+    void CmdDraw(CommandBuffer& commandBuffer, const ImguiRenderData& imguiRenderData, const DrawImguiDesc& drawImguiDesc);
 
     //================================================================================================================
     // DebugNameBase
@@ -47,6 +47,9 @@ struct ImguiImpl final : public DebugNameBase {
     }
 
 private:
+    void CmdCopyDataInternal(CommandBuffer& commandBuffer, Streamer& streamer, const CopyImguiDataDesc& copyImguiDataDesc, ImguiRenderData& imguiRenderData);
+    void CmdDrawInternal(CommandBuffer& commandBuffer, const ImguiRenderData& imguiRenderData, const DrawImguiDesc& drawImguiDesc);
+
     Device& m_Device;
     const CoreInterface& m_iCore;
     StreamerInterface m_iStreamer = {};
@@ -57,11 +60,9 @@ private:
     DescriptorPool* m_DescriptorPool = nullptr;
     PipelineLayout* m_PipelineLayout = nullptr;
     DescriptorSet* m_DescriptorSet0_sampler = nullptr;
-    Buffer* m_CurrentBuffer = nullptr;
-    uint64_t m_VbOffset = 0;
-    uint64_t m_IbOffset = 0;
     uint32_t m_DescriptorSetIndex = 0;
     Lock m_Lock;
+    static Lock s_TextureLock;
 };
 
 } // namespace nri

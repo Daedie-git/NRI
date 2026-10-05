@@ -1,20 +1,8 @@
 // © 2021 NVIDIA Corporation
 
-struct MultiThreadProtection {
-    MultiThreadProtection(DeviceD3D11& device)
-        : device(device) {
-        device.EnterCriticalSection();
-    }
-
-    ~MultiThreadProtection() {
-        device.LeaveCriticalSection();
-    }
-
-    DeviceD3D11& device;
-};
-
 BufferD3D11::~BufferD3D11() {
-    Destroy(m_ReadbackTexture);
+    for (const TextureReadbackD3D11& textureReadback : m_TextureReadbacks)
+        Destroy(textureReadback.texture);
 }
 
 Result BufferD3D11::Allocate(MemoryLocation memoryLocation, float priority) {
@@ -92,44 +80,11 @@ Result BufferD3D11::Create(const BufferD3D11Desc& bufferD3D11Desc) {
     return Result::SUCCESS;
 }
 
-TextureD3D11& BufferD3D11::RecreateReadbackTexture(const TextureD3D11& srcTexture, const TextureRegionDesc& srcRegion, const TextureDataLayoutDesc& readbackDataLayoutDesc) {
-    // This function expects non-"WHOLE_SIZE" dims in "srcRegion"
-    bool isChanged = true;
-    if (m_ReadbackTexture) {
-        const TextureDesc& curr = m_ReadbackTexture->GetDesc();
-        isChanged = curr.format != srcTexture.GetDesc().format || curr.width != srcRegion.width || curr.height != srcRegion.height || curr.depth != srcRegion.depth;
-    }
+void BufferD3D11::AddTextureReadback(TextureReadbackD3D11& textureReadback) {
+    MultiThreadProtection mutiThreadProtection(m_Device);
 
-    if (isChanged) {
-        TextureDesc textureDesc = {};
-        textureDesc.mipNum = 1;
-        textureDesc.sampleNum = 1;
-        textureDesc.layerNum = 1;
-        textureDesc.format = srcTexture.GetDesc().format;
-        textureDesc.width = srcRegion.width;
-        textureDesc.height = srcRegion.height;
-        textureDesc.depth = srcRegion.depth;
-
-        textureDesc.type = TextureType::TEXTURE_2D;
-        if (srcRegion.depth > 1)
-            textureDesc.type = TextureType::TEXTURE_3D;
-        else if (srcRegion.height == 1)
-            textureDesc.type = TextureType::TEXTURE_1D;
-
-        Destroy(m_ReadbackTexture);
-
-        Result result = m_Device.CreateImplementation<TextureD3D11>(m_ReadbackTexture, textureDesc);
-        if (result == Result::SUCCESS) {
-            result = m_ReadbackTexture->Allocate(MemoryLocation::HOST_READBACK, 0.0f);
-            if (result != Result::SUCCESS)
-                Destroy(m_ReadbackTexture);
-        }
-    }
-
-    m_IsReadbackDataChanged = true;
-    m_ReadbackDataLayoutDesc = readbackDataLayoutDesc;
-
-    return *m_ReadbackTexture;
+    m_TextureReadbacks.push_back(textureReadback);
+    textureReadback.texture = nullptr;
 }
 
 NRI_INLINE void* BufferD3D11::Map(uint64_t offset) {
@@ -165,36 +120,34 @@ NRI_INLINE void* BufferD3D11::Map(uint64_t offset) {
     }
 
     // Finalize readback
-    if (m_IsReadbackDataChanged) {
+    for (const TextureReadbackD3D11& textureReadback : m_TextureReadbacks) {
         D3D11_MAPPED_SUBRESOURCE srcData = {};
-        hr = m_Device.GetImmediateContext()->Map(*m_ReadbackTexture, 0, D3D11_MAP_READ, 0, &srcData);
+        hr = m_Device.GetImmediateContext()->Map(*textureReadback.texture, 0, D3D11_MAP_READ, 0, &srcData);
         if (FAILED(hr)) {
             m_Device.GetImmediateContext()->Unmap(m_Buffer, 0);
             NRI_REPORT_ERROR(&m_Device, "ID3D11DeviceContext::Map() failed!");
             return nullptr;
         }
 
-        const TextureDesc& readbackTextureDesc = m_ReadbackTexture->GetDesc();
-        uint32_t d = readbackTextureDesc.depth;
-        uint32_t h = readbackTextureDesc.height;
-        uint32_t rowSize = readbackTextureDesc.width * GetFormatProps(readbackTextureDesc.format).stride;
-
+        const TextureDesc& textureDesc = textureReadback.texture->GetDesc();
         const uint8_t* src = (uint8_t*)srcData.pData;
-        uint8_t* dst = ptr;
-        for (uint32_t i = 0; i < d; i++) {
-            for (uint32_t j = 0; j < h; j++) {
+        uint8_t* dst = ptr + textureReadback.dataLayout.offset;
+        for (uint32_t i = 0; i < textureDesc.depth; i++) {
+            for (uint32_t j = 0; j < textureReadback.rowNum; j++) {
                 const uint8_t* srcLocal = src + j * srcData.RowPitch;
-                uint8_t* dstLocal = dst + j * m_ReadbackDataLayoutDesc.rowPitch;
-                memcpy(dstLocal, srcLocal, rowSize);
+                uint8_t* dstLocal = dst + j * textureReadback.dataLayout.rowPitch;
+                memcpy(dstLocal, srcLocal, textureReadback.rowSize);
             }
             src += srcData.DepthPitch;
-            dst += m_ReadbackDataLayoutDesc.slicePitch;
+            dst += textureReadback.dataLayout.slicePitch;
         }
 
-        m_Device.GetImmediateContext()->Unmap(*m_ReadbackTexture, 0);
-
-        m_IsReadbackDataChanged = false;
+        m_Device.GetImmediateContext()->Unmap(*textureReadback.texture, 0);
     }
+
+    for (const TextureReadbackD3D11& textureReadback : m_TextureReadbacks)
+        Destroy(textureReadback.texture);
+    m_TextureReadbacks.clear();
 
     return ptr + offset;
 }

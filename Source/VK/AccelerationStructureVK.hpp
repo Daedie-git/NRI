@@ -72,7 +72,7 @@ Result AccelerationStructureVK::BindMemory(const MemoryVK* memory, uint64_t offs
         desc.offset = offset;
 
         Result result = m_Device.BindBufferMemory(&desc, 1);
-        if(result != Result::SUCCESS)
+        if (result != Result::SUCCESS)
             return result;
     }
 
@@ -104,5 +104,5 @@ NRI_INLINE void AccelerationStructureVK::SetDebugName(const char* name) {
 }
 
 NRI_INLINE Result AccelerationStructureVK::CreateDescriptor(Descriptor*& descriptor) const {
-    return m_Device.CreateImplementation<DescriptorVK>(descriptor, m_Handle);
+    return m_Device.CreateImplementation<DescriptorVK>(descriptor, *this);
 }

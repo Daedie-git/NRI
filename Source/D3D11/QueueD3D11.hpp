@@ -1,6 +1,8 @@
 // © 2021 NVIDIA Corporation
 
 NRI_INLINE Result QueueD3D11::Submit(const QueueSubmitDesc& queueSubmitDesc) {
+    MultiThreadProtection multiThreadProtection(m_Device);
+
     for (uint32_t i = 0; i < queueSubmitDesc.waitFenceNum; i++) {
         const FenceSubmitDesc& fenceSubmitDesc = queueSubmitDesc.waitFences[i];
         FenceD3D11* fence = (FenceD3D11*)fenceSubmitDesc.fence;

@@ -2,14 +2,14 @@
 
 static constexpr WGPUShaderStage GRAPHICS_SHADER_STAGE_MASK_WGPU = (WGPUShaderStage)(WGPUShaderStage_Vertex | WGPUShaderStage_Fragment);
 
-static bool IsSpirvBytecodeWGPU(const ShaderDesc& shaderDesc) {
+static bool IsSpirvBytecode(const ShaderDesc& shaderDesc) {
     constexpr uint32_t SPIRV_MAGIC = 0x07230203;
 
     const uint32_t* spirv = (const uint32_t*)shaderDesc.bytecode;
     return spirv && shaderDesc.size >= sizeof(uint32_t) && spirv[0] == SPIRV_MAGIC;
 }
 
-static uint32_t AddNonReadableDecorationsForWriteOnlyStorageImagesWGPU(DeviceWGPU& device, const ShaderDesc& shaderDesc, uint32_t* patchedSpirv, uint32_t patchedSpirvMaxWordNum) {
+static uint32_t AddNonReadableDecorationsForWriteOnlyStorageImages(DeviceWGPU& device, const ShaderDesc& shaderDesc, uint32_t* patchedSpirv, uint32_t patchedSpirvMaxWordNum) {
     // TODO: This patches SPIR-V to satisfy WGPU write-only storage texture rules. Prefer generating correct decorations in shaders.
     constexpr uint16_t OP_TYPE_IMAGE = 25;
     constexpr uint16_t OP_TYPE_POINTER = 32;
@@ -24,7 +24,7 @@ static uint32_t AddNonReadableDecorationsForWriteOnlyStorageImagesWGPU(DeviceWGP
 
     uint32_t wordNum = (uint32_t)(shaderDesc.size / sizeof(uint32_t));
     const uint32_t* spirv = (const uint32_t*)shaderDesc.bytecode;
-    if (!IsSpirvBytecodeWGPU(shaderDesc) || wordNum < 5)
+    if (!IsSpirvBytecode(shaderDesc) || wordNum < 5)
         return 0;
 
     uint32_t idBound = spirv[3];
@@ -169,7 +169,7 @@ WGPUShaderModule PipelineWGPU::CreateShaderModule(const ShaderDesc& shaderDesc) 
     WGPUShaderModuleDescriptor desc = WGPU_SHADER_MODULE_DESCRIPTOR_INIT;
 
     // TODO: Shader bytecode type is inferred from the SPIR-V magic header; everything else is treated as WGSL text.
-    if (!IsSpirvBytecodeWGPU(shaderDesc)) {
+    if (!IsSpirvBytecode(shaderDesc)) {
         WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
         wgsl.code = {(const char*)shaderDesc.bytecode, (size_t)shaderDesc.size};
         desc.nextInChain = &wgsl.chain;
@@ -181,7 +181,7 @@ WGPUShaderModule PipelineWGPU::CreateShaderModule(const ShaderDesc& shaderDesc) 
     uint32_t wordNum = (uint32_t)(shaderDesc.size / sizeof(uint32_t));
     uint32_t idBound = code[3];
     Scratch<uint32_t> patchedSpirv = NRI_ALLOCATE_SCRATCH(m_Device, uint32_t, wordNum + idBound * 3);
-    uint32_t patchedWordNum = AddNonReadableDecorationsForWriteOnlyStorageImagesWGPU(m_Device, shaderDesc, patchedSpirv, wordNum + idBound * 3);
+    uint32_t patchedWordNum = AddNonReadableDecorationsForWriteOnlyStorageImages(m_Device, shaderDesc, patchedSpirv, wordNum + idBound * 3);
 
     WGPUShaderSourceSPIRV spirv = WGPU_SHADER_SOURCE_SPIRV_INIT;
     spirv.codeSize = patchedWordNum ? patchedWordNum : wordNum;

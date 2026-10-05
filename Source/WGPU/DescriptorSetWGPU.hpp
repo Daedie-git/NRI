@@ -27,11 +27,12 @@ static bool IsDescriptorCompatibleWithRange(const DescriptorRangeMappingWGPU& ra
     return GetTextureFormat(descriptor.GetFormat()) == range.storageTextureFormat && viewDimension == range.storageTextureViewDimension;
 }
 
-DescriptorSetWGPU::DescriptorSetWGPU(DeviceWGPU& device, const DescriptorSetMappingWGPU& mapping)
+DescriptorSetWGPU::DescriptorSetWGPU(DeviceWGPU& device, const DescriptorSetMappingWGPU& mapping, bool isCopySource)
     : m_Device(device)
     , m_Mapping(mapping)
     , m_Descriptors(device.GetStdAllocator())
-    , m_BindGroups(device.GetStdAllocator()) {
+    , m_BindGroups(device.GetStdAllocator())
+    , m_IsCopySource(isCopySource) {
     uint32_t descriptorNum = 0;
     for (const DescriptorRangeMappingWGPU& range : mapping.ranges)
         descriptorNum = std::max(descriptorNum, range.descriptorOffset + range.descriptorNum);
@@ -62,19 +63,18 @@ void DescriptorSetWGPU::CopyRangeFrom(uint32_t dstRangeIndex, uint32_t dstBaseDe
 
     const DescriptorRangeMappingWGPU& dstRange = m_Mapping.ranges[dstRangeIndex];
     const DescriptorRangeMappingWGPU& srcRange = srcDescriptorSet.m_Mapping.ranges[srcRangeIndex];
-    uint32_t copyNum = descriptorNum == ALL ? srcRange.descriptorNum - srcBaseDescriptor : descriptorNum;
-
-    for (uint32_t i = 0; i < copyNum; i++)
+    for (uint32_t i = 0; i < descriptorNum; i++)
         m_Descriptors[dstRange.descriptorOffset + dstBaseDescriptor + i] = srcDescriptorSet.m_Descriptors[srcRange.descriptorOffset + srcBaseDescriptor + i];
 
     m_UpdateVersion++;
 }
 
-void DescriptorSetWGPU::FinalizeUpdate() const {
-    GetBindGroup();
+void DescriptorSetWGPU::FinalizeUpdate() {
+    if (!m_IsCopySource)
+        GetBindGroup();
 }
 
-WGPUBindGroup DescriptorSetWGPU::GetBindGroup(const DescriptorSetMappingWGPU& mapping) const {
+WGPUBindGroup DescriptorSetWGPU::GetBindGroup(const DescriptorSetMappingWGPU& mapping) {
     if (!mapping.layout)
         return nullptr;
 
@@ -97,7 +97,7 @@ WGPUBindGroup DescriptorSetWGPU::GetBindGroup(const DescriptorSetMappingWGPU& ma
     return cache.bindGroup;
 }
 
-bool DescriptorSetWGPU::RecreateBindGroup(const DescriptorSetMappingWGPU& mapping, DescriptorSetBindGroupWGPU& cache) const {
+bool DescriptorSetWGPU::RecreateBindGroup(const DescriptorSetMappingWGPU& mapping, DescriptorSetBindGroupWGPU& cache) {
     // TODO: Bind groups are recreated on descriptor updates/copies. This is correct but can be expensive for update-heavy workloads.
     auto resetBindGroup = [&]() {
         if (cache.bindGroup) {
@@ -165,12 +165,17 @@ bool DescriptorSetWGPU::RecreateBindGroup(const DescriptorSetMappingWGPU& mappin
                     for (uint32_t i = 0; i < range.descriptorNum; i++)
                         textureViews[resourceOffset + i] = m_Descriptors[range.descriptorOffset + i]->GetTextureView();
                     break;
-                default:
+                default: {
+                    const DescriptorWGPU& descriptor = *m_Descriptors[range.descriptorOffset];
+                    // wgpu-native applies one offset and size to all buffers in a binding array.
+                    entry.offset = descriptor.GetOffset();
+                    entry.size = descriptor.GetSize();
                     extras.buffers = buffers + resourceOffset;
                     extras.bufferCount = range.descriptorNum;
                     for (uint32_t i = 0; i < range.descriptorNum; i++)
                         buffers[resourceOffset + i] = m_Descriptors[range.descriptorOffset + i]->GetBuffer();
                     break;
+                }
             }
 
             resourceOffset += range.descriptorNum;

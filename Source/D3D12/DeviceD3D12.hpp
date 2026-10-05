@@ -846,6 +846,7 @@ void DeviceD3D12::FillDesc(bool disableD3D12EnhancedBarrier) {
         NRI_REPORT_WARNING(this, "ID3D12Device::CheckFeatureSupport(options13) failed, result = 0x%08X!", hr);
     m_Desc.memoryAlignment.uploadBufferTextureRow = options13.UnrestrictedBufferTextureCopyPitchSupported ? 1 : D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
     m_Desc.memoryAlignment.uploadBufferTextureSlice = options13.UnrestrictedBufferTextureCopyPitchSupported ? 1 : D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT;
+    m_Desc.features.constantAlphaBlendFactors = options13.AlphaBlendFactorSupported;
     m_Desc.features.viewportOriginBottomLeft = options13.InvertedViewportHeightFlipsYSupported;
 
     // Agility 1.608
@@ -952,8 +953,10 @@ void DeviceD3D12::FillDesc(bool disableD3D12EnhancedBarrier) {
     for (; currentShaderModel >= (uint32_t)D3D_SHADER_MODEL_6_0; currentShaderModel--) {
         D3D12_FEATURE_DATA_SHADER_MODEL shaderModel = {(D3D_SHADER_MODEL)currentShaderModel};
         hr = m_Device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &shaderModel, sizeof(shaderModel));
-        if (SUCCEEDED(hr))
+        if (SUCCEEDED(hr)) {
+            currentShaderModel = (uint32_t)shaderModel.HighestShaderModel;
             break;
+        }
     }
     if (currentShaderModel < D3D_SHADER_MODEL_6_0)
         currentShaderModel = D3D_SHADER_MODEL_5_1;
@@ -999,6 +1002,13 @@ void DeviceD3D12::FillDesc(bool disableD3D12EnhancedBarrier) {
     m_Desc.pipelineLayout.descriptorSetMaxNum = ROOT_SIGNATURE_DWORD_NUM / 1;
     m_Desc.pipelineLayout.rootConstantMaxSize = sizeof(uint32_t) * ROOT_SIGNATURE_DWORD_NUM / 1;
     m_Desc.pipelineLayout.rootDescriptorMaxNum = ROOT_SIGNATURE_DWORD_NUM / 2;
+    m_Desc.pipelineLayout.rootSamplerMaxNum = 2032; // https://learn.microsoft.com/en-us/windows/win32/direct3d12/hardware-support
+
+    m_Desc.descriptorHeap.resourceMaxNum = D3D12_MAX_SHADER_VISIBLE_DESCRIPTOR_HEAP_SIZE_TIER_2;
+    m_Desc.descriptorHeap.samplerMaxNum = D3D12_MAX_SHADER_VISIBLE_SAMPLER_HEAP_SIZE;
+    m_Desc.descriptorHeap.rootConstantMaxSize = m_Desc.pipelineLayout.rootConstantMaxSize;
+    m_Desc.descriptorHeap.rootDescriptorMaxNum = m_Desc.pipelineLayout.rootDescriptorMaxNum;
+    m_Desc.descriptorHeap.rootSamplerMaxNum = m_Desc.pipelineLayout.rootSamplerMaxNum;
 
     // https://learn.microsoft.com/en-us/windows/win32/direct3d12/hardware-support
     if (options.ResourceBindingTier == D3D12_RESOURCE_BINDING_TIER_1) {
@@ -1128,6 +1138,7 @@ void DeviceD3D12::FillDesc(bool disableD3D12EnhancedBarrier) {
     }
 
     m_Desc.other.timestampFrequencyHz = timestampFrequency;
+    m_Desc.other.timestampCopyQueueResolveOnCopyQueue = true;
     m_Desc.other.drawIndirectMaxNum = (1ull << D3D12_REQ_DRAWINDEXED_INDEX_COUNT_2_TO_EXP) - 1;
     m_Desc.other.samplerLodBiasMax = D3D12_MIP_LOD_BIAS_MAX;
     m_Desc.other.samplerAnisotropyMax = D3D12_DEFAULT_MAX_ANISOTROPY;
@@ -1174,6 +1185,8 @@ void DeviceD3D12::FillDesc(bool disableD3D12EnhancedBarrier) {
     m_Desc.features.timestampCopyQueue = options3.CopyQueueTimestampQueriesSupported;
     m_Desc.features.calibratedTimestamps = true;
     m_Desc.features.additionalShadingRates = options6.AdditionalShadingRatesSupported;
+    m_Desc.features.rectColorClears = true;
+    m_Desc.features.rectDepthStencilClears = true;
     m_Desc.features.regionResolve = true;
     m_Desc.features.resolveOpMinMax = true;
     m_Desc.features.pipelineCache = isPipelineLibrarySupported;
@@ -1193,6 +1206,8 @@ void DeviceD3D12::FillDesc(bool disableD3D12EnhancedBarrier) {
     m_Desc.features.rootConstantsOffset = true;
     m_Desc.features.nonConstantBufferRootDescriptorOffset = true;
     m_Desc.features.mutableDescriptorType = true;
+    m_Desc.features.descriptorHeap = m_Desc.tiers.bindless >= 2;
+    m_Desc.features.video = m_Desc.adapterDesc.queueNum[(size_t)QueueType::VIDEO_DECODE] != 0 || m_Desc.adapterDesc.queueNum[(size_t)QueueType::VIDEO_ENCODE] != 0;
     m_Desc.features.extendedDynamicState = true;
     m_Desc.features.resourceAliasing = true;
 
@@ -1379,7 +1394,7 @@ Result DeviceD3D12::GetDescriptorHandle(D3D12_DESCRIPTOR_HEAP_TYPE type, Descrip
         HRESULT hr = m_Device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&descriptorHeap));
         NRI_RETURN_ON_BAD_HRESULT(this, hr, "ID3D12Device::CreateDescriptorHeap");
 
-        DescriptorHeapDesc descriptorHeapDesc = {};
+        DescriptorHeapDescD3D12 descriptorHeapDesc = {};
         descriptorHeapDesc.heap = descriptorHeap;
         descriptorHeapDesc.baseHandleCPU = descriptorHeap->GetCPUDescriptorHandleForHeapStart().ptr;
         descriptorHeapDesc.descriptorSize = m_Device->GetDescriptorHandleIncrementSize(type);
@@ -1392,7 +1407,7 @@ Result DeviceD3D12::GetDescriptorHandle(D3D12_DESCRIPTOR_HEAP_TYPE type, Descrip
             DescriptorHandle handle = {};
             handle.heapType = type;
             handle.heapIndex = heapIndex;
-            handle.heapOffset = i;
+            handle.heapOffsetPlusOne = i + 1;
 
             freeDescriptors.push_back(handle);
         }
@@ -1415,8 +1430,8 @@ void DeviceD3D12::FreeDescriptorHandle(const DescriptorHandle& descriptorHandle)
 DescriptorHandleCPU DeviceD3D12::GetDescriptorHandleCPU(const DescriptorHandle& descriptorHandle) {
     ExclusiveScope lock(m_DescriptorHeapLock);
 
-    const DescriptorHeapDesc& descriptorHeapDesc = m_DescriptorHeaps[descriptorHandle.heapIndex];
-    DescriptorHandleCPU descriptorHandleCPU = descriptorHeapDesc.baseHandleCPU + descriptorHandle.heapOffset * descriptorHeapDesc.descriptorSize;
+    const DescriptorHeapDescD3D12& descriptorHeapDesc = m_DescriptorHeaps[descriptorHandle.heapIndex];
+    DescriptorHandleCPU descriptorHandleCPU = descriptorHeapDesc.baseHandleCPU + (descriptorHandle.heapOffsetPlusOne - 1) * descriptorHeapDesc.descriptorSize;
 
     return descriptorHandleCPU;
 }
@@ -1549,7 +1564,7 @@ void DeviceD3D12::GetAccelerationStructurePrebuildInfo(const AccelerationStructu
 
     if (accelerationStructureDesc.type == AccelerationStructureType::BOTTOM_LEVEL) {
         accelerationStructureInputs.pGeometryDescs = geometryDescs;
-        ConvertBotomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometryDescs, trianglesDescs, ommDescs);
+        ConvertBottomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometryDescs, trianglesDescs, ommDescs);
     }
 
     m_Device->GetRaytracingAccelerationStructurePrebuildInfo(&accelerationStructureInputs, &prebuildInfo);
@@ -1836,7 +1851,7 @@ NRI_INLINE Result DeviceD3D12::GetQueue(QueueType queueType, uint32_t queueIndex
         return Result::SUCCESS;
     }
 
-    return Result::FAILURE;
+    return Result::INVALID_ARGUMENT;
 }
 
 NRI_INLINE Result DeviceD3D12::WaitIdle() {
@@ -2078,9 +2093,9 @@ void DeviceD3D12::ReleaseTransferContext(TransferContextD3D12& context) {
     context.SetInUse(false);
 }
 
-NRI_INLINE Result DeviceD3D12::BindBufferMemory(const BindBufferMemoryDesc* bindBufferMemoryDescs, uint32_t bindBufferMemoryDescNum) {
-    for (uint32_t i = 0; i < bindBufferMemoryDescNum; i++) {
-        const auto& desc = bindBufferMemoryDescs[i];
+NRI_INLINE Result BindBufferMemoryD3D12(const BindBufferMemoryDesc* descs, uint32_t descNum) {
+    for (uint32_t i = 0; i < descNum; i++) {
+        const BindBufferMemoryDesc& desc = descs[i];
         Result result = ((BufferD3D12*)desc.buffer)->BindMemory(*(MemoryD3D12*)desc.memory, desc.offset);
         if (result != Result::SUCCESS)
             return result;
@@ -2089,9 +2104,9 @@ NRI_INLINE Result DeviceD3D12::BindBufferMemory(const BindBufferMemoryDesc* bind
     return Result::SUCCESS;
 }
 
-NRI_INLINE Result DeviceD3D12::BindTextureMemory(const BindTextureMemoryDesc* bindTextureMemoryDescs, uint32_t bindTextureMemoryDescNum) {
-    for (uint32_t i = 0; i < bindTextureMemoryDescNum; i++) {
-        const auto& desc = bindTextureMemoryDescs[i];
+NRI_INLINE Result BindTextureMemoryD3D12(const BindTextureMemoryDesc* descs, uint32_t descNum) {
+    for (uint32_t i = 0; i < descNum; i++) {
+        const BindTextureMemoryDesc& desc = descs[i];
         Result result = ((TextureD3D12*)desc.texture)->BindMemory(*(MemoryD3D12*)desc.memory, desc.offset);
         if (result != Result::SUCCESS)
             return result;
@@ -2100,9 +2115,9 @@ NRI_INLINE Result DeviceD3D12::BindTextureMemory(const BindTextureMemoryDesc* bi
     return Result::SUCCESS;
 }
 
-NRI_INLINE Result DeviceD3D12::BindAccelerationStructureMemory(const BindAccelerationStructureMemoryDesc* bindAccelerationStructureMemoryDescs, uint32_t bindAccelerationStructureMemoryDescNum) {
-    for (uint32_t i = 0; i < bindAccelerationStructureMemoryDescNum; i++) {
-        const auto& desc = bindAccelerationStructureMemoryDescs[i];
+NRI_INLINE Result BindAccelerationStructureMemoryD3D12(const BindAccelerationStructureMemoryDesc* descs, uint32_t descNum) {
+    for (uint32_t i = 0; i < descNum; i++) {
+        const BindAccelerationStructureMemoryDesc& desc = descs[i];
         Result result = ((AccelerationStructureD3D12*)desc.accelerationStructure)->BindMemory(*(MemoryD3D12*)desc.memory, desc.offset);
         if (result != Result::SUCCESS)
             return result;
@@ -2111,9 +2126,9 @@ NRI_INLINE Result DeviceD3D12::BindAccelerationStructureMemory(const BindAcceler
     return Result::SUCCESS;
 }
 
-NRI_INLINE Result DeviceD3D12::BindMicromapMemory(const BindMicromapMemoryDesc* bindMicromapMemoryDescs, uint32_t bindMicromapMemoryDescNum) {
-    for (uint32_t i = 0; i < bindMicromapMemoryDescNum; i++) {
-        const auto& desc = bindMicromapMemoryDescs[i];
+NRI_INLINE Result BindMicromapMemoryD3D12(const BindMicromapMemoryDesc* descs, uint32_t descNum) {
+    for (uint32_t i = 0; i < descNum; i++) {
+        const BindMicromapMemoryDesc& desc = descs[i];
         Result result = ((MicromapD3D12*)desc.micromap)->BindMemory(*(MemoryD3D12*)desc.memory, desc.offset);
         if (result != Result::SUCCESS)
             return result;

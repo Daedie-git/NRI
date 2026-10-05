@@ -1,5 +1,19 @@
 // © 2026 NVIDIA Corporation
 
+static inline WGPUTextureFormat GetTextureViewFormat(nri::Format format, WGPUTextureAspect aspect) {
+    if (aspect == WGPUTextureAspect_StencilOnly)
+        return WGPUTextureFormat_Stencil8;
+
+    if (aspect == WGPUTextureAspect_DepthOnly) {
+        if (format == nri::Format::D24_UNORM_S8_UINT)
+            return WGPUTextureFormat_Depth24Plus;
+        if (format == nri::Format::D32_SFLOAT_S8_UINT)
+            return WGPUTextureFormat_Depth32Float;
+    }
+
+    return nri::GetTextureFormat(format);
+}
+
 DescriptorWGPU::~DescriptorWGPU() {
     ReleaseTextureView();
 
@@ -93,15 +107,16 @@ WGPUTextureView DescriptorWGPU::GetTextureView() {
     ReleaseTextureView();
 
     const TextureDesc& textureDesc = m_Texture->GetDesc();
+    const Format format = m_TextureViewDesc.format == Format::UNKNOWN ? textureDesc.format : m_TextureViewDesc.format;
 
     WGPUTextureViewDescriptor desc = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-    desc.format = GetTextureFormat(m_TextureViewDesc.format == Format::UNKNOWN ? textureDesc.format : m_TextureViewDesc.format);
+    desc.aspect = GetTextureAspect(m_TextureViewDesc.planes);
+    desc.format = GetTextureViewFormat(format, desc.aspect);
     desc.dimension = GetTextureViewDimension(m_TextureViewDesc.type, textureDesc);
     desc.baseMipLevel = m_TextureViewDesc.mipOffset;
     desc.mipLevelCount = m_TextureViewDesc.mipNum == REMAINING ? WGPU_MIP_LEVEL_COUNT_UNDEFINED : m_TextureViewDesc.mipNum;
     desc.baseArrayLayer = m_TextureViewDesc.layerOffset;
     desc.arrayLayerCount = m_TextureViewDesc.layerNum == REMAINING ? WGPU_ARRAY_LAYER_COUNT_UNDEFINED : m_TextureViewDesc.layerNum;
-    desc.aspect = GetTextureAspect(m_TextureViewDesc.planes);
 
     WGPUTextureComponentSwizzleDescriptor swizzleDesc = WGPU_TEXTURE_COMPONENT_SWIZZLE_DESCRIPTOR_INIT;
     if (m_DescriptorType != DescriptorType::STORAGE_TEXTURE) {

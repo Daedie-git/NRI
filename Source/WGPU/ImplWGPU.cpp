@@ -1,9 +1,9 @@
 // © 2026 NVIDIA Corporation
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstdio>
-#include <numeric>
-#include <string>
+#include <mutex>
 #include <thread>
 
 #include "SharedWGPU.h"
@@ -817,16 +817,16 @@ static void NRI_CALL DestroyImgui(Imgui* imgui) {
     Destroy((ImguiImpl*)imgui);
 }
 
-static void NRI_CALL CmdCopyImguiData(CommandBuffer& commandBuffer, Streamer& streamer, Imgui& imgui, const CopyImguiDataDesc& copyImguiDataDesc) {
+static void NRI_CALL CmdCopyImguiData(CommandBuffer& commandBuffer, Streamer& streamer, Imgui& imgui, const CopyImguiDataDesc& copyImguiDataDesc, ImguiRenderData& imguiRenderData) {
     ImguiImpl& imguiImpl = (ImguiImpl&)imgui;
 
-    return imguiImpl.CmdCopyData(commandBuffer, streamer, copyImguiDataDesc);
+    return imguiImpl.CmdCopyData(commandBuffer, streamer, copyImguiDataDesc, imguiRenderData);
 }
 
-static void NRI_CALL CmdDrawImgui(CommandBuffer& commandBuffer, Imgui& imgui, const DrawImguiDesc& drawImguiDesc) {
-    ImguiImpl& imguiImpl = (ImguiImpl&)imgui;
+static void NRI_CALL CmdDrawImgui(CommandBuffer& commandBuffer, const ImguiRenderData& imguiRenderData, const DrawImguiDesc& drawImguiDesc) {
+    ImguiImpl& imguiImpl = (ImguiImpl&)*imguiRenderData.imgui;
 
-    return imguiImpl.CmdDraw(commandBuffer, drawImguiDesc);
+    return imguiImpl.CmdDraw(commandBuffer, imguiRenderData, drawImguiDesc);
 }
 
 Result DeviceWGPU::FillFunctionTable(ImguiInterface& table) const {
@@ -896,12 +896,20 @@ static void NRI_CALL DestroyStreamer(Streamer* streamer) {
     Destroy((StreamerImpl*)streamer);
 }
 
+static StreamerCopyBatch NRI_CALL BeginStreamerCopyBatch(Streamer& streamer) {
+    return ((StreamerImpl&)streamer).BeginCopyBatch();
+}
+
 static Buffer* NRI_CALL GetStreamerConstantBuffer(Streamer& streamer) {
     return ((StreamerImpl&)streamer).GetConstantBuffer();
 }
 
 static uint32_t NRI_CALL StreamConstantData(Streamer& streamer, const void* data, uint32_t dataSize) {
     return ((StreamerImpl&)streamer).StreamConstantData(data, dataSize);
+}
+
+static void* NRI_CALL StreamHostData(Streamer& streamer, const void* data, uint64_t dataSize, uint32_t placementAlignment) {
+    return ((StreamerImpl&)streamer).StreamHostData(data, dataSize, placementAlignment);
 }
 
 static BufferOffset NRI_CALL StreamBufferData(Streamer& streamer, const StreamBufferDataDesc& streamBufferDataDesc) {
@@ -916,17 +924,19 @@ static void NRI_CALL EndStreamerFrame(Streamer& streamer) {
     ((StreamerImpl&)streamer).EndFrame();
 }
 
-static void NRI_CALL CmdCopyStreamedData(CommandBuffer& commandBuffer, Streamer& streamer) {
-    ((StreamerImpl&)streamer).CmdCopyStreamedData(commandBuffer);
+static void NRI_CALL CmdCopyStreamedData(CommandBuffer& commandBuffer, Streamer& streamer, StreamerCopyBatch copyBatch) {
+    ((StreamerImpl&)streamer).CmdCopyStreamedData(commandBuffer, copyBatch);
 }
 
 Result DeviceWGPU::FillFunctionTable(StreamerInterface& table) const {
     table.CreateStreamer = ::CreateStreamer;
     table.DestroyStreamer = ::DestroyStreamer;
+    table.BeginStreamerCopyBatch = ::BeginStreamerCopyBatch;
     table.GetStreamerConstantBuffer = ::GetStreamerConstantBuffer;
     table.StreamBufferData = ::StreamBufferData;
     table.StreamTextureData = ::StreamTextureData;
     table.StreamConstantData = ::StreamConstantData;
+    table.StreamHostData = ::StreamHostData;
     table.EndStreamerFrame = ::EndStreamerFrame;
     table.CmdCopyStreamedData = ::CmdCopyStreamedData;
 
@@ -986,9 +996,50 @@ Result DeviceWGPU::FillFunctionTable(SwapChainInterface& table) const {
 //============================================================================================================================================================================================
 #pragma region[  Upscaler  ]
 
-Result DeviceWGPU::FillFunctionTable(UpscalerInterface&) const {
-    // TODO: No WGPU mapping exists for the upscaler extension yet.
-    return Result::UNSUPPORTED;
+static Result NRI_CALL CreateUpscaler(Device& device, const UpscalerDesc& upscalerDesc, Upscaler*& upscaler) {
+    DeviceWGPU& deviceWGPU = (DeviceWGPU&)device;
+    UpscalerImpl* impl = Allocate<UpscalerImpl>(deviceWGPU.GetAllocationCallbacks(), device, deviceWGPU.GetCoreInterface());
+    Result result = impl->Create(upscalerDesc);
+
+    if (result != Result::SUCCESS) {
+        Destroy(deviceWGPU.GetAllocationCallbacks(), impl);
+        upscaler = nullptr;
+    } else
+        upscaler = (Upscaler*)impl;
+
+    return result;
+}
+
+static void NRI_CALL DestroyUpscaler(Upscaler* upscaler) {
+    Destroy((UpscalerImpl*)upscaler);
+}
+
+static bool NRI_CALL IsUpscalerSupported(const Device& device, UpscalerType upscalerType) {
+    DeviceWGPU& deviceWGPU = (DeviceWGPU&)device;
+
+    return IsUpscalerSupported(deviceWGPU.GetDesc(), upscalerType);
+}
+
+static void NRI_CALL GetUpscalerProps(const Upscaler& upscaler, UpscalerProps& upscalerProps) {
+    UpscalerImpl& upscalerImpl = (UpscalerImpl&)upscaler;
+
+    return upscalerImpl.GetUpscalerProps(upscalerProps);
+}
+
+static void NRI_CALL CmdDispatchUpscale(CommandBuffer& commandBuffer, Upscaler& upscaler, const DispatchUpscaleDesc& dispatchUpscalerDesc) {
+    UpscalerImpl& upscalerImpl = (UpscalerImpl&)upscaler;
+
+    upscalerImpl.CmdDispatchUpscale(commandBuffer, dispatchUpscalerDesc);
+}
+
+Result DeviceWGPU::FillFunctionTable(UpscalerInterface& table) const {
+    table.CreateUpscaler = ::CreateUpscaler;
+    table.DestroyUpscaler = ::DestroyUpscaler;
+    table.IsUpscalerSupported = ::IsUpscalerSupported;
+    table.GetUpscalerProps = ::GetUpscalerProps;
+    table.CmdDispatchUpscale = ::CmdDispatchUpscale;
+
+    return Result::SUCCESS;
 }
 
 #pragma endregion

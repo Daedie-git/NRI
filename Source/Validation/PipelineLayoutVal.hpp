@@ -4,6 +4,7 @@ PipelineLayoutVal::PipelineLayoutVal(DeviceVal& device, PipelineLayout* pipeline
     : ObjectVal(device, pipelineLayout)
     , m_DescriptorSetDescs(device.GetStdAllocator())
     , m_RootConstantDescs(device.GetStdAllocator())
+    , m_RootDescriptorDescs(device.GetStdAllocator())
     , m_DescriptorRangeDescs(device.GetStdAllocator()) {
     uint32_t descriptorRangeDescNum = 0;
     for (uint32_t i = 0; i < pipelineLayoutDesc.descriptorSetNum; i++)
@@ -11,6 +12,8 @@ PipelineLayoutVal::PipelineLayoutVal(DeviceVal& device, PipelineLayout* pipeline
 
     m_DescriptorSetDescs.insert(m_DescriptorSetDescs.begin(), pipelineLayoutDesc.descriptorSets, pipelineLayoutDesc.descriptorSets + pipelineLayoutDesc.descriptorSetNum);
     m_RootConstantDescs.insert(m_RootConstantDescs.begin(), pipelineLayoutDesc.rootConstants, pipelineLayoutDesc.rootConstants + pipelineLayoutDesc.rootConstantNum);
+    if (pipelineLayoutDesc.rootDescriptorNum)
+        m_RootDescriptorDescs.insert(m_RootDescriptorDescs.begin(), pipelineLayoutDesc.rootDescriptors, pipelineLayoutDesc.rootDescriptors + pipelineLayoutDesc.rootDescriptorNum);
 
     m_DescriptorRangeDescs.reserve(descriptorRangeDescNum);
     for (uint32_t i = 0; i < pipelineLayoutDesc.descriptorSetNum; i++) {
@@ -23,4 +26,5 @@ PipelineLayoutVal::PipelineLayoutVal(DeviceVal& device, PipelineLayout* pipeline
     m_PipelineLayoutDesc = pipelineLayoutDesc;
     m_PipelineLayoutDesc.descriptorSets = m_DescriptorSetDescs.data();
     m_PipelineLayoutDesc.rootConstants = m_RootConstantDescs.data();
+    m_PipelineLayoutDesc.rootDescriptors = pipelineLayoutDesc.rootDescriptorNum ? m_RootDescriptorDescs.data() : nullptr;
 }

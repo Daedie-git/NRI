@@ -107,6 +107,7 @@ struct IsSupported {
     uint32_t deviceFault                  : 1;
     uint32_t deviceFaultVendorBinary      : 1;
     uint32_t dynamicRendering             : 1;
+    uint32_t storeOpNone                  : 1;
     uint32_t copyCommands2                : 1;
     uint32_t swapChainMutableFormat       : 1;
     uint32_t presentId                    : 1;
@@ -131,6 +132,7 @@ struct IsSupported {
     uint32_t videoMaintenance1            : 1;
     uint32_t videoMaintenance2            : 1;
     uint32_t videoEncodeAV1               : 1;
+    uint32_t descriptorHeap               : 1;
 };
 
 static_assert(sizeof(IsSupported) == sizeof(uint32_t), "4 bytes expected");
@@ -166,6 +168,10 @@ struct DeviceVK final : public DeviceBase {
 
     inline const VKBindingOffsets& GetBindingOffsets() const {
         return m_BindingOffsets;
+    }
+
+    inline const VkPhysicalDeviceDescriptorHeapPropertiesEXT& GetDescriptorHeapProperties() const {
+        return m_DescriptorHeapProps;
     }
 
     inline const CoreInterface& GetCoreInterface() const {
@@ -239,6 +245,7 @@ struct DeviceVK final : public DeviceBase {
     void Destruct() override;
     Result ReportDeviceLostInfo(DeviceLostDump& deviceLostDump) override;
     Result FillFunctionTable(CoreInterface& table) const override;
+    Result FillFunctionTable(DescriptorHeapInterface& table) const override;
     Result FillFunctionTable(HelperInterface& table) const override;
     Result FillFunctionTable(LowLatencyInterface& table) const override;
     Result FillFunctionTable(MeshShaderInterface& table) const override;
@@ -301,6 +308,7 @@ private:
     Vector<TransferContextVK*> m_TransferContexts;
     DispatchTable m_VK = {};
     VkPhysicalDeviceMemoryProperties m_MemoryProps = {};
+    VkPhysicalDeviceDescriptorHeapPropertiesEXT m_DescriptorHeapProps = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_HEAP_PROPERTIES_EXT};
     VkAllocationCallbacks m_AllocationCallbacks = {};
     VKBindingOffsets m_BindingOffsets = {};
     CoreInterface m_iCore = {};

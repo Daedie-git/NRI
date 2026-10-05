@@ -125,7 +125,7 @@ static inline VkImageSubresourceRange GetSubresourceRange(const TextureVK& textu
 }
 
 static inline VkImageSubresourceRange GetSubresourceRange(const DescriptorVK& descriptorVK) {
-    const TexViewDesc& texViewDesc = descriptorVK.GetTexViewDesc();
+    const TexViewDescVK& texViewDesc = descriptorVK.GetTexViewDesc();
     const TextureDesc& textureDesc = texViewDesc.texture->GetDesc();
 
     VkImageSubresourceRange out = {};
@@ -243,15 +243,15 @@ static inline void RemoveInputAttachmentRange(Vector<InputAttachmentRange>& rang
         NormalizeInputAttachmentRanges(ranges);
 }
 
-static inline void FillRenderingAttachmentInfo(VkRenderingAttachmentInfo& attachmentInfo, const AttachmentDesc& attachmentDesc, Dim_t& renderWidth, Dim_t& renderHeight, Dim_t& layerNum) {
+static inline void FillRenderingAttachmentInfo(VkRenderingAttachmentInfo& attachmentInfo, const AttachmentDesc& attachmentDesc, bool storeOpNoneSupported, Dim_t& renderWidth, Dim_t& renderHeight, Dim_t& layerNum) {
     const DescriptorVK& descriptorVK = *(DescriptorVK*)attachmentDesc.descriptor;
-    const TexViewDesc& texViewDesc = descriptorVK.GetTexViewDesc();
+    const TexViewDescVK& texViewDesc = descriptorVK.GetTexViewDesc();
 
     attachmentInfo = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     attachmentInfo.imageView = descriptorVK.GetImageView();
     attachmentInfo.imageLayout = texViewDesc.expectedLayout;
     attachmentInfo.loadOp = GetLoadOp(attachmentDesc.loadOp);
-    attachmentInfo.storeOp = GetStoreOp(attachmentDesc.storeOp);
+    attachmentInfo.storeOp = GetStoreOp(attachmentDesc.storeOp, storeOpNoneSupported);
     attachmentInfo.clearValue = *(VkClearValue*)&attachmentDesc.clearValue;
 
     if (attachmentDesc.resolveDst) {
@@ -275,15 +275,15 @@ static inline void FillRenderingAttachmentInfo(VkRenderingAttachmentInfo& attach
     layerNum = std::min(layerNum, texViewDesc.layerOrSliceNum);
 }
 
-static inline RenderPassAttachmentDesc GetRenderPassAttachmentDesc(const AttachmentDesc& attachmentDesc, bool isInputAttachment = false) {
+static inline RenderPassAttachmentDesc GetRenderPassAttachmentDesc(const AttachmentDesc& attachmentDesc, bool storeOpNoneSupported, bool isInputAttachment = false) {
     const DescriptorVK& descriptorVK = *(DescriptorVK*)attachmentDesc.descriptor;
-    const TexViewDesc& texViewDesc = descriptorVK.GetTexViewDesc();
+    const TexViewDescVK& texViewDesc = descriptorVK.GetTexViewDesc();
 
     RenderPassAttachmentDesc out = {};
     out.format = GetVkFormat(descriptorVK.GetFormat());
     out.sampleNum = (VkSampleCountFlagBits)texViewDesc.texture->GetDesc().sampleNum;
     out.loadOp = GetLoadOp(attachmentDesc.loadOp);
-    out.storeOp = GetStoreOp(attachmentDesc.storeOp);
+    out.storeOp = GetStoreOp(attachmentDesc.storeOp, storeOpNoneSupported);
     out.stencilLoadOp = out.loadOp;
     out.stencilStoreOp = out.storeOp;
     out.layout = isInputAttachment ? VK_IMAGE_LAYOUT_RENDERING_LOCAL_READ : texViewDesc.expectedLayout;
@@ -292,7 +292,7 @@ static inline RenderPassAttachmentDesc GetRenderPassAttachmentDesc(const Attachm
 }
 
 static inline RenderPassAttachmentDesc GetRenderPassResolveAttachmentDesc(const DescriptorVK& descriptorVK) {
-    const TexViewDesc& texViewDesc = descriptorVK.GetTexViewDesc();
+    const TexViewDescVK& texViewDesc = descriptorVK.GetTexViewDesc();
 
     RenderPassAttachmentDesc out = {};
     out.format = GetVkFormat(descriptorVK.GetFormat());
@@ -307,7 +307,7 @@ static inline RenderPassAttachmentDesc GetRenderPassResolveAttachmentDesc(const 
 }
 
 static inline void UpdateRenderingExtent(const DescriptorVK& descriptorVK, Dim_t& renderWidth, Dim_t& renderHeight, Dim_t& layerNum) {
-    const TexViewDesc& texViewDesc = descriptorVK.GetTexViewDesc();
+    const TexViewDescVK& texViewDesc = descriptorVK.GetTexViewDesc();
 
     Dim_t w = texViewDesc.texture->GetSize(0, texViewDesc.mipOffset);
     Dim_t h = texViewDesc.texture->GetSize(1, texViewDesc.mipOffset);
@@ -1584,7 +1584,7 @@ NRI_INLINE void CommandBufferVK::ClearStorage(const ClearStorageDesc& clearStora
             static_assert(sizeof(VkClearColorValue) == sizeof(clearStorageDesc.value), "Unexpected sizeof");
 
             const VkClearColorValue* value = (VkClearColorValue*)&clearStorageDesc.value;
-            const TexViewDesc& texViewDesc = descriptorVK.GetTexViewDesc();
+            const TexViewDescVK& texViewDesc = descriptorVK.GetTexViewDesc();
             VkImage image = texViewDesc.texture->GetHandle();
 
             VkImageSubresourceRange subresourceRange = {};
@@ -1622,13 +1622,13 @@ NRI_INLINE void CommandBufferVK::BeginRendering(const RenderingDesc& renderingDe
         renderingInfo.pColorAttachments = colors;
 
         for (uint32_t i = 0; i < renderingDesc.colorNum; i++)
-            FillRenderingAttachmentInfo(colors[i], renderingDesc.colors[i], renderWidth, renderHeight, renderLayerNum);
+            FillRenderingAttachmentInfo(colors[i], renderingDesc.colors[i], m_Device.m_IsSupported.storeOpNone, renderWidth, renderHeight, renderLayerNum);
 
         VkRenderingAttachmentInfo depth = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         if (renderingDesc.depth.descriptor) {
             m_DepthStencil = (DescriptorVK*)renderingDesc.depth.descriptor;
 
-            FillRenderingAttachmentInfo(depth, renderingDesc.depth, renderWidth, renderHeight, renderLayerNum);
+            FillRenderingAttachmentInfo(depth, renderingDesc.depth, m_Device.m_IsSupported.storeOpNone, renderWidth, renderHeight, renderLayerNum);
             renderingInfo.pDepthAttachment = &depth;
 
             const FormatProps& formatProps = GetFormatProps(m_DepthStencil->GetFormat());
@@ -1641,7 +1641,7 @@ NRI_INLINE void CommandBufferVK::BeginRendering(const RenderingDesc& renderingDe
         if (renderingDesc.stencil.descriptor) { // it's safe to do it this way, since there are no "stencil-only" formats
             m_DepthStencil = (DescriptorVK*)renderingDesc.stencil.descriptor;
 
-            FillRenderingAttachmentInfo(stencil, renderingDesc.stencil, renderWidth, renderHeight, renderLayerNum);
+            FillRenderingAttachmentInfo(stencil, renderingDesc.stencil, m_Device.m_IsSupported.storeOpNone, renderWidth, renderHeight, renderLayerNum);
             renderingInfo.pStencilAttachment = &stencil;
         }
 
@@ -1683,7 +1683,7 @@ NRI_INLINE void CommandBufferVK::BeginRendering(const RenderingDesc& renderingDe
             VkImage image = descriptorVK.GetTexViewDesc().texture->GetHandle();
             bool isInputAttachment = HasInputAttachmentRange(m_InputAttachmentRanges, image, GetSubresourceRange(descriptorVK));
 
-            renderPassDesc.colors.push_back(GetRenderPassAttachmentDesc(color, isInputAttachment));
+            renderPassDesc.colors.push_back(GetRenderPassAttachmentDesc(color, m_Device.m_IsSupported.storeOpNone, isInputAttachment));
             framebufferDesc.attachments.push_back(descriptorVK.GetImageView());
             UpdateRenderingExtent(descriptorVK, renderWidth, renderHeight, renderLayerNum);
 
@@ -1722,7 +1722,7 @@ NRI_INLINE void CommandBufferVK::BeginRendering(const RenderingDesc& renderingDe
             const FormatProps& formatProps = GetFormatProps(m_DepthStencil->GetFormat());
 
             renderPassDesc.hasDepth = true;
-            renderPassDesc.depth = GetRenderPassAttachmentDesc(renderingDesc.depth);
+            renderPassDesc.depth = GetRenderPassAttachmentDesc(renderingDesc.depth, m_Device.m_IsSupported.storeOpNone);
             framebufferDesc.attachments.push_back(m_DepthStencil->GetImageView());
             UpdateRenderingExtent(*m_DepthStencil, renderWidth, renderHeight, renderLayerNum);
 
@@ -1757,7 +1757,7 @@ NRI_INLINE void CommandBufferVK::BeginRendering(const RenderingDesc& renderingDe
             }
 
             renderPassDesc.hasStencil = true;
-            renderPassDesc.stencil = GetRenderPassAttachmentDesc(renderingDesc.stencil);
+            renderPassDesc.stencil = GetRenderPassAttachmentDesc(renderingDesc.stencil, m_Device.m_IsSupported.storeOpNone);
             if (renderingDesc.depth.descriptor) {
                 renderPassDesc.depth.stencilLoadOp = renderPassDesc.stencil.loadOp;
                 renderPassDesc.depth.stencilStoreOp = renderPassDesc.stencil.storeOp;
@@ -1923,12 +1923,12 @@ NRI_INLINE void CommandBufferVK::SetPipelineLayout(BindPoint bindPoint, const Pi
     m_PipelineLayout = (PipelineLayoutVK*)&pipelineLayout;
     m_PipelineBindPoint = bindPoint;
 
-    { // Push immutable samplers
+    if (!m_PipelineLayout->IsDescriptorHeap()) {
+        // Push immutable samplers
         const auto& bindingInfo = m_PipelineLayout->GetBindingInfo();
 
         for (uint32_t i = bindingInfo.rootSamplerBindingOffset; i < (uint32_t)bindingInfo.pushDescriptors.size(); i++) {
             // https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#descriptorsets-push-descriptors
-            // To push an immutable sampler...
             VkDescriptorImageInfo imageInfo = {};
 
             VkWriteDescriptorSet descriptorWrite = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
@@ -2006,7 +2006,13 @@ NRI_INLINE void CommandBufferVK::SetRootConstants(const SetRootConstantsDesc& se
     uint32_t offset = pushConstantBindingDesc.offset + setRootConstantsDesc.offset;
 
     const auto& vk = m_Device.GetDispatchTable();
-    if (m_Device.m_IsSupported.maintenance6) {
+    if (m_PipelineLayout->IsDescriptorHeap()) {
+        VkPushDataInfoEXT info = {VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT};
+        info.offset = offset;
+        info.data.address = setRootConstantsDesc.data;
+        info.data.size = setRootConstantsDesc.size;
+        vk.CmdPushDataEXT(m_Handle, &info);
+    } else if (m_Device.m_IsSupported.maintenance6) {
         VkPushConstantsInfo info = {VK_STRUCTURE_TYPE_PUSH_CONSTANTS_INFO};
         info.layout = *m_PipelineLayout;
         info.stageFlags = pushConstantBindingDesc.stages;
@@ -2022,12 +2028,27 @@ NRI_INLINE void CommandBufferVK::SetRootConstants(const SetRootConstantsDesc& se
 NRI_INLINE void CommandBufferVK::SetRootDescriptor(const SetRootDescriptorDesc& setRootDescriptorDesc) {
     const DescriptorVK& descriptorVK = *(DescriptorVK*)setRootDescriptorDesc.descriptor;
 
+    if (m_PipelineLayout->IsDescriptorHeap()) {
+        const auto& bindingInfo = m_PipelineLayout->GetBindingInfo();
+        const uint64_t address = descriptorVK.GetDeviceAddress() + setRootDescriptorDesc.offset;
+
+        VkPushDataInfoEXT info = {VK_STRUCTURE_TYPE_PUSH_DATA_INFO_EXT};
+        info.offset = bindingInfo.pushDescriptors[setRootDescriptorDesc.rootDescriptorIndex];
+        info.data.address = &address;
+        info.data.size = sizeof(address);
+
+        const auto& vk = m_Device.GetDispatchTable();
+        vk.CmdPushDataEXT(m_Handle, &info);
+
+        return;
+    }
+
     VkAccelerationStructureKHR accelerationStructure = descriptorVK.GetAccelerationStructure();
 
     const auto& bindingInfo = m_PipelineLayout->GetBindingInfo();
 
     VkDescriptorBufferInfo bufferInfo = descriptorVK.GetBufferInfo();
-    bufferInfo.offset += setRootDescriptorDesc.offset; // TODO: adjust "size"?
+    bufferInfo.offset += setRootDescriptorDesc.offset;
 
     VkWriteDescriptorSetAccelerationStructureKHR accelerationStructureWrite = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
     accelerationStructureWrite.accelerationStructureCount = 1;
@@ -2142,7 +2163,7 @@ NRI_INLINE void CommandBufferVK::CopyTexture(Texture& dstTexture, const TextureR
             regions[i].srcOffset = {};
             regions[i].dstSubresource = {GetImageAspectFlags(PlaneBits::ALL, dstDesc.format), i, 0, dstDesc.layerNum};
             regions[i].dstOffset = {};
-            regions[i].extent = dst.GetExtent();
+            regions[i].extent = {dst.GetSize(0, i), dst.GetSize(1, i), dst.GetSize(2, i)};
         }
     } else {
         TextureRegionDesc wholeResource = {};
@@ -2476,7 +2497,7 @@ NRI_INLINE void CommandBufferVK::ZeroBuffer(Buffer& buffer, uint64_t offset, uin
 
 NRI_INLINE void CommandBufferVK::Dispatch(const DispatchDesc& dispatchDesc) {
     const auto& vk = m_Device.GetDispatchTable();
-    vk.CmdDispatch(m_Handle, dispatchDesc.x, dispatchDesc.y, dispatchDesc.z);
+    vk.CmdDispatch(m_Handle, dispatchDesc.workGroupNumX, dispatchDesc.workGroupNumY, dispatchDesc.workGroupNumZ);
 }
 
 NRI_INLINE void CommandBufferVK::DispatchIndirect(const Buffer& buffer, uint64_t offset) {
@@ -2733,7 +2754,7 @@ NRI_INLINE void CommandBufferVK::BuildBottomLevelAccelerationStructures(const Bu
         // Fill ranges and geometries
         pRanges[i] = ranges;
 
-        uint32_t micromapNum = ConvertBotomLevelGeometries(ranges, geometries, trianglesMicromaps, in.geometries, in.geometryNum);
+        uint32_t micromapNum = ConvertBottomLevelGeometries(ranges, geometries, trianglesMicromaps, in.geometries, in.geometryNum);
 
         // Fill info
         AccelerationStructureVK* dst = (AccelerationStructureVK*)in.dst;
@@ -2823,7 +2844,7 @@ NRI_INLINE void CommandBufferVK::CopyMicromap(Micromap& dst, const Micromap& src
     vk.CmdCopyMicromapEXT(m_Handle, &info);
 }
 
-NRI_INLINE void CommandBufferVK::WriteAccelerationStructuresSizes(const AccelerationStructure* const* accelerationStructures, uint32_t accelerationStructureNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
+NRI_INLINE void CommandBufferVK::WriteAccelerationStructureSizes(const AccelerationStructure* const* accelerationStructures, uint32_t accelerationStructureNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
     Scratch<VkAccelerationStructureKHR> handles = NRI_ALLOCATE_SCRATCH(m_Device, VkAccelerationStructureKHR, accelerationStructureNum);
     for (uint32_t i = 0; i < accelerationStructureNum; i++)
         handles[i] = ((AccelerationStructureVK*)accelerationStructures[i])->GetHandle();
@@ -2834,7 +2855,7 @@ NRI_INLINE void CommandBufferVK::WriteAccelerationStructuresSizes(const Accelera
     vk.CmdWriteAccelerationStructuresPropertiesKHR(m_Handle, accelerationStructureNum, handles, queryPoolVK.GetType(), queryPoolVK.GetHandle(), queryPoolOffset);
 }
 
-NRI_INLINE void CommandBufferVK::WriteMicromapsSizes(const Micromap* const* micromaps, uint32_t micromapNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
+NRI_INLINE void CommandBufferVK::WriteMicromapSizes(const Micromap* const* micromaps, uint32_t micromapNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
     Scratch<VkMicromapEXT> handles = NRI_ALLOCATE_SCRATCH(m_Device, VkMicromapEXT, micromapNum);
     for (uint32_t i = 0; i < micromapNum; i++)
         handles[i] = ((MicromapVK*)micromaps[i])->GetHandle();
@@ -2847,27 +2868,27 @@ NRI_INLINE void CommandBufferVK::WriteMicromapsSizes(const Micromap* const* micr
 
 NRI_INLINE void CommandBufferVK::DispatchRays(const DispatchRaysDesc& dispatchRaysDesc) {
     VkStridedDeviceAddressRegionKHR raygen = {};
-    raygen.deviceAddress = GetBufferDeviceAddress(dispatchRaysDesc.raygenShader.buffer, dispatchRaysDesc.raygenShader.offset);
-    raygen.size = dispatchRaysDesc.raygenShader.size;
-    raygen.stride = dispatchRaysDesc.raygenShader.stride;
+    raygen.deviceAddress = GetBufferDeviceAddress(dispatchRaysDesc.raygenShaderRecord.buffer, dispatchRaysDesc.raygenShaderRecord.offset);
+    raygen.size = dispatchRaysDesc.raygenShaderRecord.size;
+    raygen.stride = dispatchRaysDesc.raygenShaderRecord.stride;
 
     VkStridedDeviceAddressRegionKHR miss = {};
-    miss.deviceAddress = GetBufferDeviceAddress(dispatchRaysDesc.missShaders.buffer, dispatchRaysDesc.missShaders.offset);
-    miss.size = dispatchRaysDesc.missShaders.size;
-    miss.stride = dispatchRaysDesc.missShaders.stride;
+    miss.deviceAddress = GetBufferDeviceAddress(dispatchRaysDesc.missShaderBindingTable.buffer, dispatchRaysDesc.missShaderBindingTable.offset);
+    miss.size = dispatchRaysDesc.missShaderBindingTable.size;
+    miss.stride = dispatchRaysDesc.missShaderBindingTable.stride;
 
     VkStridedDeviceAddressRegionKHR hit = {};
-    hit.deviceAddress = GetBufferDeviceAddress(dispatchRaysDesc.hitShaderGroups.buffer, dispatchRaysDesc.hitShaderGroups.offset);
-    hit.size = dispatchRaysDesc.hitShaderGroups.size;
-    hit.stride = dispatchRaysDesc.hitShaderGroups.stride;
+    hit.deviceAddress = GetBufferDeviceAddress(dispatchRaysDesc.hitShaderBindingTable.buffer, dispatchRaysDesc.hitShaderBindingTable.offset);
+    hit.size = dispatchRaysDesc.hitShaderBindingTable.size;
+    hit.stride = dispatchRaysDesc.hitShaderBindingTable.stride;
 
     VkStridedDeviceAddressRegionKHR callable = {};
-    callable.deviceAddress = GetBufferDeviceAddress(dispatchRaysDesc.callableShaders.buffer, dispatchRaysDesc.callableShaders.offset);
-    callable.size = dispatchRaysDesc.callableShaders.size;
-    callable.stride = dispatchRaysDesc.callableShaders.stride;
+    callable.deviceAddress = GetBufferDeviceAddress(dispatchRaysDesc.callableShaderBindingTable.buffer, dispatchRaysDesc.callableShaderBindingTable.offset);
+    callable.size = dispatchRaysDesc.callableShaderBindingTable.size;
+    callable.stride = dispatchRaysDesc.callableShaderBindingTable.stride;
 
     const auto& vk = m_Device.GetDispatchTable();
-    vk.CmdTraceRaysKHR(m_Handle, &raygen, &miss, &hit, &callable, dispatchRaysDesc.x, dispatchRaysDesc.y, dispatchRaysDesc.z);
+    vk.CmdTraceRaysKHR(m_Handle, &raygen, &miss, &hit, &callable, dispatchRaysDesc.width, dispatchRaysDesc.height, dispatchRaysDesc.depth);
 }
 
 NRI_INLINE void CommandBufferVK::DispatchRaysIndirect(const Buffer& buffer, uint64_t offset) {

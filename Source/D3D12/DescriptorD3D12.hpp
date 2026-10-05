@@ -317,7 +317,7 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
 Result DescriptorD3D12::Create(const BufferViewDesc& bufferViewDesc) {
     const BufferD3D12& bufferD3D12 = *((BufferD3D12*)bufferViewDesc.buffer);
     const BufferDesc& bufferDesc = bufferD3D12.GetDesc();
-    uint64_t size = bufferViewDesc.size == WHOLE_SIZE ? bufferDesc.size : bufferViewDesc.size;
+    uint64_t size = bufferViewDesc.size == WHOLE_SIZE ? (bufferDesc.size - bufferViewDesc.offset) : bufferViewDesc.size;
 
     Format patchedFormat = Format::UNKNOWN;
     uint32_t structureStride = 0;
@@ -336,7 +336,7 @@ Result DescriptorD3D12::Create(const BufferViewDesc& bufferViewDesc) {
     const DxgiFormat& format = GetDxgiFormat(patchedFormat);
     const FormatProps& formatProps = GetFormatProps(patchedFormat);
     uint32_t elementSize = structureStride ? structureStride : formatProps.stride;
-    uint64_t elementOffset = (uint32_t)(bufferViewDesc.offset / elementSize);
+    uint64_t elementOffset = bufferViewDesc.offset / elementSize;
     uint32_t elementNum = (uint32_t)(size / elementSize);
 
     m_ViewDesc.bufferGPUVA = bufferD3D12.GetDeviceAddress() + bufferViewDesc.offset;

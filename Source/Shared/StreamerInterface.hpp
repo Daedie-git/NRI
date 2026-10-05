@@ -2,6 +2,18 @@
 
 constexpr uint64_t CHUNK_SIZE = 65536;
 
+static inline StreamerCopyBatch PackStreamerCopyBatch(uint32_t index, uint32_t generation) {
+    return (uint64_t(generation) << 32) | uint64_t(index + 1);
+}
+
+static inline uint32_t GetStreamerCopyBatchIndex(StreamerCopyBatch copyBatch) {
+    return uint32_t(copyBatch) - 1;
+}
+
+static inline uint32_t GetStreamerCopyBatchGeneration(StreamerCopyBatch copyBatch) {
+    return uint32_t(copyBatch >> 32);
+}
+
 StreamerImpl::~StreamerImpl() {
     for (GarbageInFlight& garbageInFlight : m_GarbageInFlight)
         m_iCore.DestroyBuffer(garbageInFlight.buffer);
@@ -42,9 +54,35 @@ Result StreamerImpl::Create(const StreamerDesc& desc) {
             return result;
     }
 
+    if (desc.hostDataCapacity)
+        m_HostData.resize((size_t)desc.hostDataCapacity);
+
     m_Desc = desc;
 
     return Result::SUCCESS;
+}
+
+StreamerCopyBatch StreamerImpl::BeginCopyBatch() {
+#if NRI_STREAMER_THREAD_SAFE
+    ExclusiveScope lock(m_Lock);
+#endif
+
+    uint32_t index = 0;
+    for (; index < m_CopyBatches.size(); index++) {
+        if (!m_CopyBatches[index].active)
+            break;
+    }
+
+    if (index == m_CopyBatches.size())
+        m_CopyBatches.emplace_back(((DeviceBase&)m_Device).GetStdAllocator());
+
+    StreamerCopyBatchState& copyBatchState = m_CopyBatches[index];
+    copyBatchState.bufferRequests.clear();
+    copyBatchState.textureRequests.clear();
+    copyBatchState.generation++;
+    copyBatchState.active = true;
+
+    return PackStreamerCopyBatch(index, copyBatchState.generation);
 }
 
 uint32_t StreamerImpl::StreamConstantData(const void* data, uint32_t dataSize) {
@@ -74,6 +112,41 @@ uint32_t StreamerImpl::StreamConstantData(const void* data, uint32_t dataSize) {
     }
 
     return offset;
+}
+
+void* StreamerImpl::StreamHostData(const void* data, uint64_t dataSize, uint32_t placementAlignment) {
+#if NRI_STREAMER_THREAD_SAFE
+    ExclusiveScope lock(m_Lock);
+#endif
+
+    if (m_HostData.empty())
+        return nullptr;
+
+    uint64_t capacity = m_HostData.size();
+    uint64_t alignment = std::max(placementAlignment, 1u);
+    uint64_t baseAddress = (uint64_t)m_HostData.data();
+    uint64_t firstOffset = Align(baseAddress, alignment) - baseAddress;
+    m_HostDataOffset = Align(baseAddress + m_HostDataOffset, alignment) - baseAddress;
+
+    // Update
+    if (m_HostDataOffset > capacity || dataSize > capacity - m_HostDataOffset)
+        m_HostDataOffset = firstOffset;
+
+    if (m_HostDataOffset > capacity || dataSize > capacity - m_HostDataOffset)
+        return nullptr;
+
+    uint64_t offset = m_HostDataOffset;
+
+    // Increment head
+    m_HostDataOffset += dataSize;
+
+    // Copy
+    uint8_t* dst = &m_HostData[(size_t)offset];
+
+    if (dataSize)
+        memcpy(dst, data, dataSize);
+
+    return dst;
 }
 
 BufferOffset StreamerImpl::StreamBufferData(const StreamBufferDataDesc& streamBufferDataDesc) {
@@ -111,7 +184,10 @@ BufferOffset StreamerImpl::StreamBufferData(const StreamBufferDataDesc& streamBu
 
         // Gather requests with destinations
         if (streamBufferDataDesc.dstBuffer) {
-            BufferUpdateRequest& request = m_BufferRequestsWithDst.emplace_back();
+            StreamerCopyBatchState& copyBatchState = m_CopyBatches[GetStreamerCopyBatchIndex(streamBufferDataDesc.copyBatch)];
+            NRI_CHECK(copyBatchState.active && copyBatchState.generation == GetStreamerCopyBatchGeneration(streamBufferDataDesc.copyBatch), "Invalid 'copyBatch'");
+
+            BufferUpdateRequest& request = copyBatchState.bufferRequests.emplace_back();
             request = {};
             request.dstBuffer = streamBufferDataDesc.dstBuffer;
             request.dstOffset = streamBufferDataDesc.dstOffset;
@@ -173,41 +249,50 @@ BufferOffset StreamerImpl::StreamTextureData(const StreamTextureDataDesc& stream
 
         m_iCore.UnmapBuffer(*m_DynamicBuffer);
 
-        // Gather requests with destinations
-        if (streamTextureDataDesc.dstTexture) {
-            TextureUpdateRequest& request = m_TextureRequestsWithDst.emplace_back();
-            request = {};
-            request.dstTexture = streamTextureDataDesc.dstTexture;
-            request.dstRegion = streamTextureDataDesc.dstRegion;
-            request.srcBuffer = m_DynamicBuffer;
-            request.srcDataLayout = {offset, alignedRowPitch, alignedSlicePitch};
-        }
+        // Gather request
+        StreamerCopyBatchState& copyBatchState = m_CopyBatches[GetStreamerCopyBatchIndex(streamTextureDataDesc.copyBatch)];
+        NRI_CHECK(copyBatchState.active && copyBatchState.generation == GetStreamerCopyBatchGeneration(streamTextureDataDesc.copyBatch), "Invalid 'copyBatch'");
+
+        TextureUpdateRequest& request = copyBatchState.textureRequests.emplace_back();
+        request = {};
+        request.dstTexture = streamTextureDataDesc.dstTexture;
+        request.dstRegion = streamTextureDataDesc.dstRegion;
+        request.srcBuffer = m_DynamicBuffer;
+        request.srcDataLayout = {offset, alignedRowPitch, alignedSlicePitch};
     }
 
     return {m_DynamicBuffer, offset};
 }
 
-void StreamerImpl::CmdCopyStreamedData(CommandBuffer& commandBuffer) {
+void StreamerImpl::CmdCopyStreamedData(CommandBuffer& commandBuffer, StreamerCopyBatch copyBatch) {
 #if NRI_STREAMER_THREAD_SAFE
     ExclusiveScope lock(m_Lock);
 #endif
 
+    StreamerCopyBatchState& copyBatchState = m_CopyBatches[GetStreamerCopyBatchIndex(copyBatch)];
+    NRI_CHECK(copyBatchState.active && copyBatchState.generation == GetStreamerCopyBatchGeneration(copyBatch), "Invalid 'copyBatch'");
+
     // TODO: dynamic buffer(s) is in the persistent state, including "COPY_SOURCE", so there is no need to do a barrier... right? :)
 
     // Buffers
-    for (const BufferUpdateRequest& request : m_BufferRequestsWithDst)
+    for (const BufferUpdateRequest& request : copyBatchState.bufferRequests)
         m_iCore.CmdCopyBuffer(commandBuffer, *request.dstBuffer, request.dstOffset, *request.srcBuffer, request.srcOffset, request.size);
 
     // Textures
-    for (const TextureUpdateRequest& request : m_TextureRequestsWithDst)
+    for (const TextureUpdateRequest& request : copyBatchState.textureRequests)
         m_iCore.CmdUploadBufferToTexture(commandBuffer, *request.dstTexture, request.dstRegion, *request.srcBuffer, request.srcDataLayout);
 
     // Cleanup
-    m_BufferRequestsWithDst.clear();
-    m_TextureRequestsWithDst.clear();
+    copyBatchState.bufferRequests.clear();
+    copyBatchState.textureRequests.clear();
+    copyBatchState.active = false;
 }
 
 void StreamerImpl::EndFrame() {
+#if NRI_STREAMER_THREAD_SAFE
+    ExclusiveScope lock(m_Lock);
+#endif
+
     // Process garbage
     for (size_t i = 0; i < m_GarbageInFlight.size(); i++) {
         GarbageInFlight& garbageInFlight = m_GarbageInFlight[i];
@@ -222,8 +307,11 @@ void StreamerImpl::EndFrame() {
     }
 
     // Ignore unprocessed requests, they become invalid on the next frame
-    m_BufferRequestsWithDst.clear();
-    m_TextureRequestsWithDst.clear();
+    for (StreamerCopyBatchState& copyBatchState : m_CopyBatches) {
+        copyBatchState.bufferRequests.clear();
+        copyBatchState.textureRequests.clear();
+        copyBatchState.active = false;
+    }
 
     // Next frame
     m_FrameIndex = (m_FrameIndex + 1) % m_Desc.queuedFrameNum;

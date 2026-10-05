@@ -24,6 +24,10 @@ struct DescriptorD3D11 final : public DebugNameBase {
         return m_SubresourceInfo;
     }
 
+    inline bool IsBufferView() const {
+        return m_IsBufferView;
+    }
+
     inline operator ID3D11View*() const {
         return (ID3D11View*)m_Descriptor.GetInterface();
     }
@@ -63,6 +67,7 @@ private:
     ComPtr<ID3D11DeviceChild> m_Descriptor;
     SubresourceInfo m_SubresourceInfo = {};
     Format m_Format = Format::UNKNOWN;
+    bool m_IsBufferView = false;
 };
 
 } // namespace nri

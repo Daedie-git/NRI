@@ -274,7 +274,8 @@ Result DescriptorD3D11::Create(const TextureViewDesc& textureViewDesc) {
 Result DescriptorD3D11::Create(const BufferViewDesc& bufferViewDesc) {
     const BufferD3D11& bufferD3D11 = *(BufferD3D11*)bufferViewDesc.buffer;
     const BufferDesc& bufferDesc = bufferD3D11.GetDesc();
-    uint64_t size = bufferViewDesc.size == WHOLE_SIZE ? bufferDesc.size : bufferViewDesc.size;
+    uint64_t size = bufferViewDesc.size == WHOLE_SIZE ? (bufferDesc.size - bufferViewDesc.offset) : bufferViewDesc.size;
+    m_IsBufferView = true;
 
     Format patchedFormat = Format::UNKNOWN;
     uint32_t structureStride = bufferViewDesc.structureStride ? bufferViewDesc.structureStride : bufferDesc.structureStride;
@@ -341,7 +342,7 @@ Result DescriptorD3D11::Create(const BufferViewDesc& bufferViewDesc) {
     NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D11Device::CreateXxxView");
 
     m_Format = patchedFormat;
-    m_SubresourceInfo.Initialize(&bufferD3D11, elementOffset, elementNum);
+    m_SubresourceInfo.Initialize(&bufferD3D11, (uint32_t)bufferViewDesc.offset, (uint32_t)size);
 
     return Result::SUCCESS;
 }

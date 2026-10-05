@@ -213,15 +213,15 @@ void PipelineLayoutD3D11::SetDescriptorSet(BindPoint bindPoint, BindingState& cu
                 if (bindingRange.descriptorType == DescriptorTypeDX11::CONSTANT) {
                     const SubresourceInfo& subresourceInfo = descriptor->GetSubresourceInfo();
 
-                    uint32_t offset = subresourceInfo.buffer.elementOffset + (bufferOffset >> 4);
+                    uint32_t offset = (subresourceInfo.buffer.byteOffset + bufferOffset) >> 4;
                     hasNonZeroOffset |= offset;
 
                     constantFirst[i] = offset;
-                    rootConstantNum[i] = subresourceInfo.buffer.elementNum;
+                    rootConstantNum[i] = subresourceInfo.buffer.byteSize >> 4;
                 } else if (bindingRange.descriptorType == DescriptorTypeDX11::STORAGE)
-                    currentBindingState.TrackSubresource_UnbindIfNeeded_PostponeGraphicsStorageBinding(deferredContext, descriptor->GetSubresourceInfo(), *descriptor, bindingRange.baseSlot + i, isGraphics, true);
+                    isStorageRebindNeededInGraphics |= currentBindingState.TrackSubresource_UnbindIfNeeded_PostponeGraphicsStorageBinding(deferredContext, descriptor->GetSubresourceInfo(), descriptor->IsBufferView(), *descriptor, bindingRange.baseSlot + i, isGraphics, true);
                 else if (bindingRange.descriptorType == DescriptorTypeDX11::RESOURCE)
-                    currentBindingState.TrackSubresource_UnbindIfNeeded_PostponeGraphicsStorageBinding(deferredContext, descriptor->GetSubresourceInfo(), *descriptor, bindingRange.baseSlot + i, isGraphics, false);
+                    isStorageRebindNeededInGraphics |= currentBindingState.TrackSubresource_UnbindIfNeeded_PostponeGraphicsStorageBinding(deferredContext, descriptor->GetSubresourceInfo(), descriptor->IsBufferView(), *descriptor, bindingRange.baseSlot + i, isGraphics, false);
             } else {
                 descriptors[i] = nullptr;
                 constantFirst[i] = 0;
@@ -293,9 +293,7 @@ void PipelineLayoutD3D11::SetDescriptorSet(BindPoint bindPoint, BindingState& cu
             }
         }
 
-        if (num != 0) {
-            ID3D11UnorderedAccessView** storages = currentBindingState.graphicsStorageDescriptors.data();
-            deferredContext->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, nullptr, nullptr, 0, (uint32_t)num, storages, nullptr);
-        }
+        ID3D11UnorderedAccessView** storages = num ? currentBindingState.graphicsStorageDescriptors.data() : nullptr;
+        deferredContext->OMSetRenderTargetsAndUnorderedAccessViews(D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL, nullptr, nullptr, 0, (uint32_t)num, storages, nullptr);
     }
 }

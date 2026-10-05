@@ -4,7 +4,7 @@
 
 namespace nri {
 
-uint32_t ConvertBotomLevelGeometries(
+uint32_t ConvertBottomLevelGeometries(
     VkAccelerationStructureBuildRangeInfoKHR* vkRanges,
     VkAccelerationStructureGeometryKHR* vkGeometries,
     VkAccelerationStructureTrianglesOpacityMicromapEXT* vkTrianglesMicromaps,
@@ -35,10 +35,15 @@ constexpr VkAttachmentLoadOp GetLoadOp(LoadOp loadOp) {
 constexpr std::array<VkAttachmentStoreOp, (size_t)StoreOp::MAX_NUM> g_StoreOps = {
     VK_ATTACHMENT_STORE_OP_STORE,     // STORE
     VK_ATTACHMENT_STORE_OP_DONT_CARE, // DISCARD
+    VK_ATTACHMENT_STORE_OP_NONE,      // NONE
 };
 NRI_VALIDATE_ARRAY(g_StoreOps);
 
-constexpr VkAttachmentStoreOp GetStoreOp(StoreOp storeOp) {
+constexpr VkAttachmentStoreOp GetStoreOp(StoreOp storeOp, bool storeOpNoneSupported) {
+    // "STORE" is the only legitimate fallback because it preserves the attachment contents
+    if (storeOp == StoreOp::NONE && !storeOpNoneSupported)
+        return VK_ATTACHMENT_STORE_OP_STORE;
+
     return g_StoreOps[(size_t)storeOp];
 }
 

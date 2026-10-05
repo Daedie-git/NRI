@@ -618,7 +618,7 @@ WGPUComponentSwizzle nri::GetComponentSwizzle(ComponentSwizzle componentSwizzle)
     }
 }
 
-static bool IsColorRenderableWGPU(Format format) {
+static bool IsColorRenderable(Format format) {
     switch (format) {
         case Format::R8_UNORM:
         case Format::RG8_UNORM:
@@ -658,7 +658,7 @@ static bool IsColorRenderableWGPU(Format format) {
     }
 }
 
-static bool IsBlendSupportedWGPU(Format format) {
+static bool IsBlendSupported(Format format) {
     switch (format) {
         case Format::R8_UNORM:
         case Format::RG8_UNORM:
@@ -679,7 +679,7 @@ static bool IsBlendSupportedWGPU(Format format) {
     }
 }
 
-static bool IsStorageTextureSupportedWGPU(Format format) {
+static bool IsStorageTextureSupported(Format format) {
     switch (format) {
         case Format::RGBA8_UNORM:
         case Format::RGBA8_SNORM:
@@ -713,16 +713,16 @@ FormatSupportBits nri::GetFormatSupportWGPU(Format format) {
     if (!props.isDepth && !props.isStencil)
         support |= FormatSupportBits::HOST_COPY;
 
-    if (IsStorageTextureSupportedWGPU(format))
+    if (IsStorageTextureSupported(format))
         support |= FormatSupportBits::STORAGE_TEXTURE;
     if (!props.isCompressed && !props.isDepth && !props.isStencil) {
         if (GetVertexFormat(format) != WGPUVertexFormat_Force32)
             support |= FormatSupportBits::VERTEX_BUFFER;
     }
 
-    if (IsColorRenderableWGPU(format))
+    if (IsColorRenderable(format))
         support |= FormatSupportBits::COLOR_ATTACHMENT | FormatSupportBits::MULTISAMPLE_4X | FormatSupportBits::MULTISAMPLE_RESOLVE;
-    if (IsBlendSupportedWGPU(format))
+    if (IsBlendSupported(format))
         support |= FormatSupportBits::BLEND;
     if (props.isDepth || props.isStencil)
         support |= FormatSupportBits::DEPTH_STENCIL_ATTACHMENT;
