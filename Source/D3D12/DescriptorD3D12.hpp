@@ -137,8 +137,10 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
                 desc.Texture1DArray.FirstArraySlice = textureViewDesc.layerOffset;
                 desc.Texture1DArray.ArraySize = layerNum;
 
-                bool isDepthReadonly = textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::DEPTH) == 0;
-                bool isStencilReadonly = textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::STENCIL) == 0;
+                // D3D12 rejects a read-only flag for a plane the format lacks (e.g. READ_ONLY_STENCIL on D32_FLOAT)
+                const FormatProps& formatProps = GetFormatProps(textureViewDesc.format);
+                bool isDepthReadonly = formatProps.isDepth && textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::DEPTH) == 0;
+                bool isStencilReadonly = formatProps.isStencil && textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::STENCIL) == 0;
                 if (isDepthReadonly)
                     desc.Flags |= D3D12_DSV_FLAG_READ_ONLY_DEPTH;
                 if (isStencilReadonly)
@@ -260,8 +262,10 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
                     desc.Texture2DArray.ArraySize = layerNum;
                 }
 
-                bool isDepthReadonly = textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::DEPTH) == 0;
-                bool isStencilReadonly = textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::STENCIL) == 0;
+                // D3D12 rejects a read-only flag for a plane the format lacks (e.g. READ_ONLY_STENCIL on D32_FLOAT)
+                const FormatProps& formatProps = GetFormatProps(textureViewDesc.format);
+                bool isDepthReadonly = formatProps.isDepth && textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::DEPTH) == 0;
+                bool isStencilReadonly = formatProps.isStencil && textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::STENCIL) == 0;
                 if (isDepthReadonly)
                     desc.Flags |= D3D12_DSV_FLAG_READ_ONLY_DEPTH;
                 if (isStencilReadonly)
