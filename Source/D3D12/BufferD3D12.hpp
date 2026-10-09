@@ -158,6 +158,7 @@ NRI_INLINE Result BufferD3D12::SetPriorityAndPersistentlyMap(float priority, boo
 
         HRESULT hr = m_Buffer->Map(0, &readRange, (void**)&m_MappedMemory);
         NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12Resource::Map");
+        m_IsReadback = isReadback;
     }
 
     return Result::SUCCESS;
