@@ -137,8 +137,10 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
                 desc.Texture1DArray.FirstArraySlice = textureViewDesc.layerOffset;
                 desc.Texture1DArray.ArraySize = layerNum;
 
-                bool isDepthReadonly = textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::DEPTH) == 0;
-                bool isStencilReadonly = textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::STENCIL) == 0;
+                // D3D12 rejects a read-only flag for a plane the format lacks (e.g. READ_ONLY_STENCIL on D32_FLOAT)
+                const FormatProps& formatProps = GetFormatProps(textureViewDesc.format);
+                bool isDepthReadonly = formatProps.isDepth && textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::DEPTH) == 0;
+                bool isStencilReadonly = formatProps.isStencil && textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::STENCIL) == 0;
                 if (isDepthReadonly)
                     desc.Flags |= D3D12_DSV_FLAG_READ_ONLY_DEPTH;
                 if (isStencilReadonly)
@@ -260,8 +262,10 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
                     desc.Texture2DArray.ArraySize = layerNum;
                 }
 
-                bool isDepthReadonly = textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::DEPTH) == 0;
-                bool isStencilReadonly = textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::STENCIL) == 0;
+                // D3D12 rejects a read-only flag for a plane the format lacks (e.g. READ_ONLY_STENCIL on D32_FLOAT)
+                const FormatProps& formatProps = GetFormatProps(textureViewDesc.format);
+                bool isDepthReadonly = formatProps.isDepth && textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::DEPTH) == 0;
+                bool isStencilReadonly = formatProps.isStencil && textureViewDesc.planes != PlaneBits::ALL && (textureViewDesc.planes & PlaneBits::STENCIL) == 0;
                 if (isDepthReadonly)
                     desc.Flags |= D3D12_DSV_FLAG_READ_ONLY_DEPTH;
                 if (isStencilReadonly)
@@ -317,7 +321,7 @@ Result DescriptorD3D12::Create(const TextureViewDesc& textureViewDesc) {
 Result DescriptorD3D12::Create(const BufferViewDesc& bufferViewDesc) {
     const BufferD3D12& bufferD3D12 = *((BufferD3D12*)bufferViewDesc.buffer);
     const BufferDesc& bufferDesc = bufferD3D12.GetDesc();
-    uint64_t size = bufferViewDesc.size == WHOLE_SIZE ? bufferDesc.size : bufferViewDesc.size;
+    uint64_t size = bufferViewDesc.size == WHOLE_SIZE ? (bufferDesc.size - bufferViewDesc.offset) : bufferViewDesc.size;
 
     Format patchedFormat = Format::UNKNOWN;
     uint32_t structureStride = 0;
@@ -336,7 +340,7 @@ Result DescriptorD3D12::Create(const BufferViewDesc& bufferViewDesc) {
     const DxgiFormat& format = GetDxgiFormat(patchedFormat);
     const FormatProps& formatProps = GetFormatProps(patchedFormat);
     uint32_t elementSize = structureStride ? structureStride : formatProps.stride;
-    uint64_t elementOffset = (uint32_t)(bufferViewDesc.offset / elementSize);
+    uint64_t elementOffset = bufferViewDesc.offset / elementSize;
     uint32_t elementNum = (uint32_t)(size / elementSize);
 
     m_ViewDesc.bufferGPUVA = bufferD3D12.GetDeviceAddress() + bufferViewDesc.offset;

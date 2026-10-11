@@ -30,8 +30,13 @@ if(EMSCRIPTEN)
     set(IS_ARM64 FALSE)
     set(BIN_ARCHITECTURE "wasm32")
     set(WGPU_BIN_ARCHITECTURE "web")
-elseif(NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE))
+elseif(NOT (WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux" OR APPLE OR ANDROID))
     message(FATAL_ERROR "NRI: unsupported architecture or platform '${CMAKE_SYSTEM_NAME}', '${CMAKE_SYSTEM_PROCESSOR}'")
+elseif(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64EC")
+    set(IS_ARM64 FALSE)
+    set(BIN_ARCHITECTURE "x64")
+    set(NVAPI_BIN_ARCHITECTURE "amd64")
+    set(WGPU_BIN_ARCHITECTURE "x86_64")
 elseif((CMAKE_GENERATOR_PLATFORM MATCHES "ARM64") OR (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64"))
     set(IS_ARM64 TRUE)
     set(BIN_ARCHITECTURE "arm64")
@@ -55,8 +60,8 @@ endif()
 
 # Options
 set(NRI_AGILITY_SDK_DIR "AgilitySDK" CACHE STRING "Directory where Agility SDK will be copied relative to the directory with binaries")
-set(NRI_AGILITY_SDK_VERSION_MAJOR "619" CACHE STRING "Agility SDK major version") # 719 ("D3D12_ERROR_INVALID_REDIST" if Windows developer mode is not enabled)
-set(NRI_AGILITY_SDK_VERSION_MINOR "5" CACHE STRING "Agility SDK minor version") # 1-preview
+set(NRI_AGILITY_SDK_VERSION_MAJOR "619" CACHE STRING "Agility SDK major version") # 721 ("D3D12_ERROR_INVALID_REDIST" if Windows developer mode is not enabled)
+set(NRI_AGILITY_SDK_VERSION_MINOR "6" CACHE STRING "Agility SDK minor version") # 3-preview
 set(NRI_WGPU_VERSION "v29.0.1.1")
 set(NRI_SHADERS_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Shaders" CACHE STRING "Shader output path override")
 set(NRI_NVAPI_CUSTOM_PATH "" CACHE STRING "Path to a custom NVAPI library directory")
@@ -73,7 +78,7 @@ option(NRI_STREAMER_THREAD_SAFE "'NRIStreamer' thread safety (OFF is faster)" ON
 
 cmake_dependent_option(NRI_ENABLE_D3D11_SUPPORT "Enable D3D11 backend" ON "WIN32" OFF)
 cmake_dependent_option(NRI_ENABLE_D3D12_SUPPORT "Enable D3D12 backend" ON "WIN32" OFF)
-cmake_dependent_option(NRI_ENABLE_WGPU_SUPPORT "Enable WebGPU backend" ${GITHUB_CI} "WGPU_BIN_ARCHITECTURE" OFF)
+cmake_dependent_option(NRI_ENABLE_WGPU_SUPPORT "Enable WebGPU backend" ${GITHUB_CI} "WGPU_BIN_ARCHITECTURE; NOT ANDROID" OFF)
 cmake_dependent_option(NRI_ENABLE_AMDAGS "Enable AMD AGS library for D3D" ON "(NRI_ENABLE_D3D11_SUPPORT OR NRI_ENABLE_D3D12_SUPPORT); NOT IS_ARM64" OFF)
 cmake_dependent_option(NRI_ENABLE_NVAPI "Enable NVAPI library for D3D" ON "(NRI_ENABLE_D3D11_SUPPORT OR NRI_ENABLE_D3D12_SUPPORT); NOT IS_ARM64" OFF)
 cmake_dependent_option(NRI_ENABLE_AGILITY_SDK_SUPPORT "Enable Agility SDK support to unlock access to latest D3D12 features" ON "NRI_ENABLE_D3D12_SUPPORT" OFF)
@@ -174,7 +179,7 @@ if(NRI_ENABLE_VK_SUPPORT)
         DOWNLOAD_EXTRACT_TIMESTAMP 1
         DOWNLOAD_NO_PROGRESS 1
         SOURCE_SUBDIR "ignore CMakeLists.txt"
-        URL "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.360.zip"
+        URL "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.364.zip"
     )
     list(APPEND DEPS vulkan_headers)
 
@@ -189,7 +194,7 @@ if(NRI_ENABLE_VK_SUPPORT)
     list(APPEND DEPS vma)
 endif()
 
-set(NGX_VERSION "310.7.0")
+set(NGX_VERSION "310.9.1")
 if(NRI_ENABLE_NGX_SDK)
     # NVIDIA NGX SDK
     fetchcontent_declare(
@@ -292,7 +297,7 @@ if(NRI_ENABLE_NVAPI)
             DOWNLOAD_EXTRACT_TIMESTAMP 1
             DOWNLOAD_NO_PROGRESS 1
             SOURCE_SUBDIR "ignore CMakeLists.txt"
-            URL "https://github.com/NVIDIA/nvapi/archive/cd6918f60b3c9a0476fdfe7e89bb32330602049d.zip"
+            URL "https://github.com/NVIDIA/nvapi/archive/70d337db9186e968eab622f7e786de7e437faf3d.zip"
         )
         list(APPEND DEPS nvapi)
     endif()
@@ -306,7 +311,7 @@ if(NRI_ENABLE_SHADERMAKE AND NOT TARGET ShaderMake)
         shadermake
         DOWNLOAD_EXTRACT_TIMESTAMP 1
         DOWNLOAD_NO_PROGRESS 1
-        URL "https://github.com/NVIDIA-RTX/ShaderMake/archive/5daebdbef45088fc2369d441391ecab0eba25e54.zip"
+        URL "https://github.com/NVIDIA-RTX/ShaderMake/archive/9c978c37ccd1c00b8669d633735823fe25ee3647.zip"
     )
     list(APPEND DEPS shadermake)
 endif()
@@ -598,6 +603,8 @@ if(NRI_ENABLE_D3D12_SUPPORT)
         "Source/D3D12/CommandBufferD3D12.hpp"
         "Source/D3D12/DescriptorD3D12.h"
         "Source/D3D12/DescriptorD3D12.hpp"
+        "Source/D3D12/DescriptorHeapD3D12.h"
+        "Source/D3D12/DescriptorHeapD3D12.hpp"
         "Source/D3D12/DescriptorPoolD3D12.h"
         "Source/D3D12/DescriptorPoolD3D12.hpp"
         "Source/D3D12/DescriptorSetD3D12.h"
@@ -733,6 +740,8 @@ if(NRI_ENABLE_VK_SUPPORT)
         "Source/VK/DescriptorSetVK.hpp"
         "Source/VK/DescriptorVK.h"
         "Source/VK/DescriptorVK.hpp"
+        "Source/VK/DescriptorHeapVK.h"
+        "Source/VK/DescriptorHeapVK.hpp"
         "Source/VK/DeviceVK.h"
         "Source/VK/DeviceVK.hpp"
         "Source/VK/DispatchTable.h"
@@ -788,6 +797,9 @@ if(NRI_ENABLE_VK_SUPPORT)
             >
             $<$<BOOL:${APPLE}>:
                 VK_USE_PLATFORM_METAL_EXT;VK_ENABLE_BETA_EXTENSIONS
+            >
+            $<$<BOOL:${ANDROID}>:
+                VK_USE_PLATFORM_ANDROID_KHR
             >
             $<$<BOOL:${NRI_ENABLE_XLIB_SUPPORT}>:
                 VK_USE_PLATFORM_XLIB_KHR
@@ -890,6 +902,8 @@ if(NRI_ENABLE_VALIDATION_SUPPORT)
         "Source/Validation/ConversionVal.hpp"
         "Source/Validation/DescriptorPoolVal.h"
         "Source/Validation/DescriptorPoolVal.hpp"
+        "Source/Validation/DescriptorHeapVal.h"
+        "Source/Validation/DescriptorHeapVal.hpp"
         "Source/Validation/DescriptorSetVal.h"
         "Source/Validation/DescriptorSetVal.hpp"
         "Source/Validation/DescriptorVal.h"
@@ -959,6 +973,7 @@ set_source_files_properties(${NRI_HEADERS}
 
 # Extensions headers
 set(NRI_EXTENSIONS
+    "Include/Extensions/NRIDescriptorHeap.h"
     "Include/Extensions/NRIDeviceCreation.h"
     "Include/Extensions/NRIHelper.h"
     "Include/Extensions/NRIImgui.h"

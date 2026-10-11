@@ -2,7 +2,7 @@
 // If NDR.rc does not comile, try re-saving it with UTF-8 encoding.
 // After editing VS2019 saves it as UTF-8 with BOM.
 #pragma code_page(65001)
-#include "version.h"
+#include "Version.h"
 
 #define APSTUDIO_READONLY_SYMBOLS
 /////////////////////////////////////////////////////////////////////////////

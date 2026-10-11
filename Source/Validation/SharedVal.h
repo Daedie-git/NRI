@@ -15,6 +15,7 @@ struct BufferVal;
 struct CommandAllocatorVal;
 struct CommandBufferVal;
 struct DescriptorPoolVal;
+struct DescriptorHeapVal;
 struct DescriptorSetVal;
 struct DescriptorVal;
 struct DeviceVal;
@@ -33,7 +34,7 @@ struct VideoSessionVal;
 uint64_t GetMemorySizeD3D12(const MemoryD3D12Desc& memoryD3D12Desc);
 QueryType GetQueryTypeVK(uint32_t queryTypeVK);
 const char* GetDescriptorTypeName(DescriptorType descriptorType);
-void ConvertBotomLevelGeometries(const BottomLevelGeometryDesc* geometries, uint32_t geometryNum, BottomLevelGeometryDesc*& outGeometries, BottomLevelMicromapDesc*& outMicromaps);
+void ConvertBottomLevelGeometries(const BottomLevelGeometryDesc* geometries, uint32_t geometryNum, BottomLevelGeometryDesc*& outGeometries, BottomLevelTrianglesMicromapDesc*& outMicromaps);
 
 } // namespace nri
 

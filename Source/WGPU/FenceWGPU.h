@@ -40,7 +40,12 @@ private:
 private:
     DeviceWGPU& m_Device;
     mutable Vector<FenceSubmissionWGPU> m_Submissions;
+#if defined(__EMSCRIPTEN__)
     mutable Lock m_Lock;
+#else
+    mutable std::mutex m_Mutex;
+    std::condition_variable m_ConditionVariable;
+#endif
     uint64_t m_SubmittedValue = 0;
     mutable uint64_t m_CompletedValue = 0;
     bool m_IsSwapChainSemaphore = false;

@@ -37,6 +37,7 @@ constexpr std::array<D3D12_DESCRIPTOR_RANGE_TYPE, (size_t)DescriptorType::MAX_NU
     D3D12_DESCRIPTOR_RANGE_TYPE_UAV,     // STORAGE_STRUCTURED_BUFFER
     D3D12_DESCRIPTOR_RANGE_TYPE_SRV,     // ACCELERATION_STRUCTURE
 };
+
 // NRI_VALIDATE_ARRAY(g_DescriptorRangeTypes); // TODO: 0 is expected for ACCELERATION_STRUCTURE
 
 D3D12_DESCRIPTOR_RANGE_TYPE nri::GetDescriptorRangesType(DescriptorType descriptorType) {
@@ -192,7 +193,16 @@ constexpr std::array<D3D12_BLEND, (size_t)BlendFactor::MAX_NUM> g_BlendFactors =
 };
 NRI_VALIDATE_ARRAY(g_BlendFactors);
 
-D3D12_BLEND nri::GetBlend(BlendFactor blendFactor) {
+D3D12_BLEND nri::GetBlend(BlendFactor blendFactor, bool isAlphaBlend) {
+#if NRI_ENABLE_AGILITY_SDK_SUPPORT
+    if (isAlphaBlend && blendFactor == BlendFactor::CONSTANT_ALPHA)
+        return D3D12_BLEND_BLEND_FACTOR;
+    if (isAlphaBlend && blendFactor == BlendFactor::ONE_MINUS_CONSTANT_ALPHA)
+        return D3D12_BLEND_INV_BLEND_FACTOR;
+#else
+    MaybeUnused(isAlphaBlend);
+#endif
+
     return g_BlendFactors[(size_t)blendFactor];
 }
 
@@ -453,7 +463,7 @@ bool nri::GetBufferDesc(const BufferD3D12Desc& bufferD3D12Desc, BufferDesc& buff
     return true;
 }
 
-void nri::ConvertBotomLevelGeometries(const BottomLevelGeometryDesc* geometries, uint32_t geometryNum,
+void nri::ConvertBottomLevelGeometries(const BottomLevelGeometryDesc* geometries, uint32_t geometryNum,
     D3D12_RAYTRACING_GEOMETRY_DESC* geometryDescs,
     D3D12_RAYTRACING_GEOMETRY_TRIANGLES_DESC* triangleDescs,
     D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC* micromapDescs) {
@@ -473,7 +483,7 @@ void nri::ConvertBotomLevelGeometries(const BottomLevelGeometryDesc* geometries,
 
 #if NRI_ENABLE_AGILITY_SDK_SUPPORT
             if (in.triangles.micromap) {
-                const BottomLevelMicromapDesc& micromapDesc = *in.triangles.micromap;
+                const BottomLevelTrianglesMicromapDesc& micromapDesc = *in.triangles.micromap;
 
                 outTriangles = triangleDescs++;
                 D3D12_RAYTRACING_GEOMETRY_OMM_LINKAGE_DESC* outMicromap = micromapDescs++;

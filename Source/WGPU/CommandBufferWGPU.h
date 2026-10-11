@@ -150,8 +150,8 @@ private:
 
 private:
     DeviceWGPU& m_Device;
-    Vector<const DescriptorSetWGPU*> m_GraphicsDescriptorSets;
-    Vector<const DescriptorSetWGPU*> m_ComputeDescriptorSets;
+    Vector<DescriptorSetWGPU*> m_GraphicsDescriptorSets;
+    Vector<DescriptorSetWGPU*> m_ComputeDescriptorSets;
     Vector<uint64_t> m_GraphicsDescriptorSetVersions;
     Vector<uint64_t> m_ComputeDescriptorSetVersions;
     Vector<uint8_t> m_GraphicsDescriptorSetDirty;

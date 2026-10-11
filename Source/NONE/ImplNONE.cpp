@@ -59,6 +59,13 @@ struct DeviceNONE final : public DeviceBase {
         m_Desc.pipelineLayout.descriptorSetMaxNum = 64;
         m_Desc.pipelineLayout.rootConstantMaxSize = 256;
         m_Desc.pipelineLayout.rootDescriptorMaxNum = 64;
+        m_Desc.pipelineLayout.rootSamplerMaxNum = 2048;
+
+        m_Desc.descriptorHeap.resourceMaxNum = 1000000;
+        m_Desc.descriptorHeap.samplerMaxNum = 2048;
+        m_Desc.descriptorHeap.rootConstantMaxSize = 256;
+        m_Desc.descriptorHeap.rootDescriptorMaxNum = 64;
+        m_Desc.descriptorHeap.rootSamplerMaxNum = 2048;
 
         m_Desc.descriptorSet.samplerMaxNum = 1000000;
         m_Desc.descriptorSet.constantBufferMaxNum = 1000000;
@@ -174,7 +181,9 @@ struct DeviceNONE final : public DeviceBase {
 
         memset(&m_Desc.tiers, 0xFF, sizeof(m_Desc.tiers));
         memset(&m_Desc.features, 1, sizeof(m_Desc.features));
+        m_Desc.features.storeOpNone = false;
         memset(&m_Desc.shaderFeatures, 1, sizeof(m_Desc.shaderFeatures));
+        memset(&m_Desc.videoFeatures, 1, sizeof(m_Desc.videoFeatures));
     }
 
     inline ~DeviceNONE() {
@@ -193,10 +202,12 @@ struct DeviceNONE final : public DeviceBase {
     }
 
     Result FillFunctionTable(CoreInterface& table) const override;
+    Result FillFunctionTable(DescriptorHeapInterface& table) const override;
     Result FillFunctionTable(HelperInterface& table) const override;
     Result FillFunctionTable(LowLatencyInterface& table) const override;
     Result FillFunctionTable(MeshShaderInterface& table) const override;
     Result FillFunctionTable(RayTracingInterface& table) const override;
+    Result FillFunctionTable(VideoInterface& table) const override;
     Result FillFunctionTable(StreamerInterface& table) const override;
     Result FillFunctionTable(SwapChainInterface& table) const override;
     Result FillFunctionTable(UpscalerInterface& table) const override;
@@ -432,7 +443,10 @@ static Result NRI_CALL CreatePlacedTexture(Device&, Memory*, uint64_t, const Tex
     return Result::SUCCESS;
 }
 
-static Result NRI_CALL AllocateDescriptorSets(DescriptorPool&, const PipelineLayout&, uint32_t, DescriptorSet**, uint32_t, uint32_t) {
+static Result NRI_CALL AllocateDescriptorSets(DescriptorPool&, const PipelineLayout&, uint32_t, DescriptorSet** descriptorSets, uint32_t instanceNum, uint32_t) {
+    for (uint32_t i = 0; i < instanceNum; i++)
+        descriptorSets[i] = DummyObject<DescriptorSet>();
+
     return Result::SUCCESS;
 }
 
@@ -789,6 +803,41 @@ Result DeviceNONE::FillFunctionTable(CoreInterface& table) const {
 #pragma endregion
 
 //============================================================================================================================================================================================
+#pragma region[  DescriptorHeap  ]
+
+static Result NRI_CALL CreateDescriptorHeap(Device&, const DescriptorHeapDesc&, DescriptorHeap*& descriptorHeap) {
+    descriptorHeap = DummyObject<DescriptorHeap>();
+
+    return Result::SUCCESS;
+}
+
+static void NRI_CALL DestroyDescriptorHeap(DescriptorHeap*) {
+}
+
+static Result NRI_CALL WriteResourceDescriptors(DescriptorHeap&, const WriteResourceDescriptorsDesc*, uint32_t) {
+    return Result::SUCCESS;
+}
+
+static Result NRI_CALL WriteSamplerDescriptors(DescriptorHeap&, const WriteSamplerDescriptorsDesc*, uint32_t) {
+    return Result::SUCCESS;
+}
+
+static void NRI_CALL CmdSetDescriptorHeap(CommandBuffer&, const DescriptorHeap&) {
+}
+
+Result DeviceNONE::FillFunctionTable(DescriptorHeapInterface& table) const {
+    table.CreateDescriptorHeap = ::CreateDescriptorHeap;
+    table.DestroyDescriptorHeap = ::DestroyDescriptorHeap;
+    table.WriteResourceDescriptors = ::WriteResourceDescriptors;
+    table.WriteSamplerDescriptors = ::WriteSamplerDescriptors;
+    table.CmdSetDescriptorHeap = ::CmdSetDescriptorHeap;
+
+    return Result::SUCCESS;
+}
+
+#pragma endregion
+
+//============================================================================================================================================================================================
 #pragma region[  Helper  ]
 
 static uint32_t NRI_CALL CalculateAllocationNumber(const Device&, const ResourceGroupDesc&) {
@@ -834,10 +883,12 @@ static Result NRI_CALL CreateImgui(Device&, const ImguiDesc&, Imgui*& imgui) {
 static void NRI_CALL DestroyImgui(Imgui*) {
 }
 
-static void NRI_CALL CmdCopyImguiData(CommandBuffer&, Streamer&, Imgui&, const CopyImguiDataDesc&) {
+static void NRI_CALL CmdCopyImguiData(CommandBuffer&, Streamer&, Imgui& imgui, const CopyImguiDataDesc&, ImguiRenderData& imguiRenderData) {
+    imguiRenderData = {};
+    imguiRenderData.imgui = &imgui;
 }
 
-static void NRI_CALL CmdDrawImgui(CommandBuffer&, Imgui&, const DrawImguiDesc&) {
+static void NRI_CALL CmdDrawImgui(CommandBuffer&, const ImguiRenderData&, const DrawImguiDesc&) {
 }
 
 Result DeviceNONE::FillFunctionTable(ImguiInterface& table) const {
@@ -1006,7 +1057,7 @@ static Result NRI_CALL CreatePlacedMicromap(Device&, Memory*, uint64_t, const Mi
     return Result::SUCCESS;
 }
 
-static Result NRI_CALL WriteShaderGroupIdentifiers(const Pipeline&, uint32_t, uint32_t, void*) {
+static Result NRI_CALL WriteShaderGroupIdentifiers(const Pipeline&, uint32_t, uint32_t, uint32_t, void*) {
     return Result::SUCCESS;
 }
 
@@ -1025,10 +1076,10 @@ static void NRI_CALL CmdDispatchRays(CommandBuffer&, const DispatchRaysDesc&) {
 static void NRI_CALL CmdDispatchRaysIndirect(CommandBuffer&, const Buffer&, uint64_t) {
 }
 
-static void NRI_CALL CmdWriteAccelerationStructuresSizes(CommandBuffer&, const AccelerationStructure* const*, uint32_t, QueryPool&, uint32_t) {
+static void NRI_CALL CmdWriteAccelerationStructureSizes(CommandBuffer&, const AccelerationStructure* const*, uint32_t, QueryPool&, uint32_t) {
 }
 
-static void NRI_CALL CmdWriteMicromapsSizes(CommandBuffer&, const Micromap* const*, uint32_t, QueryPool&, uint32_t) {
+static void NRI_CALL CmdWriteMicromapSizes(CommandBuffer&, const Micromap* const*, uint32_t, QueryPool&, uint32_t) {
 }
 
 static void NRI_CALL CmdCopyAccelerationStructure(CommandBuffer&, AccelerationStructure&, const AccelerationStructure&, CopyMode) {
@@ -1074,12 +1125,161 @@ Result DeviceNONE::FillFunctionTable(RayTracingInterface& table) const {
     table.CmdBuildMicromaps = ::CmdBuildMicromaps;
     table.CmdDispatchRays = ::CmdDispatchRays;
     table.CmdDispatchRaysIndirect = ::CmdDispatchRaysIndirect;
-    table.CmdWriteAccelerationStructuresSizes = ::CmdWriteAccelerationStructuresSizes;
-    table.CmdWriteMicromapsSizes = ::CmdWriteMicromapsSizes;
+    table.CmdWriteAccelerationStructureSizes = ::CmdWriteAccelerationStructureSizes;
+    table.CmdWriteMicromapSizes = ::CmdWriteMicromapSizes;
     table.CmdCopyAccelerationStructure = ::CmdCopyAccelerationStructure;
     table.CmdCopyMicromap = ::CmdCopyMicromap;
     table.GetAccelerationStructureNativeObject = ::GetAccelerationStructureNativeObject;
     table.GetMicromapNativeObject = ::GetMicromapNativeObject;
+
+    return Result::SUCCESS;
+}
+
+#pragma endregion
+
+//============================================================================================================================================================================================
+#pragma region[  Video  ]
+
+static Result NRI_CALL GetVideoCapabilities(const Device&, const VideoSessionDesc&, VideoCapabilities& videoCapabilities) {
+    videoCapabilities = {};
+    videoCapabilities.widthMin = 1;
+    videoCapabilities.heightMin = 1;
+    videoCapabilities.widthMax = uint32_t(-1);
+    videoCapabilities.heightMax = uint32_t(-1);
+    videoCapabilities.pictureAccessGranularityWidth = 1;
+    videoCapabilities.pictureAccessGranularityHeight = 1;
+    videoCapabilities.maxReferenceNum = uint32_t(-1);
+    videoCapabilities.bitstreamOffsetAlignment = 1;
+    videoCapabilities.bitstreamSizeAlignment = 1;
+    videoCapabilities.bitstreamSizeMax = uint64_t(-1);
+    videoCapabilities.metadataOffsetAlignment = 1;
+    videoCapabilities.resolvedMetadataOffsetAlignment = 1;
+    videoCapabilities.encodeFeedbackMaxPendingNum = uint32_t(-1);
+    videoCapabilities.decodeBitstreamSourceMask = VideoDecodeBitstreamSourceBits::BUFFER | VideoDecodeBitstreamSourceBits::HOST;
+    videoCapabilities.resolvedMetadataQueueType = QueueType::VIDEO_ENCODE;
+    videoCapabilities.dpbTextureArrayMinLayerNum = 1;
+    videoCapabilities.decodeDpbAndOutputCoincide = true;
+    videoCapabilities.decodeDpbAndOutputDistinct = true;
+    videoCapabilities.decodeNativeArgumentsSupported = true;
+    videoCapabilities.encodeBitstreamRangeSizeSupported = true;
+    videoCapabilities.encodeFeedbackSupported = true;
+
+    return Result::SUCCESS;
+}
+
+static Result NRI_CALL GetVideoAV1Capabilities(const Device&, const VideoSessionDesc&, VideoAV1Capabilities& videoAV1Capabilities) {
+    videoAV1Capabilities = {};
+    videoAV1Capabilities.av1MaxLevel = uint32_t(-1);
+    videoAV1Capabilities.av1MaxTileColumnNum = 64;
+    videoAV1Capabilities.av1MaxTileRowNum = 64;
+    videoAV1Capabilities.av1MinTileWidth = 1;
+    videoAV1Capabilities.av1MinTileHeight = 1;
+    videoAV1Capabilities.av1MaxTileWidth = uint32_t(-1);
+    videoAV1Capabilities.av1MaxTileHeight = uint32_t(-1);
+    videoAV1Capabilities.av1SuperblockSizeMask = 3;
+    videoAV1Capabilities.av1MaxSingleReferenceNum = 1;
+    videoAV1Capabilities.av1SingleReferenceNameMask = 0x7F;
+    videoAV1Capabilities.av1MaxUnidirectionalCompoundReferenceNum = 2;
+    videoAV1Capabilities.av1UnidirectionalCompoundReferenceNameMask = 0x7F;
+    videoAV1Capabilities.av1MaxBidirectionalCompoundReferenceNum = 2;
+    videoAV1Capabilities.av1BidirectionalCompoundReferenceNameMask = 0x7F;
+    videoAV1Capabilities.av1MaxTemporalLayerNum = uint32_t(-1);
+    videoAV1Capabilities.av1MaxSpatialLayerNum = uint32_t(-1);
+    videoAV1Capabilities.av1MaxOperatingPointNum = uint32_t(-1);
+    videoAV1Capabilities.av1MaxQIndex = 255;
+    videoAV1Capabilities.av1EncodeSupportedFeatureFlags = (VideoAV1EncodeFeatureBits)uint32_t(-1);
+
+    return Result::SUCCESS;
+}
+
+static Result NRI_CALL CreateVideoSession(Device&, const VideoSessionDesc&, VideoSession*& videoSession) {
+    videoSession = DummyObject<VideoSession>();
+
+    return Result::SUCCESS;
+}
+
+static void NRI_CALL DestroyVideoSession(VideoSession*) {
+}
+
+static void NRI_CALL ResetVideoSession(VideoSession&) {
+}
+
+static Result NRI_CALL CreateVideoSessionParameters(Device&, const VideoSessionParametersDesc&, VideoSessionParameters*& videoSessionParameters) {
+    videoSessionParameters = DummyObject<VideoSessionParameters>();
+
+    return Result::SUCCESS;
+}
+
+static void NRI_CALL DestroyVideoSessionParameters(VideoSessionParameters*) {
+}
+
+static Result NRI_CALL CreateVideoPicture(Device&, const VideoPictureDesc&, VideoPicture*& videoPicture) {
+    videoPicture = DummyObject<VideoPicture>();
+
+    return Result::SUCCESS;
+}
+
+static void NRI_CALL DestroyVideoPicture(VideoPicture*) {
+}
+
+static Result NRI_CALL GetVideoPictureState(const VideoPicture&, VideoPictureRole, VideoPictureState& state) {
+    state = {};
+
+    return Result::SUCCESS;
+}
+
+static Result NRI_CALL WriteVideoAnnexBParameterSets(VideoAnnexBParameterSetsDesc& annexBParameterSetsDesc) {
+    return video::WriteAnnexBParameterSets(annexBParameterSetsDesc);
+}
+
+static Result NRI_CALL WriteVideoAnnexBEndOfStream(VideoAnnexBEndOfStreamDesc& annexBEndOfStreamDesc) {
+    return video::WriteAnnexBEndOfStream(annexBEndOfStreamDesc);
+}
+
+static Result NRI_CALL WriteVideoAV1ObuHeaders(VideoAV1ObuHeadersDesc& av1ObuHeadersDesc) {
+    return video::WriteAV1ObuHeaders(av1ObuHeadersDesc);
+}
+
+static void NRI_CALL CmdDecodeVideo(CommandBuffer&, const VideoDecodeDesc&) {
+}
+
+static void NRI_CALL CmdEncodeVideo(CommandBuffer&, const VideoEncodeDesc&) {
+}
+
+static void NRI_CALL CmdResolveVideoEncodeFeedback(CommandBuffer&, VideoSession&, Buffer&, uint64_t) {
+}
+
+static Result NRI_CALL GetVideoEncodeFeedback(VideoSession&, Buffer&, uint64_t, VideoEncodeFeedback& feedback) {
+    feedback = {};
+
+    return Result::SUCCESS;
+}
+
+static Result NRI_CALL GetVideoAV1EncodeDecodeInfo(VideoSession&, Buffer&, uint64_t, const VideoAV1EncodeDecodeInfoDesc&, VideoAV1EncodeDecodeInfo& info) {
+    info = {};
+
+    return Result::SUCCESS;
+}
+
+Result DeviceNONE::FillFunctionTable(VideoInterface& table) const {
+    table.GetVideoCapabilities = ::GetVideoCapabilities;
+    table.GetVideoAV1Capabilities = ::GetVideoAV1Capabilities;
+    table.CreateVideoSession = ::CreateVideoSession;
+    table.DestroyVideoSession = ::DestroyVideoSession;
+    table.ResetVideoSession = ::ResetVideoSession;
+    table.CreateVideoSessionParameters = ::CreateVideoSessionParameters;
+    table.DestroyVideoSessionParameters = ::DestroyVideoSessionParameters;
+    table.CreateVideoPicture = ::CreateVideoPicture;
+    table.DestroyVideoPicture = ::DestroyVideoPicture;
+    table.GetVideoPictureState = ::GetVideoPictureState;
+    table.WriteVideoAnnexBParameterSets = ::WriteVideoAnnexBParameterSets;
+    table.WriteVideoAnnexBEndOfStream = ::WriteVideoAnnexBEndOfStream;
+    table.WriteVideoAV1ObuHeaders = ::WriteVideoAV1ObuHeaders;
+    table.CmdDecodeVideo = ::CmdDecodeVideo;
+    table.CmdEncodeVideo = ::CmdEncodeVideo;
+    table.CmdResolveVideoEncodeFeedback = ::CmdResolveVideoEncodeFeedback;
+    table.GetVideoEncodeFeedback = ::GetVideoEncodeFeedback;
+    table.GetVideoAV1EncodeDecodeInfo = ::GetVideoAV1EncodeDecodeInfo;
 
     return Result::SUCCESS;
 }
@@ -1098,12 +1298,22 @@ static Result NRI_CALL CreateStreamer(Device&, const StreamerDesc&, Streamer*& s
 static void NRI_CALL DestroyStreamer(Streamer*) {
 }
 
+static StreamerCopyBatch NRI_CALL BeginStreamerCopyBatch(Streamer&) {
+    static std::atomic_uint64_t copyBatch = 0;
+
+    return copyBatch.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 static Buffer* NRI_CALL GetStreamerConstantBuffer(Streamer&) {
-    return nullptr;
+    return DummyObject<Buffer>();
 }
 
 static uint32_t NRI_CALL StreamConstantData(Streamer&, const void*, uint32_t) {
     return 0;
+}
+
+static void* NRI_CALL StreamHostData(Streamer&, const void*, uint64_t, uint32_t) {
+    return nullptr;
 }
 
 static BufferOffset NRI_CALL StreamBufferData(Streamer&, const StreamBufferDataDesc&) {
@@ -1117,16 +1327,18 @@ static BufferOffset NRI_CALL StreamTextureData(Streamer&, const StreamTextureDat
 static void NRI_CALL EndStreamerFrame(Streamer&) {
 }
 
-static void NRI_CALL CmdCopyStreamedData(CommandBuffer&, Streamer&) {
+static void NRI_CALL CmdCopyStreamedData(CommandBuffer&, Streamer&, StreamerCopyBatch) {
 }
 
 Result DeviceNONE::FillFunctionTable(StreamerInterface& table) const {
     table.CreateStreamer = ::CreateStreamer;
     table.DestroyStreamer = ::DestroyStreamer;
+    table.BeginStreamerCopyBatch = ::BeginStreamerCopyBatch;
     table.GetStreamerConstantBuffer = ::GetStreamerConstantBuffer;
     table.StreamBufferData = ::StreamBufferData;
     table.StreamTextureData = ::StreamTextureData;
     table.StreamConstantData = ::StreamConstantData;
+    table.StreamHostData = ::StreamHostData;
     table.EndStreamerFrame = ::EndStreamerFrame;
     table.CmdCopyStreamedData = ::CmdCopyStreamedData;
 
@@ -1148,10 +1360,10 @@ static void NRI_CALL DestroySwapChain(SwapChain*) {
 }
 
 static Texture* const* NRI_CALL GetSwapChainTextures(const SwapChain&, uint32_t& textureNum) {
-    static const void* textures[1] = {};
+    static Texture* const textures[1] = {DummyObject<Texture>()};
     textureNum = 1;
 
-    return (Texture**)textures;
+    return textures;
 }
 
 static Result NRI_CALL GetDisplayDesc(SwapChain&, DisplayDesc& displayDesc) {

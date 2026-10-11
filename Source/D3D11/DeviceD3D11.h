@@ -163,16 +163,9 @@ struct DeviceD3D11 final : public DeviceBase {
     Result WaitIdle();
     Result UploadHostMemoryToTexture(QueueD3D11& queue, const UploadHostMemoryToTextureDesc* copyDescs, uint32_t copyDescNum);
     Result ReadbackTextureToHostMemory(QueueD3D11& queue, const ReadbackTextureToHostMemoryDesc* copyDescs, uint32_t copyDescNum);
-    Result BindBufferMemory(const BindBufferMemoryDesc* bindBufferMemoryDescs, uint32_t bindBufferMemoryDescNum);
-    Result BindTextureMemory(const BindTextureMemoryDesc* bindTextureMemoryDescs, uint32_t bindTextureMemoryDescNum);
     FormatSupportBits GetFormatSupport(Format format) const;
 
 private:
-    HostCopyLayoutD3D11 GetHostCopyLayout(const TextureD3D11& texture, const TextureRegionDesc& region) const;
-    TextureDesc GetHostCopyTextureDesc(const TextureD3D11& texture, uint32_t width, uint32_t height, uint32_t depth, uint32_t& hostCopySubresource) const;
-    static bool IsWholeSubresource(const TextureRegionDesc& region, const HostCopyLayoutD3D11& layout);
-    static bool IsBoxAligned(const TextureD3D11& texture, const TextureRegionDesc& region, const HostCopyLayoutD3D11& layout);
-    static bool IsHostCopyTextureCompatible(const TextureDesc& a, const TextureDesc& b);
     Result AcquireHostCopyTexture(const TextureD3D11& texture, uint32_t width, uint32_t height, uint32_t depth, TextureD3D11*& hostCopyTexture, uint32_t& hostCopySubresource);
     void ReleaseHostCopyTexture(TextureD3D11& hostCopyTexture);
     void FillDesc();

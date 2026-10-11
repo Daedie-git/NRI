@@ -1,66 +1,80 @@
 ---
 name: nri-review
-description: Review NRI repository changes with repo-specific C++/graphics-backend rules. Use when Codex reviews local diffs, pull requests, merge requests, or proposed patches touching Include, Source/Validation, Source/D3D11, Source/D3D12, Source/VK, Source/Shared, CMake, build scripts, or NRI extension headers.
+description: Review NRI changes or the current tree for graphics-API correctness, backend parity, validation coverage, duplication, simplification, and build risk.
 ---
 
 # NRI Review
 
-## Overview
+Read `../nri-coding-standard/SKILL.md` completely before reviewing. Treat it as the coding-policy checklist; this skill defines the review method.
 
-Review NRI changes as a graphics API/backend reviewer. Prioritize correctness, validation-layer boundaries, backend SDK assumptions, public API contract quality, and maintainer style rules over generic C++ preferences.
+When the review touches WGPU, read `../../todo-wgpu.md` completely. When it touches video, read `../../todo-video.md` completely. Treat these files as maintained investigation context, not as pre-established findings; verify every relevant item against the review target.
 
-## Workflow
+Review exactly the target and comparison basis specified by the user. Clarify only when genuine ambiguity could change the findings.
 
-1. Start from the actual diff or review target. Use `git status --short --branch`, `git diff --stat`, and targeted `git diff -- <path>` reads.
-2. If pattern context is needed, study `main` without switching branches: use `git show main:<path>` and `git grep <pattern> main -- <paths>`.
-3. Classify each touched file by layer: public API (`Include`), validation (`Source/Validation`), backend implementation (`Source/D3D11`, `Source/D3D12`, `Source/VK`), shared helpers (`Source/Shared`), creation/glue (`Source/Creation`), or build/deploy.
-4. Review for the NRI-specific checks below before generic code quality.
-5. Report findings first, ordered by severity, with file and line references. If there are no findings, say so and note any unrun verification.
+Preserve the intentional formatting of NRI interface files, including public headers under `Include/` and internal `*Interface.h` declarations. Do not run clang-format on these files; make focused manual edits instead.
 
-## Review Checks
+When adding or editing code comments, do not add a period at the end of a single-sentence comment. Keep periods that separate sentences in multi-sentence comments:
 
-Layering:
-- Ensure public input validation lives in `Source/Validation`, not backend implementations.
-- Treat backend `NRI_CHECK` as acceptable for critical internal assumptions, impossible states, and native/backend failure points, not as public argument validation.
-- Check validation wrappers unwrap `*Val` objects consistently, update validation-side state only after implementation success, and preserve object lifetime/destruction behavior.
+```cpp
+// This is good
+// That was bad. This is good
+```
 
-Style and structure:
-- Require `.clang-format` formatting: Google-based, 4-space indent, no tabs, attached braces, left pointer/reference alignment, `ColumnLimit: 0`, preserved include blocks, and case-sensitive include sorting.
-- Require the maintainer preference for one empty line before control-flow keywords in touched code (`return`, `if`, `for`, `while`, `switch`, etc.).
-- Check primary implementation entities (`Device*`, `Descriptor*`, `VideoSession*`, `Buffer*`, `Texture*`, `Pipeline*`, `Queue*`, validation entities) keep data members behind `private:`.
-- Keep one-off helper functions in the single file where they are used, usually as file-local `static inline`; flag duplicated or unnecessarily shared helpers.
-- Never add `case <Enum>::MAX_NUM` in an enum switch. Use `default` for unexpected enum values.
-- Prefer existing conversion tables plus `NRI_VALIDATE_ARRAY*` checks over ad hoc enum switch mappings.
-- Avoid making unnecessary changes to existing code.
-- Flag unrelated churn. If an unrelated fix was required, it should be commented `FIXED BY AI` for maintainer audit.
+Record the exact target and comparison basis, including refs and commits when applicable. Include committed and uncommitted changes when reviewing a diff. If the review is against current `main`, verify that the local ref matches the remote before comparing.
 
-Backend implementation:
-- Check `Impl*.cpp` function-table wrappers stay thin: cast to the backend/validation entity and delegate.
-- Check D3D11, D3D12, and VK create paths preserve `CreateImplementation<T>` behavior: allocate, call `Create`, destroy and null on failure, cast on success.
-- For native API failures, expect `NRI_RETURN_ON_BAD_HRESULT`, `NRI_RETURN_ON_BAD_VKRESULT`, or existing native-result macros.
-- Check backend parity when public API, shared descriptors, enum values, or interface methods change: D3D11, D3D12, VK, Validation, and Creation may all need edits.
-- Preserve NRI's low-overhead model. Flag hidden management, automatic barriers, broad synchronization, or high-level abstraction behavior unless explicitly requested.
+## Map the Feature
 
-D3D12-specific:
-- Minimize `#if/#ifdef/#endif` use for `NRI_ENABLE_AGILITY_SDK_SUPPORT`; prefer tight feature-specific blocks and shared fallback code.
-- Respect current SDK assumptions: latest Agility SDK support, currently v1.619.x in CMake, or Windows SDK 10.0.20348 as the minimum spec without Agility.
-- Flag locally invented D3D12 constants/enums/structs or magic values justified as "old Agility SDK" compatibility.
-- Keep `ID3D12DeviceBest`, version checks, and Agility-only calls consistent with `DeviceD3D12` and existing descriptor/pipeline patterns.
+Trace each changed public concept through:
 
-API and build:
-- Public headers must preserve C/C++ compatibility macros (`NriStruct`, `NriEnum`, `NriBits`, `NriRef`, `NriPtr`, `NriNamespaceBegin/End`, `NriOptional`, `NriOut`, `NRI_CALL`).
-- `NRI_VERSION 181` is work in progress and consumers are expected to recompile. Do not report ABI/layout/enum-number changes or require a version bump. Continue to flag C/C++ facade breakage, public semantic traps, and internal parity failures caused by those changes.
-- Public or extension API additions must update the header function-pointer table, `DeviceBase::FillFunctionTable`, validation table fill, supported backend table fills, extension support flags, and `nriGetInterface` compatibility behavior.
-- New enum values must update mapping arrays, validation checks, conversion helpers, and `NRI_VALIDATE_ARRAY*` coverage together.
-- CMake changes must preserve option names, dependency gating, warnings-as-errors behavior, explicit source lists, `target_sources`, `source_group`, and generator-expression style.
-- CI deploy/build/SDK preparation commands are the baseline verification path; prefer targeted local verification when a full build is not practical.
+`public API -> capabilities -> Validation -> backend entry point -> native objects/commands -> result/feedback -> destruction`
 
-## Finding Priorities
+Find all declarations and call sites. Check function-table wiring, supported and unsupported backends, neutral and native paths, and the resources, indices, offsets, states, queues, ownership, and lifetimes represented by the API.
 
-- High severity: validation moved into backends, invalid public API behavior, native resource lifetime bugs, D3D12 SDK assumptions violated, or changes likely to break a backend build.
-- Medium severity: wrong helper placement, newly added enum `MAX_NUM` switch cases, missing failure cleanup, inconsistent wrapper unwrapping, bad version/feature gating, missing interface-table/source-list updates, or meaningful style violations in touched code.
-- Low severity: minor local style drift, unclear comments, or missed formatting when behavior is unaffected.
+For public pointers or binary blobs, check ownership, lifetime, size/null invariants, valid call timing, repeated-call behavior, allocation, caching, and destruction.
 
-## Verification
+Review the whole feature neighborhood, not only the last commit or added lines.
 
-For C/C++ changes, check formatting with the repo `.clang-format` when possible. For build verification, use the narrowest relevant build first; full CI equivalents are `.\1-Deploy.bat`, `.\2-Build.bat`, `.\3-PrepareSDK.bat` on Windows and `bash 1-Deploy.sh`, `bash 2-Build.sh`, `bash 3-PrepareSDK.sh` on Linux. For noisy logs, save output to disk and inspect only the first unique error and summary.
+## Correctness and Backend Parity
+
+- Every valid advertised path must execute safely with the documented meaning.
+- Capabilities, Validation, and implementation behavior must agree.
+- For optional native features, check extension selection, feature chaining, dispatch resolution, stored support, and the unsupported result as one path.
+- Apply scratch initialization requirements to native input and input/output structures. Pure output arrays without `sType`/`pNext` do not need redundant initialization.
+- Keep direct native API mirrors in native terminology even when the NRI-facing concept uses different terminology.
+- Compare D3D12 and Vulkan resource states, access/stages, queues, ownership, synchronization, setup/reference/reconstructed pictures, offsets, feedback, and object lifetimes.
+- Different native requirements are valid only when the NRI contract lets callers discover and satisfy them. Treat cross-backend differences as investigation leads, not proof of a defect; confirm the contract and units of each native API before deciding that one backend is wrong.
+- Check zero and maximum counts, sparse or duplicate slots, aliasing, optional pointers, nonzero offsets, narrowing, partial construction, rollback, and destruction.
+- Check relevant combinations of codec, encode/decode, frame type, neutral/native arguments, host/buffer sources, coincident/distinct pictures, Validation/direct use, and Agility/non-Agility.
+- Verify uncertain GAPI rules with primary documentation or primary implementation sources; identify inferences. Distinguish quantities such as logical and physical or block-rounded extents, texels and blocks, row size and row pitch, and resources and subresources. Include relevant padding, edge, feature, and version rules before declaring a native violation.
+
+## Duplication and Simplification
+
+Use this pass for substantial implementation changes or when maintainability is in scope. Correctness and regression risk come first.
+
+- Compare file-local helpers and substantial workflows across backends.
+- Look for equivalent bodies with the same or different names, terminology, capitalization, or backend suffixes.
+- Use backend suffixes to locate helper counterparts; backend classes and native-facing types keep their suffixes.
+- Check duplication within one backend, especially capability probing versus creation, descriptor construction, codec branches, and count/check/write workflows.
+- Share only genuinely backend-independent reused logic. Keep one-off and native-specific helpers local.
+- Retain duplication when abstraction would worsen pointer lifetime, diagnostics, performance, or native clarity; state that reason.
+
+## Review Verdict
+
+A blocker is a supported valid path that can fail, crash, access missing storage, use invalid native data, violate an undiscoverable resource-state contract, advertise unsupported behavior, break Validation or interface wiring, leak or misuse lifetime, fail a required build, or otherwise make the reviewed state unacceptable.
+
+Incomplete functionality is non-blocking when explicitly unsupported, accurately reported, and harmless to existing NRI. ABI changes alone are not findings for v181 when recompilation is accepted.
+
+One reachable blocker controls the verdict.
+
+## Verification and Report
+
+- Run `git diff --check`, check for accidental edits, and verify CRLF.
+- Build every affected backend and feature gate. For generic verification, cover every backend available through CMake: D3D12 (both Agility and non-Agility), Vulkan, D3D11, and WGPU, in both Debug and Release configurations.
+- For non-Agility D3D12 verification, confirm that the build selected the Windows SDK 10.0.20348 headers; a downlevel target alone may still compile against newer installed headers.
+- For findings that predict a native validation failure or incorrect output, run the smallest relevant existing test on the unchanged reviewed tree when practical and record whether it reproduces. A test that passes only after a proposed fix does not establish that the baseline fails; if both pass, reconcile the behavior with the exact native rule before retaining the finding.
+- Distinguish compilation from runtime coverage and list important untested paths.
+- Review the exact final tree, not an earlier iteration.
+
+Report findings first by severity. Give exact file/line, reachable path, violated NRI or native rule, affected backend/mode, why Validation or capabilities do not prevent it, and a concrete fix.
+
+End with blocker and useful non-blocker counts, verification performed and omitted, and an explicit `PASS` or `FAIL` verdict.

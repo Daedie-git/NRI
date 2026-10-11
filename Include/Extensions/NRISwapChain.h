@@ -74,6 +74,10 @@ NriStruct(WebWindow) { // Expects "__EMSCRIPTEN__" platform macro
     const char* canvasSelector;
 };
 
+NriStruct(AndroidWindow) {  // Expects "__ANDROID__" platform macro
+    void* nativeWindow;     //    ANativeWindow
+};
+
 NriStruct(Window) {
     // Only one entity must be initialized
     Nri(WindowsWindow) windows;
@@ -81,6 +85,7 @@ NriStruct(Window) {
     Nri(WaylandWindow) wayland;
     Nri(MetalWindow) metal;
     Nri(WebWindow) web;
+    Nri(AndroidWindow) android;
 };
 
 // SwapChain textures will be created as "color attachment" resources

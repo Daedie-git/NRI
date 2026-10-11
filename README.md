@@ -46,6 +46,7 @@ Available interfaces:
  - `NRI.h` - core functionality
  - `NRIDeviceCreation.h` - device creation and related functionality
  - `NRIHelper.h` - a collection of various helpers to ease use of the core interface
+ - `NRIDescriptorHeap.h` - directly indexed descriptor heaps
  - `NRIImgui.h` - a light-weight *ImGui* renderer (no *ImGui* dependency)
  - `NRILowLatency.h` - low latency support (aka *NVIDIA REFLEX*)
  - `NRIMeshShader.h` - mesh shaders
@@ -61,13 +62,23 @@ Repository organization:
 ## BUILD INSTRUCTIONS
 
 - Install [*Cmake*](https://cmake.org/download/) 3.30+
+- MacOS: install prerequisites
+    - Xcode command line tools
+    - Ninja
+    - [Vulkan SDK](https://vulkan.lunarg.com/sdk/home#mac), then source its `setup-env.sh`
 - Build (variant 1) - using *Git* and *CMake* explicitly
     - Clone project and init submodules
     - Generate and build the project using *CMake*
     - To build the binary with static MSVC runtime, add `-DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded$<$<CONFIG:Debug>:Debug>"` parameter when deploying the project
 - Build (variant 2) - by running scripts:
-    - Run `1-Deploy`
-    - Run `2-Build`
+    - To deploy the project, run `Scripts/<Platform>/1-Deploy`
+    - To build the project, run `Scripts/<Platform>/2-Build`
+    - To package the SDK, run `Scripts/<Platform>/3-PrepareSDK`
+    - To clean generated files, run `Scripts/<Platform>/4-Clean`
+
+`<Platform>` is `Windows`, `Linux` or `MacOS`. Use `.bat` on Windows; run `.sh` scripts with `bash` on Linux and MacOS.
+
+Scripts resolve the NRI root from their own location, so they can be launched from any working directory.
 
 Notes:
 - *Xlib* and *Wayland* can be both enabled
@@ -103,7 +114,7 @@ Notes:
 
 ## AGILITY SDK
 
-The bare minimum requirement for *D3D12* backend is *D3D12 Ultimate* (*Windows SDK 10.0.20348*, last pre-*Agility SDK* release). *NRI* can be compiled for this *Windows SDK* using `1-Deploy.bat -DNRI_ENABLE_AGILITY_SDK_SUPPORT=OFF -A "x64,version=10.0.20348.0"` command line. But using the latest *Agility SDK* is highly recommended to get access to most recent *D3D12* features and improved validation. See *Overview* and *Download* sections [*here*](https://devblogs.microsoft.com/directx/directx12agility/) for more details about *Agility SDK*.
+The bare minimum requirement for *D3D12* backend is *D3D12 Ultimate* (*Windows SDK 10.0.20348*, last pre-*Agility SDK* release). *NRI* can be compiled for this *Windows SDK* using `Scripts/Windows/1-Deploy.bat -DNRI_ENABLE_AGILITY_SDK_SUPPORT=OFF -A "x64,version=10.0.20348.0"` command line. But using the latest *Agility SDK* is highly recommended to get access to most recent *D3D12* features and improved validation. See *Overview* and *Download* sections [*here*](https://devblogs.microsoft.com/directx/directx12agility/) for more details about *Agility SDK*.
 
 Steps (already enabled by default):
 - modify `NRI_AGILITY_SDK_VERSION_MAJOR` and `NRI_AGILITY_SDK_VERSION_MINOR` to the desired value
@@ -124,7 +135,7 @@ Required:
 Supported:
  - (Instance) _VK_KHR_get_surface_capabilities2_
  - (Instance) _VK_KHR_surface_
- - (Instance) _VK_KHR_win32_surface_ (_VK_KHR_xlib_surface_, _VK_KHR_wayland_surface_,  _VK_EXT_metal_surface_)
+ - (Instance) _VK_KHR_win32_surface_ (_VK_KHR_xlib_surface_, _VK_KHR_wayland_surface_, _VK_KHR_android_surface_, _VK_EXT_metal_surface_)
  - (Instance) _VK_EXT_swapchain_colorspace_
  - (Instance) _VK_EXT_debug_utils_
  - (Instance) _VK_EXT_surface_maintenance1_
@@ -141,6 +152,8 @@ Supported:
  - _VK_KHR_maintenance7_
  - _VK_KHR_maintenance8_
  - _VK_KHR_maintenance9_
+ - _VK_KHR_maintenance10_
+ - _VK_KHR_extended_flags_
  - _VK_KHR_line_rasterization_
  - _VK_KHR_fragment_shading_rate_
  - _VK_KHR_pipeline_library_
@@ -154,14 +167,20 @@ Supported:
  - _VK_KHR_compute_shader_derivatives_
  - _VK_KHR_unified_image_layouts_
  - _VK_KHR_shader_integer_dot_product_
+ - _VK_KHR_shader_untyped_pointers_
+ - _VK_KHR_sampler_ycbcr_conversion_
+ - _VK_KHR_load_store_op_none_
  - _VK_KHR_dynamic_rendering_local_read_
  - _VK_EXT_extended_dynamic_state_
  - _VK_EXT_calibrated_timestamps_
  - _VK_EXT_pipeline_creation_cache_control_
  - _VK_EXT_pipeline_robustness_
+ - _VK_EXT_host_image_copy_
+ - _VK_EXT_load_store_op_none_
  - _VK_EXT_image_robustness_
  - _VK_EXT_subgroup_size_control_
  - _VK_EXT_mutable_descriptor_type_
+ - _VK_EXT_descriptor_heap_
  - _VK_EXT_swapchain_maintenance1_
  - _VK_EXT_present_mode_fifo_latest_ready_
  - _VK_EXT_opacity_micromap_
@@ -177,6 +196,18 @@ Supported:
  - _VK_EXT_robustness2_
  - _VK_EXT_fragment_shader_interlock_
  - _VK_EXT_zero_initialize_device_memory_
+ - _VK_EXT_device_fault_
+ - _VK_KHR_video_queue_
+ - _VK_KHR_video_decode_queue_
+ - _VK_KHR_video_encode_queue_
+ - _VK_KHR_video_decode_h264_
+ - _VK_KHR_video_decode_h265_
+ - _VK_KHR_video_decode_av1_
+ - _VK_KHR_video_encode_h264_
+ - _VK_KHR_video_encode_h265_
+ - _VK_KHR_video_encode_av1_
+ - _VK_KHR_video_maintenance1_
+ - _VK_KHR_video_maintenance2_
  - _VK_NV_low_latency2_
  - _VK_NVX_binary_import_
  - _VK_NVX_image_view_handle_
@@ -187,7 +218,7 @@ Supported:
 - main sample demonstrating path tracing best practices
 
 [*NRI samples*](https://github.com/NVIDIA-RTX/NRISamples):
-- many samples demonstrating NRI usage
+- many samples demonstrating basic usage, also works as unit tests
 
 ## C/C++ INTERFACE DIFFERENCES
 
@@ -206,7 +237,7 @@ Supported:
 |-------------------------|-----------------------------------------|---------------------------------|------------------------------|-------------------------------------------|
 | `Device`                | `ID3D11Device`                          | `ID3D12Device`                  | `VkDevice`                   | `WGPUDevice`                              |
 | `CommandBuffer`         | `ID3D11DeviceContext` (deferred)        | `ID3D12CommandList`             | `VkCommandBuffer`            | `WGPUCommandBuffer`                       |
-| `CommandQueue`          | `ID3D11DeviceContext` (immediate)       | `ID3D12CommandQueue`            | `VkQueue`                    | `WGPUQueue`                               |
+| `Queue`                 | `ID3D11DeviceContext` (immediate)       | `ID3D12CommandQueue`            | `VkQueue`                    | `WGPUQueue`                               |
 | `Fence`                 | `ID3D11Fence`                           | `ID3D12Fence`                   | `VkSemaphore` (timeline)     | N/A                                       |
 | `CommandAllocator`      | N/A                                     | `ID3D12CommandAllocator`        | `VkCommandPool`              | N/A                                       |
 | `Buffer`                | `ID3D11Buffer`                          | `ID3D12Resource`                | `VkBuffer`                   | `WGPUBuffer`                              |

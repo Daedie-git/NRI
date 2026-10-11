@@ -59,6 +59,10 @@ bool GetTextureDesc(const TextureD3D11Desc& textureD3D11Desc, TextureDesc& textu
 bool GetBufferDesc(const BufferD3D11Desc& bufferD3D11Desc, BufferDesc& bufferDesc);
 uint32_t ConvertPriority(float priority);
 
+static inline bool RangesOverlap(uint64_t offsetA, uint64_t numA, uint64_t offsetB, uint64_t numB) {
+    return offsetA < (offsetB + numB) && offsetB < (offsetA + numA);
+}
+
 union SubresourceInfo {
     struct RawViewDesc {
         const void* resource;
@@ -75,8 +79,8 @@ union SubresourceInfo {
 
     struct BufferSubresourceInfo {
         const BufferD3D11* buffer;
-        uint32_t elementOffset;
-        uint32_t elementNum;
+        uint32_t byteOffset;
+        uint32_t byteSize;
     } buffer;
 
     inline void Initialize(const TextureD3D11* tex, Dim_t mipOffset, Dim_t mipNum, Dim_t layerOffset, Dim_t layerNum) {
@@ -87,20 +91,28 @@ union SubresourceInfo {
         texture.layerNum = layerNum;
     }
 
-    inline void Initialize(const BufferD3D11* buf, uint32_t elementOffset, uint32_t elementNum) {
+    inline void Initialize(const BufferD3D11* buf, uint32_t byteOffset, uint32_t byteSize) {
         buffer.buffer = buf;
-        buffer.elementOffset = elementOffset;
-        buffer.elementNum = elementNum;
+        buffer.byteOffset = byteOffset;
+        buffer.byteSize = byteSize;
     }
 
-    friend bool operator==(const SubresourceInfo& a, const SubresourceInfo& b) {
-        return a.raw.resource == b.raw.resource && a.raw.data == b.raw.data;
+    inline bool Overlaps(const SubresourceInfo& other, bool isBuffer) const {
+        if (raw.resource != other.raw.resource)
+            return false;
+
+        if (isBuffer)
+            return RangesOverlap(buffer.byteOffset, buffer.byteSize, other.buffer.byteOffset, other.buffer.byteSize);
+
+        return RangesOverlap(texture.mipOffset, texture.mipNum, other.texture.mipOffset, other.texture.mipNum)
+            && RangesOverlap(texture.layerOffset, texture.layerNum, other.texture.layerOffset, other.texture.layerNum);
     }
 };
 
 struct SubresourceAndSlot {
     SubresourceInfo subresource;
     uint32_t slot;
+    bool isGraphics;
 };
 
 struct BindingState {
@@ -109,13 +121,14 @@ struct BindingState {
         , storages(stdAllocator) {
     }
 
-    inline void TrackSubresource_UnbindIfNeeded_PostponeGraphicsStorageBinding(ID3D11DeviceContextBest* deferredContext, const SubresourceInfo& subresource, void* descriptor, uint32_t slot, bool isGraphics, bool isStorage) {
+    inline bool TrackSubresource_UnbindIfNeeded_PostponeGraphicsStorageBinding(ID3D11DeviceContextBest* deferredContext, const SubresourceInfo& subresource, bool isBuffer, void* descriptor, uint32_t slot, bool isGraphics, bool isStorage) {
         constexpr void* null = nullptr;
+        bool isGraphicsStorageRebindNeeded = false;
 
         if (isStorage) {
             for (uint32_t i = 0; i < (uint32_t)resources.size(); i++) {
                 const SubresourceAndSlot& subresourceAndSlot = resources[i];
-                if (subresourceAndSlot.subresource == subresource) {
+                if (subresourceAndSlot.subresource.Overlaps(subresource, isBuffer)) {
                     // TODO: store visibility to unbind only for necessary stages
                     deferredContext->VSSetShaderResources(subresourceAndSlot.slot, 1, (ID3D11ShaderResourceView**)&null);
                     deferredContext->HSSetShaderResources(subresourceAndSlot.slot, 1, (ID3D11ShaderResourceView**)&null);
@@ -130,17 +143,21 @@ struct BindingState {
                 }
             }
 
-            storages.push_back({subresource, slot});
+            storages.push_back({subresource, slot, isGraphics});
 
-            if (isGraphics)
+            if (isGraphics) {
                 graphicsStorageDescriptors[slot] = (ID3D11UnorderedAccessView*)descriptor;
+                isGraphicsStorageRebindNeeded = true;
+            }
         } else {
             for (uint32_t i = 0; i < (uint32_t)storages.size(); i++) {
                 const SubresourceAndSlot& subresourceAndSlot = storages[i];
-                if (subresourceAndSlot.subresource == subresource) {
-                    deferredContext->CSSetUnorderedAccessViews(subresourceAndSlot.slot, 1, (ID3D11UnorderedAccessView**)&null, nullptr);
-
-                    graphicsStorageDescriptors[subresourceAndSlot.slot] = nullptr;
+                if (subresourceAndSlot.subresource.Overlaps(subresource, isBuffer)) {
+                    if (subresourceAndSlot.isGraphics) {
+                        graphicsStorageDescriptors[subresourceAndSlot.slot] = nullptr;
+                        isGraphicsStorageRebindNeeded = true;
+                    } else
+                        deferredContext->CSSetUnorderedAccessViews(subresourceAndSlot.slot, 1, (ID3D11UnorderedAccessView**)&null, nullptr);
 
                     storages[i] = storages.back();
                     storages.pop_back();
@@ -148,8 +165,10 @@ struct BindingState {
                 }
             }
 
-            resources.push_back({subresource, slot});
+            resources.push_back({subresource, slot, isGraphics});
         }
+
+        return isGraphicsStorageRebindNeeded;
     }
 
     inline void UnbindAndReset(ID3D11DeviceContextBest* deferredContext) {
@@ -222,6 +241,13 @@ struct SamplePositionsState {
         positionHash = ComputeHash(samplePositions, size);
         positionNum = samplePositionNum;
     }
+};
+
+struct MultiThreadProtection {
+    MultiThreadProtection(DeviceD3D11& device);
+    ~MultiThreadProtection();
+
+    DeviceD3D11& device;
 };
 
 } // namespace nri

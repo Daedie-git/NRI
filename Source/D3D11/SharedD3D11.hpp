@@ -1,5 +1,14 @@
 // © 2021 NVIDIA Corporation
 
+MultiThreadProtection::MultiThreadProtection(DeviceD3D11& device)
+    : device(device) {
+    device.EnterCriticalSection();
+}
+
+MultiThreadProtection::~MultiThreadProtection() {
+    device.LeaveCriticalSection();
+}
+
 static inline D3D11_TEXTURE_ADDRESS_MODE GetAddressMode(AddressMode mode) {
     return (D3D11_TEXTURE_ADDRESS_MODE)(D3D11_TEXTURE_ADDRESS_WRAP + (uint32_t)mode);
 }

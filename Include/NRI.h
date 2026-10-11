@@ -39,7 +39,7 @@ Implicit:
 #pragma once
 
 #define NRI_VERSION 181
-#define NRI_VERSION_DATE "19 August 2026"
+#define NRI_VERSION_DATE "28 September 2026"
 
 // C/C++ compatible interface (auto-selection or via "NRI_FORCE_C" macro)
 #include "NRIDescs.h"
@@ -136,7 +136,7 @@ NriStruct(CoreInterface) {
     // - if "ALLOW_UPDATE_AFTER_SET" not used, descriptor sets (and data pointed to by descriptors) must be updated before "CmdSetDescriptorSet"
     // - "ResetDescriptorPool" resets the entire pool and wipes out all allocated descriptor sets. "DescriptorSet" is a tiny struct (<= 48 bytes),
     //   so lots of descriptor sets can be created in advance and reused without calling "ResetDescriptorPool"
-    // - if there is a directly indexed descriptor heap:
+    // - when directly indexed, a descriptor pool backs the directly indexed arrays:
     //   - D3D12: "GetDescriptorSetOffsets" returns offsets in resource and sampler descriptor heaps
     //     - these offsets are needed in shaders, if the corresponding descriptor set is not the first allocated from the descriptor pool
     //   - VK: "GetDescriptorSetOffsets" returns "0"
@@ -184,7 +184,7 @@ NriStruct(CoreInterface) {
         // Graphics
         void                (NRI_CALL *CmdBeginRendering)           (NriRef(CommandBuffer) commandBuffer, const NriRef(RenderingDesc) renderingDesc);
         // {                {
-            // Clear
+            // Clear ("rects" require the corresponding "features.rectColorClears" or "features.rectDepthStencilClears")
             void                (NRI_CALL *CmdClearAttachments)     (NriRef(CommandBuffer) commandBuffer, const NriPtr(ClearAttachmentDesc) clearAttachmentDescs, uint32_t clearAttachmentDescNum, const NriPtr(Rect) rects, uint32_t rectNum);
 
             // Draw
@@ -216,10 +216,10 @@ NriStruct(CoreInterface) {
         // Clear (outside of rendering)
         void                (NRI_CALL *CmdClearStorage)             (NriRef(CommandBuffer) commandBuffer, const NriRef(ClearStorageDesc) clearStorageDesc);
 
-        // Query (outside of rendering, except Begin/End query)
-        void                (NRI_CALL *CmdResetQueries)             (NriRef(CommandBuffer) commandBuffer, NriRef(QueryPool) queryPool, uint32_t offset, uint32_t num);
+        // Query and timestamps (outside of rendering, except Begin/End query)
+        void                (NRI_CALL *CmdResetQueries)             (NriRef(CommandBuffer) commandBuffer, NriRef(QueryPool) queryPool, uint32_t offset, uint32_t num); // can't be used with a COPY queue
         void                (NRI_CALL *CmdBeginQuery)               (NriRef(CommandBuffer) commandBuffer, NriRef(QueryPool) queryPool, uint32_t offset);
-        void                (NRI_CALL *CmdEndQuery)                 (NriRef(CommandBuffer) commandBuffer, NriRef(QueryPool) queryPool, uint32_t offset);
+        void                (NRI_CALL *CmdEndQuery)                 (NriRef(CommandBuffer) commandBuffer, NriRef(QueryPool) queryPool, uint32_t offset); // writes a timestamp for timestamp query pools
         void                (NRI_CALL *CmdCopyQueries)              (NriRef(CommandBuffer) commandBuffer, const NriRef(QueryPool) queryPool, uint32_t offset, uint32_t num, NriRef(Buffer) dstBuffer, uint64_t dstOffset);
 
         // Annotations for profiling tools: command buffer

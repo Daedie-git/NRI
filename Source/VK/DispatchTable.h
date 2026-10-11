@@ -58,6 +58,9 @@ struct DispatchTable {
 #ifdef VK_USE_PLATFORM_METAL_EXT
     VK_FUNC(CreateMetalSurfaceEXT);
 #endif
+#ifdef VK_USE_PLATFORM_ANDROID_KHR
+    VK_FUNC(CreateAndroidSurfaceKHR);
+#endif
 
     //==========================================================================
     // Device                                    Thread safety | Accounted
@@ -181,6 +184,14 @@ struct DispatchTable {
                                                           // v1.4 or VK_KHR_maintenance6
     VK_FUNC(CmdBindDescriptorSets2);                      // - | +
     VK_FUNC(CmdPushConstants2);                           // - | +
+                                                          // VK_EXT_descriptor_heap
+    VK_FUNC(WriteSamplerDescriptorsEXT);                  // + | +
+    VK_FUNC(WriteResourceDescriptorsEXT);                 // + | +
+    VK_FUNC(CmdBindSamplerHeapEXT);                       // - | +
+    VK_FUNC(CmdBindResourceHeapEXT);                      // - | +
+    VK_FUNC(CmdPushDataEXT);                              // - | +
+    VK_FUNC(RegisterCustomBorderColorEXT);                // + | +
+    VK_FUNC(UnregisterCustomBorderColorEXT);              // + | +
                                                           // v1.4 or VK_EXT_host_image_copy
     VK_FUNC(CopyMemoryToImage);                           // + | +
     VK_FUNC(CopyImageToMemory);                           // + | +

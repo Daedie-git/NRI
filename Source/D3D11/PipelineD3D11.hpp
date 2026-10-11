@@ -146,7 +146,7 @@ Result PipelineD3D11::Create(const GraphicsPipelineDesc& pipelineDesc) {
 
         D3D11_BLEND_DESC1 blendState1 = {};
         blendState1.AlphaToCoverageEnable = (pipelineDesc.multisample && pipelineDesc.multisample->alphaToCoverage) ? TRUE : FALSE;
-        blendState1.IndependentBlendEnable = TRUE;
+        blendState1.IndependentBlendEnable = om.logicOp == LogicOp::NONE && om.colorNum > 1; // must be disabled for logic operations by D3D11 spec
         for (uint32_t i = 0; i < om.colorNum; i++) {
             const ColorAttachmentDesc& bs = om.colors[i];
             blendState1.RenderTarget[i].BlendEnable = bs.blendEnabled;

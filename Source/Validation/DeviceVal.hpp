@@ -56,6 +56,10 @@ static inline bool IsShaderStageSupported(const DeviceDesc& deviceDesc, StageBit
     return true;
 }
 
+static inline bool IsConstantAlphaBlendFactor(BlendFactor blendFactor) {
+    return blendFactor == BlendFactor::CONSTANT_ALPHA || blendFactor == BlendFactor::ONE_MINUS_CONSTANT_ALPHA;
+}
+
 static inline Dim_t GetMaxMipNum(uint16_t w, uint16_t h, uint16_t d) {
     Dim_t mipNum = 1;
 
@@ -129,12 +133,13 @@ static bool IsViewTypeSupported(const TextureDesc& textureDesc, TextureView text
 DeviceVal::DeviceVal(const CallbackInterface& callbacks, const AllocationCallbacks& allocationCallbacks, DeviceBase& device)
     : DeviceBase(callbacks, allocationCallbacks, NRI_OBJECT_SIGNATURE)
     , m_Impl(*(Device*)&device)
+    , m_Queues(GetStdAllocator())
     , m_MemoryTypeMap(GetStdAllocator()) {
 }
 
 DeviceVal::~DeviceVal() {
-    for (size_t i = 0; i < m_Queues.size(); i++)
-        Destroy(m_Queues[i]);
+    for (const auto& queue : m_Queues)
+        Destroy(queue.second);
 
     if (m_Name) {
         const auto& allocationCallbacks = GetAllocationCallbacks();
@@ -153,6 +158,7 @@ bool DeviceVal::Create() {
     result = deviceBaseImpl.FillFunctionTable(m_iHelperImpl);
     NRI_RETURN_ON_FAILURE(this, result == Result::SUCCESS, false, "Failed to get 'HelperInterface' interface");
 
+    m_IsExtSupported.descriptorHeap = deviceBaseImpl.FillFunctionTable(m_iDescriptorHeapImpl) == Result::SUCCESS;
     m_IsExtSupported.lowLatency = deviceBaseImpl.FillFunctionTable(m_iLowLatencyImpl) == Result::SUCCESS;
     m_IsExtSupported.meshShader = deviceBaseImpl.FillFunctionTable(m_iMeshShaderImpl) == Result::SUCCESS;
     m_IsExtSupported.rayTracing = deviceBaseImpl.FillFunctionTable(m_iRayTracingImpl) == Result::SUCCESS;
@@ -179,6 +185,24 @@ void DeviceVal::Destruct() {
 
 NRI_INLINE Result DeviceVal::CreateSwapChain(const SwapChainDesc& swapChainDesc, SwapChain*& swapChain) {
     NRI_RETURN_ON_FAILURE(this, swapChainDesc.queue != nullptr, Result::INVALID_ARGUMENT, "'queue' is NULL");
+
+    bool isWindowValid = false;
+#if defined(__ANDROID__)
+    isWindowValid = swapChainDesc.window.android.nativeWindow != nullptr;
+#elif defined(_WIN32)
+    isWindowValid = swapChainDesc.window.windows.hwnd != nullptr;
+#elif defined(__APPLE__)
+    isWindowValid = swapChainDesc.window.metal.caMetalLayer != nullptr;
+#else
+#    if NRI_ENABLE_XLIB_SUPPORT
+    isWindowValid = swapChainDesc.window.x11.dpy != nullptr && swapChainDesc.window.x11.window != 0;
+#    endif
+#    if NRI_ENABLE_WAYLAND_SUPPORT
+    isWindowValid = isWindowValid || (swapChainDesc.window.wayland.display != nullptr && swapChainDesc.window.wayland.surface != nullptr);
+#    endif
+#endif
+    NRI_RETURN_ON_FAILURE(this, isWindowValid, Result::INVALID_ARGUMENT, "'window' is invalid");
+
     NRI_RETURN_ON_FAILURE(this, swapChainDesc.width != 0, Result::INVALID_ARGUMENT, "'width' is 0");
     NRI_RETURN_ON_FAILURE(this, swapChainDesc.height != 0, Result::INVALID_ARGUMENT, "'height' is 0");
     NRI_RETURN_ON_FAILURE(this, swapChainDesc.textureNum != 0, Result::INVALID_ARGUMENT, "'textureNum' is invalid");
@@ -213,11 +237,14 @@ NRI_INLINE Result DeviceVal::GetQueue(QueueType queueType, uint32_t queueIndex, 
 
     queue = nullptr;
     if (result == Result::SUCCESS) {
-        const uint32_t index = (uint32_t)queueType;
-        if (!m_Queues[index])
-            m_Queues[index] = Allocate<QueueVal>(GetAllocationCallbacks(), *this, queueImpl, queueType);
+        ExclusiveScope lock(m_Lock);
 
-        queue = (Queue*)m_Queues[index];
+        const uint64_t key = ((uint64_t)queueType << 32) | queueIndex;
+        QueueVal*& queueVal = m_Queues[key];
+        if (!queueVal)
+            queueVal = Allocate<QueueVal>(GetAllocationCallbacks(), *this, queueImpl, queueType);
+
+        queue = (Queue*)queueVal;
     }
 
     return result;
@@ -304,7 +331,10 @@ NRI_INLINE Result DeviceVal::CreateDescriptor(const BufferViewDesc& bufferViewDe
     const BufferDesc& bufferDesc = bufferVal.GetDesc();
 
     NRI_RETURN_ON_FAILURE(this, bufferVal.IsBoundToMemory(), Result::INVALID_ARGUMENT, "'bufferViewDesc.buffer' is not bound to memory");
-    NRI_RETURN_ON_FAILURE(this, bufferViewDesc.offset + bufferViewDesc.size <= bufferDesc.size, Result::INVALID_ARGUMENT, "'offset=%" PRIu64 "' + 'size=%" PRIu64 "' must be <= buffer 'size=%" PRIu64 "'", bufferViewDesc.offset, bufferViewDesc.size, bufferDesc.size);
+    NRI_RETURN_ON_FAILURE(this, bufferViewDesc.offset < bufferDesc.size, Result::INVALID_ARGUMENT, "'offset=%" PRIu64 "' must be < buffer 'size=%" PRIu64 "'", bufferViewDesc.offset, bufferDesc.size);
+
+    const uint64_t size = bufferViewDesc.size == WHOLE_SIZE ? (bufferDesc.size - bufferViewDesc.offset) : bufferViewDesc.size;
+    NRI_RETURN_ON_FAILURE(this, size <= bufferDesc.size - bufferViewDesc.offset, Result::INVALID_ARGUMENT, "'offset=%" PRIu64 "' + 'size=%" PRIu64 "' must be <= buffer 'size=%" PRIu64 "'", bufferViewDesc.offset, size, bufferDesc.size);
 
     if (bufferViewDesc.type != BufferView::STRUCTURED_BUFFER && bufferViewDesc.type != BufferView::STORAGE_STRUCTURED_BUFFER)
         NRI_RETURN_ON_FAILURE(this, bufferViewDesc.structureStride == 0, Result::INVALID_ARGUMENT, "'structureStride' must be 0 for non-structured views");
@@ -317,13 +347,17 @@ NRI_INLINE Result DeviceVal::CreateDescriptor(const BufferViewDesc& bufferViewDe
 
     auto bufferViewDescImpl = bufferViewDesc;
     bufferViewDescImpl.buffer = NRI_GET_IMPL(Buffer, bufferViewDesc.buffer);
+    bufferViewDescImpl.size = size;
 
     Descriptor* descriptorImpl = nullptr;
     Result result = m_iCoreImpl.CreateBufferView(bufferViewDescImpl, descriptorImpl);
 
     bufferView = nullptr;
-    if (result == Result::SUCCESS)
-        bufferView = (Descriptor*)Allocate<DescriptorVal>(GetAllocationCallbacks(), *this, descriptorImpl, bufferViewDesc);
+    if (result == Result::SUCCESS) {
+        auto bufferViewDescVal = bufferViewDesc;
+        bufferViewDescVal.size = size;
+        bufferView = (Descriptor*)Allocate<DescriptorVal>(GetAllocationCallbacks(), *this, descriptorImpl, bufferViewDescVal);
+    }
 
     return result;
 }
@@ -409,25 +443,34 @@ NRI_INLINE Result DeviceVal::CreatePipelineLayout(const PipelineLayoutDesc& pipe
     if (pipelineLayoutDesc.flags & PipelineLayoutBits::ENABLE_DRAW_INDEX_EMULATION)
         NRI_RETURN_ON_FAILURE(this, deviceDesc.shaderFeatures.drawIndex, Result::INVALID_ARGUMENT, "'ENABLE_DRAW_INDEX_EMULATION' requires 'shaderFeatures.drawIndex'");
 
+    NRI_RETURN_ON_FAILURE(this, pipelineLayoutDesc.descriptorSetNum == 0 || pipelineLayoutDesc.descriptorSets != nullptr, Result::INVALID_ARGUMENT, "'descriptorSets' is NULL");
     Scratch<uint32_t> spaces = NRI_ALLOCATE_SCRATCH(*this, uint32_t, pipelineLayoutDesc.descriptorSetNum);
 
     uint32_t rangeNum = 0;
     for (uint32_t i = 0; i < pipelineLayoutDesc.descriptorSetNum; i++) {
         const DescriptorSetDesc& descriptorSetDesc = pipelineLayoutDesc.descriptorSets[i];
+        NRI_RETURN_ON_FAILURE(this, descriptorSetDesc.rangeNum == 0 || descriptorSetDesc.ranges != nullptr, Result::INVALID_ARGUMENT, "'descriptorSets[%u].ranges' is NULL", i);
+        uint32_t variableSizedArrayNum = 0;
 
         for (uint32_t j = 0; j < descriptorSetDesc.rangeNum; j++) {
             const DescriptorRangeDesc& range = descriptorSetDesc.ranges[j];
 
+            if (range.flags & DescriptorRangeBits::VARIABLE_SIZED_ARRAY)
+                variableSizedArrayNum++;
+
             NRI_RETURN_ON_FAILURE(this, range.descriptorNum > 0, Result::INVALID_ARGUMENT, "'descriptorSets[%u].ranges[%u].descriptorNum' is 0", i, j);
             NRI_RETURN_ON_FAILURE(this, range.descriptorType < DescriptorType::MAX_NUM, Result::INVALID_ARGUMENT, "'descriptorSets[%u].ranges[%u].descriptorType' is invalid", i, j);
+            NRI_RETURN_ON_FAILURE(this, !(range.flags & DescriptorRangeBits::PARTIALLY_BOUND) || deviceDesc.tiers.resourceBinding != 0, Result::INVALID_ARGUMENT, "'descriptorSets[%u].ranges[%u].flags' has 'PARTIALLY_BOUND', but 'tiers.resourceBinding' is 0", i, j);
             NRI_RETURN_ON_FAILURE(this, !(range.flags & DescriptorRangeBits::VARIABLE_SIZED_ARRAY) || deviceDesc.tiers.bindless != 0, Result::INVALID_ARGUMENT, "'descriptorSets[%u].ranges[%u].flags' has 'VARIABLE_SIZED_ARRAY', but 'tiers.bindless' is 0", i, j);
-
+            NRI_RETURN_ON_FAILURE(this, !(range.flags & DescriptorRangeBits::VARIABLE_SIZED_ARRAY) || deviceDesc.tiers.resourceBinding >= 2, Result::INVALID_ARGUMENT, "'descriptorSets[%u].ranges[%u].flags' has 'VARIABLE_SIZED_ARRAY', but 'tiers.resourceBinding' is less than 2", i, j);
             if (range.shaderStages != StageBits::ALL) {
                 const uint32_t filteredVisibilityMask = range.shaderStages & pipelineLayoutDesc.shaderStages;
 
                 NRI_RETURN_ON_FAILURE(this, (uint32_t)range.shaderStages == filteredVisibilityMask, Result::INVALID_ARGUMENT, "'descriptorSets[%u].ranges[%u].shaderStages' is not compatible with 'shaderStages'", i, j);
             }
         }
+
+        NRI_RETURN_ON_FAILURE(this, variableSizedArrayNum <= 1, Result::INVALID_ARGUMENT, "'descriptorSets[%u]' has more than one 'VARIABLE_SIZED_ARRAY' range", i);
 
         uint32_t n = 0;
         for (; n < i && spaces[n] != descriptorSetDesc.registerSpace; n++)
@@ -472,23 +515,34 @@ NRI_INLINE Result DeviceVal::CreatePipelineLayout(const PipelineLayoutDesc& pipe
         NRI_RETURN_ON_FAILURE(this, samplerDesc.compareOp < CompareOp::MAX_NUM, Result::INVALID_ARGUMENT, "'rootSamplers[%u].desc.compareOp' is invalid", i);
     }
 
-    uint32_t rootConstantSize = 0;
-    for (uint32_t i = 0; i < pipelineLayoutDesc.rootConstantNum; i++)
+    NRI_RETURN_ON_FAILURE(this, pipelineLayoutDesc.rootConstantNum == 0 || pipelineLayoutDesc.rootConstants != nullptr, Result::INVALID_ARGUMENT, "'rootConstants' is NULL");
+    uint64_t rootConstantSize = 0;
+    for (uint32_t i = 0; i < pipelineLayoutDesc.rootConstantNum; i++) {
+        NRI_RETURN_ON_FAILURE(this, pipelineLayoutDesc.rootConstants[i].size != 0 && IsAligned(pipelineLayoutDesc.rootConstants[i].size, 4), Result::INVALID_ARGUMENT, "'rootConstants[%u].size' must be non-zero and 4-byte aligned", i);
         rootConstantSize += pipelineLayoutDesc.rootConstants[i].size;
+    }
+
+    NRI_RETURN_ON_FAILURE(this, rootConstantSize <= UINT32_MAX, Result::INVALID_ARGUMENT, "total size of root constants exceeds UINT32_MAX");
 
     PipelineLayoutSettingsDesc origSettings = {};
+    origSettings.useDescriptorHeap = pipelineLayoutDesc.descriptorSetNum == 0
+        && ((pipelineLayoutDesc.flags & PipelineLayoutBits::RESOURCE_HEAP_DIRECTLY_INDEXED) != 0 || (pipelineLayoutDesc.flags & PipelineLayoutBits::SAMPLER_HEAP_DIRECTLY_INDEXED) != 0);
+    NRI_RETURN_ON_FAILURE(this, !origSettings.useDescriptorHeap || deviceDesc.features.descriptorHeap, Result::INVALID_ARGUMENT, "'features.descriptorHeap' is false");
+
     origSettings.descriptorSetNum = pipelineLayoutDesc.descriptorSetNum;
     origSettings.descriptorRangeNum = rangeNum;
-    origSettings.rootConstantSize = rootConstantSize;
+    origSettings.rootConstantSize = (uint32_t)rootConstantSize;
     origSettings.rootDescriptorNum = pipelineLayoutDesc.rootDescriptorNum;
+    origSettings.rootSamplerNum = pipelineLayoutDesc.rootSamplerNum;
     origSettings.enableD3D12DrawParametersEmulation = (pipelineLayoutDesc.flags & PipelineLayoutBits::ENABLE_DRAW_PARAMETERS_EMULATION) != 0 && (pipelineLayoutDesc.shaderStages & StageBits::VERTEX_SHADER) != 0;
     origSettings.enableD3D12DrawIndexEmulation = (pipelineLayoutDesc.flags & PipelineLayoutBits::ENABLE_DRAW_INDEX_EMULATION) != 0 && (pipelineLayoutDesc.shaderStages & StageBits::VERTEX_SHADER) != 0;
 
-    PipelineLayoutSettingsDesc fittedSettings = FitPipelineLayoutSettingsIntoDeviceLimits(deviceDesc, origSettings);
+    PipelineLayoutSettingsDesc fittedSettings = nriFitPipelineLayoutSettingsIntoDeviceLimits(deviceDesc, origSettings);
     NRI_RETURN_ON_FAILURE(this, origSettings.descriptorSetNum == fittedSettings.descriptorSetNum, Result::INVALID_ARGUMENT, "total number of descriptor sets (=%u) exceeds device limits", origSettings.descriptorSetNum);
     NRI_RETURN_ON_FAILURE(this, origSettings.descriptorRangeNum == fittedSettings.descriptorRangeNum, Result::INVALID_ARGUMENT, "total number of descriptor ranges (=%u) exceeds device limits", origSettings.descriptorRangeNum);
     NRI_RETURN_ON_FAILURE(this, origSettings.rootConstantSize == fittedSettings.rootConstantSize, Result::INVALID_ARGUMENT, "total size of root constants (=%u) exceeds device limits", origSettings.rootConstantSize);
     NRI_RETURN_ON_FAILURE(this, origSettings.rootDescriptorNum == fittedSettings.rootDescriptorNum, Result::INVALID_ARGUMENT, "total number of root descriptors (=%u) exceeds device limits", origSettings.rootDescriptorNum);
+    NRI_RETURN_ON_FAILURE(this, origSettings.rootSamplerNum == fittedSettings.rootSamplerNum, Result::INVALID_ARGUMENT, "total number of root samplers (=%u) exceeds device limits", origSettings.rootSamplerNum);
 
     PipelineLayout* pipelineLayoutImpl = nullptr;
     Result result = m_iCoreImpl.CreatePipelineLayout(m_Impl, pipelineLayoutDesc, pipelineLayoutImpl);
@@ -553,6 +607,11 @@ NRI_INLINE Result DeviceVal::CreatePipeline(const GraphicsPipelineDesc& graphics
         NRI_RETURN_ON_FAILURE(this, color->alphaBlend.srcFactor < BlendFactor::MAX_NUM, Result::INVALID_ARGUMENT, "'outputMerger->color[%u].alphaBlend.srcFactor' is invalid", i);
         NRI_RETURN_ON_FAILURE(this, color->alphaBlend.dstFactor < BlendFactor::MAX_NUM, Result::INVALID_ARGUMENT, "'outputMerger->color[%u].alphaBlend.dstFactor' is invalid", i);
         NRI_RETURN_ON_FAILURE(this, color->alphaBlend.op < BlendOp::MAX_NUM, Result::INVALID_ARGUMENT, "'outputMerger->color[%u].alphaBlend.op' is invalid", i);
+
+        if (color->blendEnabled && !GetDesc().features.constantAlphaBlendFactors) {
+            NRI_RETURN_ON_FAILURE(this, !IsConstantAlphaBlendFactor(color->colorBlend.srcFactor), Result::INVALID_ARGUMENT, "'outputMerger->color[%u].colorBlend.srcFactor' requires 'features.constantAlphaBlendFactors'", i);
+            NRI_RETURN_ON_FAILURE(this, !IsConstantAlphaBlendFactor(color->colorBlend.dstFactor), Result::INVALID_ARGUMENT, "'outputMerger->color[%u].colorBlend.dstFactor' requires 'features.constantAlphaBlendFactors'", i);
+        }
     }
 
     NRI_RETURN_ON_FAILURE(this, graphicsPipelineDesc.outputMerger.depth.compareOp < CompareOp::MAX_NUM, Result::INVALID_ARGUMENT, "'outputMerger.depth.compareOp' is invalid");
@@ -834,15 +893,15 @@ NRI_INLINE Result DeviceVal::CreateCommittedAccelerationStructure(MemoryLocation
     }
 
     Scratch<BottomLevelGeometryDesc> geometriesImplScratch = NRI_ALLOCATE_SCRATCH(*this, BottomLevelGeometryDesc, geometryNum);
-    Scratch<BottomLevelMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(*this, BottomLevelMicromapDesc, micromapNum);
+    Scratch<BottomLevelTrianglesMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(*this, BottomLevelTrianglesMicromapDesc, micromapNum);
 
     BottomLevelGeometryDesc* geometriesImpl = geometriesImplScratch;
-    BottomLevelMicromapDesc* micromapsImpl = micromapsImplScratch;
+    BottomLevelTrianglesMicromapDesc* micromapsImpl = micromapsImplScratch;
 
     auto accelerationStructureDescImpl = accelerationStructureDesc;
     if (accelerationStructureDesc.type == AccelerationStructureType::BOTTOM_LEVEL) {
         accelerationStructureDescImpl.geometries = geometriesImplScratch;
-        ConvertBotomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometriesImpl, micromapsImpl);
+        ConvertBottomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometriesImpl, micromapsImpl);
     }
 
     // Create
@@ -999,23 +1058,6 @@ NRI_INLINE Result DeviceVal::CreatePlacedAccelerationStructure(Memory* memory, u
     if (accelerationStructureDesc.type == AccelerationStructureType::BOTTOM_LEVEL && accelerationStructureDesc.geometryOrInstanceNum != 0)
         NRI_RETURN_ON_FAILURE(this, accelerationStructureDesc.geometries != nullptr, Result::INVALID_ARGUMENT, "'geometries' is NULL");
 
-    if (memory) {
-        MemoryVal& memoryVal = *(MemoryVal*)memory;
-        if (!memoryVal.IsWrapped() && GetDesc().features.getMemoryDesc2) {
-            MemoryDesc memoryDesc = {};
-            m_iRayTracingImpl.GetAccelerationStructureMemoryDesc2(m_Impl, accelerationStructureDesc, memoryVal.GetMemoryLocation(), memoryDesc);
-
-            const uint64_t rangeMax = offset + memoryDesc.size;
-            const bool memorySizeIsUnknown = memoryVal.GetSize() == 0;
-
-            NRI_RETURN_ON_FAILURE(this, !memoryDesc.mustBeDedicated || offset == 0, Result::INVALID_ARGUMENT, "'offset' must be 0 for dedicated allocation");
-            NRI_RETURN_ON_FAILURE(this, memoryDesc.alignment != 0, Result::INVALID_ARGUMENT, "'alignment' is 0");
-            NRI_RETURN_ON_FAILURE(this, offset % memoryDesc.alignment == 0, Result::INVALID_ARGUMENT, "'offset' is misaligned");
-            NRI_RETURN_ON_FAILURE(this, memorySizeIsUnknown || rangeMax <= memoryVal.GetSize(), Result::INVALID_ARGUMENT, "'offset' is invalid");
-        }
-    } else
-        NRI_RETURN_ON_FAILURE(this, offset < (uint64_t)MemoryLocation::MAX_NUM, Result::INVALID_ARGUMENT, "'offset' is not a valid 'MemoryLocation'");
-
     // Convert desc
     uint32_t geometryNum = 0;
     uint32_t micromapNum = 0;
@@ -1039,16 +1081,33 @@ NRI_INLINE Result DeviceVal::CreatePlacedAccelerationStructure(Memory* memory, u
     }
 
     Scratch<BottomLevelGeometryDesc> geometriesImplScratch = NRI_ALLOCATE_SCRATCH(*this, BottomLevelGeometryDesc, geometryNum);
-    Scratch<BottomLevelMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(*this, BottomLevelMicromapDesc, micromapNum);
+    Scratch<BottomLevelTrianglesMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(*this, BottomLevelTrianglesMicromapDesc, micromapNum);
 
     BottomLevelGeometryDesc* geometriesImpl = geometriesImplScratch;
-    BottomLevelMicromapDesc* micromapsImpl = micromapsImplScratch;
+    BottomLevelTrianglesMicromapDesc* micromapsImpl = micromapsImplScratch;
 
     auto accelerationStructureDescImpl = accelerationStructureDesc;
     if (accelerationStructureDesc.type == AccelerationStructureType::BOTTOM_LEVEL) {
         accelerationStructureDescImpl.geometries = geometriesImplScratch;
-        ConvertBotomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometriesImpl, micromapsImpl);
+        ConvertBottomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometriesImpl, micromapsImpl);
     }
+
+    if (memory) {
+        MemoryVal& memoryVal = *(MemoryVal*)memory;
+        if (!memoryVal.IsWrapped() && GetDesc().features.getMemoryDesc2) {
+            MemoryDesc memoryDesc = {};
+            m_iRayTracingImpl.GetAccelerationStructureMemoryDesc2(m_Impl, accelerationStructureDescImpl, memoryVal.GetMemoryLocation(), memoryDesc);
+
+            const uint64_t rangeMax = offset + memoryDesc.size;
+            const bool memorySizeIsUnknown = memoryVal.GetSize() == 0;
+
+            NRI_RETURN_ON_FAILURE(this, !memoryDesc.mustBeDedicated || offset == 0, Result::INVALID_ARGUMENT, "'offset' must be 0 for dedicated allocation");
+            NRI_RETURN_ON_FAILURE(this, memoryDesc.alignment != 0, Result::INVALID_ARGUMENT, "'alignment' is 0");
+            NRI_RETURN_ON_FAILURE(this, offset % memoryDesc.alignment == 0, Result::INVALID_ARGUMENT, "'offset' is misaligned");
+            NRI_RETURN_ON_FAILURE(this, memorySizeIsUnknown || rangeMax <= memoryVal.GetSize(), Result::INVALID_ARGUMENT, "'offset' is invalid");
+        }
+    } else
+        NRI_RETURN_ON_FAILURE(this, offset < (uint64_t)MemoryLocation::MAX_NUM, Result::INVALID_ARGUMENT, "'offset' is not a valid 'MemoryLocation'");
 
     // Create
     Memory* memoryImpl = NRI_GET_IMPL(Memory, memory);
@@ -1073,22 +1132,25 @@ NRI_INLINE Result DeviceVal::AllocateMemory(const AllocateMemoryDesc& allocateMe
     NRI_RETURN_ON_FAILURE(this, allocateMemoryDesc.size != 0, Result::INVALID_ARGUMENT, "'size' is 0");
     NRI_RETURN_ON_FAILURE(this, allocateMemoryDesc.priority >= -1.0f && allocateMemoryDesc.priority <= 1.0f, Result::INVALID_ARGUMENT, "'priority' outside of [-1; 1] range");
 
-    std::unordered_map<MemoryType, MemoryLocation>::iterator it;
-    std::unordered_map<MemoryType, MemoryLocation>::iterator end;
+    MemoryLocation memoryLocation = {};
+    bool memoryTypeFound = false;
     {
         ExclusiveScope lock(m_Lock);
-        it = m_MemoryTypeMap.find(allocateMemoryDesc.type);
-        end = m_MemoryTypeMap.end();
+        const auto it = m_MemoryTypeMap.find(allocateMemoryDesc.type);
+        if (it != m_MemoryTypeMap.end()) {
+            memoryLocation = it->second;
+            memoryTypeFound = true;
+        }
     }
 
-    NRI_RETURN_ON_FAILURE(this, it != end, Result::FAILURE, "'memoryType' is invalid");
+    NRI_RETURN_ON_FAILURE(this, memoryTypeFound, Result::FAILURE, "'memoryType' is invalid");
 
     Memory* memoryImpl = nullptr;
     Result result = m_iCoreImpl.AllocateMemory(m_Impl, allocateMemoryDesc, memoryImpl);
 
     memory = nullptr;
     if (result == Result::SUCCESS)
-        memory = (Memory*)Allocate<MemoryVal>(GetAllocationCallbacks(), *this, memoryImpl, allocateMemoryDesc.size, it->second);
+        memory = (Memory*)Allocate<MemoryVal>(GetAllocationCallbacks(), *this, memoryImpl, allocateMemoryDesc.size, memoryLocation);
 
     return result;
 }
@@ -1114,11 +1176,14 @@ NRI_INLINE void DeviceVal::CopyDescriptorRanges(const CopyDescriptorRangeDesc* c
     for (uint32_t i = 0; i < copyDescriptorRangeDescNum; i++) {
         const CopyDescriptorRangeDesc& copyDescriptorSetDesc = copyDescriptorRangeDescs[i];
 
+        NRI_RETURN_ON_FAILURE(this, copyDescriptorSetDesc.descriptorNum != 0, ReturnVoid(), "'[%u].descriptorNum' is 0", i);
         NRI_RETURN_ON_FAILURE(this, copyDescriptorSetDesc.dstDescriptorSet != nullptr, ReturnVoid(), "'[%u].dstDescriptorSet' is NULL", i);
         NRI_RETURN_ON_FAILURE(this, copyDescriptorSetDesc.srcDescriptorSet != nullptr, ReturnVoid(), "'[%u].srcDescriptorSet' is NULL", i);
 
         DescriptorSetVal& dstSetVal = *(DescriptorSetVal*)copyDescriptorSetDesc.dstDescriptorSet;
         DescriptorSetVal& srcSetVal = *(DescriptorSetVal*)copyDescriptorSetDesc.srcDescriptorSet;
+
+        NRI_RETURN_ON_FAILURE(this, srcSetVal.IsCopySource(), ReturnVoid(), "'[%u].srcDescriptorSet' must be allocated from a pool with 'DescriptorPoolBits::COPY_SOURCE'", i);
 
         const DescriptorSetDesc& dstSetDesc = dstSetVal.GetDesc();
         const DescriptorSetDesc& srcSetDesc = srcSetVal.GetDesc();
@@ -1130,16 +1195,16 @@ NRI_INLINE void DeviceVal::CopyDescriptorRanges(const CopyDescriptorRangeDesc* c
         const DescriptorRangeDesc& srcRangeDesc = srcSetDesc.ranges[copyDescriptorSetDesc.srcRangeIndex];
 
         uint32_t descriptorNum = copyDescriptorSetDesc.descriptorNum;
-        if (descriptorNum == ALL)
-            descriptorNum = srcRangeDesc.descriptorNum;
 
-        NRI_RETURN_ON_FAILURE(this, copyDescriptorSetDesc.dstBaseDescriptor + descriptorNum <= dstRangeDesc.descriptorNum, ReturnVoid(),
+        uint32_t dstDescriptorNum = dstSetVal.GetDescriptorNum(copyDescriptorSetDesc.dstRangeIndex);
+        NRI_RETURN_ON_FAILURE(this, copyDescriptorSetDesc.dstBaseDescriptor <= dstDescriptorNum && descriptorNum <= dstDescriptorNum - copyDescriptorSetDesc.dstBaseDescriptor, ReturnVoid(),
             "'[%u].dstBaseDescriptor = %u + [%u].descriptorNum = %u' is greater than 'descriptorNum = %u' in the range (descriptorType=%s)",
-            i, copyDescriptorSetDesc.dstBaseDescriptor, i, descriptorNum, dstRangeDesc.descriptorNum, GetDescriptorTypeName(dstRangeDesc.descriptorType));
+            i, copyDescriptorSetDesc.dstBaseDescriptor, i, descriptorNum, dstDescriptorNum, GetDescriptorTypeName(dstRangeDesc.descriptorType));
 
-        NRI_RETURN_ON_FAILURE(this, copyDescriptorSetDesc.srcBaseDescriptor + descriptorNum <= srcRangeDesc.descriptorNum, ReturnVoid(),
+        uint32_t srcDescriptorNum = srcSetVal.GetDescriptorNum(copyDescriptorSetDesc.srcRangeIndex);
+        NRI_RETURN_ON_FAILURE(this, copyDescriptorSetDesc.srcBaseDescriptor <= srcDescriptorNum && descriptorNum <= srcDescriptorNum - copyDescriptorSetDesc.srcBaseDescriptor, ReturnVoid(),
             "'[%u].srcBaseDescriptor = %u + [%u].descriptorNum = %u' is greater than 'descriptorNum = %u' in the range (descriptorType=%s)",
-            i, copyDescriptorSetDesc.srcBaseDescriptor, i, descriptorNum, srcRangeDesc.descriptorNum, GetDescriptorTypeName(srcRangeDesc.descriptorType));
+            i, copyDescriptorSetDesc.srcBaseDescriptor, i, descriptorNum, srcDescriptorNum, GetDescriptorTypeName(srcRangeDesc.descriptorType));
 
         auto& copyDescriptorSetDescImpl = copyDescriptorSetDescsImpl[i];
         copyDescriptorSetDescImpl = copyDescriptorSetDesc;
@@ -1151,14 +1216,18 @@ NRI_INLINE void DeviceVal::CopyDescriptorRanges(const CopyDescriptorRangeDesc* c
 }
 
 NRI_INLINE void DeviceVal::UpdateDescriptorRanges(const UpdateDescriptorRangeDesc* updateDescriptorRangeDescs, uint32_t updateDescriptorRangeDescNum) {
-    uint32_t descriptorNum = 0;
-    for (uint32_t i = 0; i < updateDescriptorRangeDescNum; i++)
+    size_t descriptorNum = 0;
+    for (uint32_t i = 0; i < updateDescriptorRangeDescNum; i++) {
+        NRI_RETURN_ON_FAILURE(this, updateDescriptorRangeDescs[i].descriptorNum <= SIZE_MAX - descriptorNum, ReturnVoid(), "the total number of descriptors overflows 'size_t'");
         descriptorNum += updateDescriptorRangeDescs[i].descriptorNum;
+    }
+
+    NRI_RETURN_ON_FAILURE(this, descriptorNum <= (SIZE_MAX - alignof(Descriptor*)) / sizeof(Descriptor*), ReturnVoid(), "the descriptor pointer array size overflows 'size_t'");
 
     Scratch<UpdateDescriptorRangeDesc> updateDescriptorRangeDescsImpl = NRI_ALLOCATE_SCRATCH(*this, UpdateDescriptorRangeDesc, updateDescriptorRangeDescNum);
     Scratch<Descriptor*> descriptorsImpl = NRI_ALLOCATE_SCRATCH(*this, Descriptor*, descriptorNum);
 
-    uint32_t descriptorOffset = 0;
+    size_t descriptorOffset = 0;
     for (uint32_t i = 0; i < updateDescriptorRangeDescNum; i++) {
         const UpdateDescriptorRangeDesc& updateDescriptorRangeDesc = updateDescriptorRangeDescs[i];
 
@@ -1170,12 +1239,13 @@ NRI_INLINE void DeviceVal::UpdateDescriptorRanges(const UpdateDescriptorRangeDes
         NRI_RETURN_ON_FAILURE(this, updateDescriptorRangeDesc.rangeIndex < setDesc.rangeNum, ReturnVoid(), "'rangeIndex = %u' is out of 'rangeNum = %u' in the set", updateDescriptorRangeDesc.rangeIndex, setDesc.rangeNum);
 
         const DescriptorRangeDesc& rangeDesc = setDesc.ranges[updateDescriptorRangeDesc.rangeIndex];
+        uint32_t rangeDescriptorNum = setVal.GetDescriptorNum(updateDescriptorRangeDesc.rangeIndex);
 
         NRI_RETURN_ON_FAILURE(this, updateDescriptorRangeDesc.descriptorNum != 0, ReturnVoid(), "'[%u].descriptorNum' is 0", i);
         NRI_RETURN_ON_FAILURE(this, updateDescriptorRangeDesc.descriptors != nullptr, ReturnVoid(), "'[%u].descriptors' is NULL", i);
-        NRI_RETURN_ON_FAILURE(this, updateDescriptorRangeDesc.baseDescriptor + updateDescriptorRangeDesc.descriptorNum <= rangeDesc.descriptorNum, ReturnVoid(),
+        NRI_RETURN_ON_FAILURE(this, updateDescriptorRangeDesc.baseDescriptor <= rangeDescriptorNum && updateDescriptorRangeDesc.descriptorNum <= rangeDescriptorNum - updateDescriptorRangeDesc.baseDescriptor, ReturnVoid(),
             "'[%u].baseDescriptor = %u + [%u].descriptorNum = %u' is greater than 'descriptorNum = %u' in the range (descriptorType=%s)",
-            i, updateDescriptorRangeDesc.baseDescriptor, i, updateDescriptorRangeDesc.descriptorNum, rangeDesc.descriptorNum, GetDescriptorTypeName(rangeDesc.descriptorType));
+            i, updateDescriptorRangeDesc.baseDescriptor, i, updateDescriptorRangeDesc.descriptorNum, rangeDescriptorNum, GetDescriptorTypeName(rangeDesc.descriptorType));
 
         auto& updateDescriptorRangeDescImpl = updateDescriptorRangeDescsImpl[i];
         updateDescriptorRangeDescImpl = updateDescriptorRangeDesc;
@@ -1579,15 +1649,15 @@ NRI_INLINE Result DeviceVal::CreateAccelerationStructure(const AccelerationStruc
     }
 
     Scratch<BottomLevelGeometryDesc> geometriesImplScratch = NRI_ALLOCATE_SCRATCH(*this, BottomLevelGeometryDesc, geometryNum);
-    Scratch<BottomLevelMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(*this, BottomLevelMicromapDesc, micromapNum);
+    Scratch<BottomLevelTrianglesMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(*this, BottomLevelTrianglesMicromapDesc, micromapNum);
 
     BottomLevelGeometryDesc* geometriesImpl = geometriesImplScratch;
-    BottomLevelMicromapDesc* micromapsImpl = micromapsImplScratch;
+    BottomLevelTrianglesMicromapDesc* micromapsImpl = micromapsImplScratch;
 
     auto accelerationStructureDescImpl = accelerationStructureDesc;
     if (accelerationStructureDesc.type == AccelerationStructureType::BOTTOM_LEVEL) {
         accelerationStructureDescImpl.geometries = geometriesImplScratch;
-        ConvertBotomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometriesImpl, micromapsImpl);
+        ConvertBottomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometriesImpl, micromapsImpl);
     }
 
     // Create

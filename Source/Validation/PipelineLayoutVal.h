@@ -19,6 +19,7 @@ private:
     PipelineLayoutDesc m_PipelineLayoutDesc = {}; // .natvis
     Vector<DescriptorSetDesc> m_DescriptorSetDescs;
     Vector<RootConstantDesc> m_RootConstantDescs;
+    Vector<RootDescriptorDesc> m_RootDescriptorDescs;
     Vector<DescriptorRangeDesc> m_DescriptorRangeDescs;
 };
 

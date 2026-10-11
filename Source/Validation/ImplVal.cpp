@@ -1,5 +1,7 @@
 // © 2021 NVIDIA Corporation
 
+#include <algorithm>
+
 #include "SharedVal.h"
 
 #if NRI_ENABLE_D3D12_SUPPORT
@@ -10,6 +12,7 @@
 #include "BufferVal.h"
 #include "CommandAllocatorVal.h"
 #include "CommandBufferVal.h"
+#include "DescriptorHeapVal.h"
 #include "DescriptorPoolVal.h"
 #include "DescriptorSetVal.h"
 #include "DescriptorVal.h"
@@ -329,6 +332,7 @@ static inline bool HasValidVideoAV1ReferenceKeys(const VideoAV1ReferenceDesc* re
 #include "CommandAllocatorVal.hpp"
 #include "CommandBufferVal.hpp"
 #include "ConversionVal.hpp"
+#include "DescriptorHeapVal.hpp"
 #include "DescriptorPoolVal.hpp"
 #include "DescriptorSetVal.hpp"
 #include "DescriptorVal.hpp"
@@ -1106,6 +1110,76 @@ Result DeviceVal::FillFunctionTable(CoreInterface& table) const {
 #pragma endregion
 
 //============================================================================================================================================================================================
+#pragma region[  DescriptorHeap  ]
+
+static Result NRI_CALL CreateDescriptorHeap(Device& device, const DescriptorHeapDesc& descriptorHeapDesc, DescriptorHeap*& descriptorHeap) {
+    DeviceVal& deviceVal = (DeviceVal&)device;
+    const DeviceDesc& deviceDesc = deviceVal.GetDesc();
+
+    NRI_RETURN_ON_FAILURE(&deviceVal, deviceDesc.features.descriptorHeap, Result::UNSUPPORTED, "'features.descriptorHeap' is false");
+    NRI_RETURN_ON_FAILURE(&deviceVal, descriptorHeapDesc.resourceDescriptorNum || descriptorHeapDesc.samplerDescriptorNum, Result::INVALID_ARGUMENT, "both descriptor capacities are 0");
+    NRI_RETURN_ON_FAILURE(&deviceVal, descriptorHeapDesc.resourceDescriptorNum <= deviceDesc.descriptorHeap.resourceMaxNum, Result::INVALID_ARGUMENT, "'resourceDescriptorNum' exceeds 'descriptorHeap.resourceMaxNum'");
+    NRI_RETURN_ON_FAILURE(&deviceVal, descriptorHeapDesc.samplerDescriptorNum <= deviceDesc.descriptorHeap.samplerMaxNum, Result::INVALID_ARGUMENT, "'samplerDescriptorNum' exceeds 'descriptorHeap.samplerMaxNum'");
+
+    descriptorHeap = nullptr;
+    DescriptorHeap* descriptorHeapImpl = nullptr;
+    Result result = deviceVal.GetDescriptorHeapInterfaceImpl().CreateDescriptorHeap(deviceVal.GetImpl(), descriptorHeapDesc, descriptorHeapImpl);
+    if (result != Result::SUCCESS)
+        return result;
+
+    descriptorHeap = (DescriptorHeap*)Allocate<DescriptorHeapVal>(deviceVal.GetAllocationCallbacks(), deviceVal, descriptorHeapImpl, descriptorHeapDesc);
+    if (!descriptorHeap) {
+        deviceVal.GetDescriptorHeapInterfaceImpl().DestroyDescriptorHeap(descriptorHeapImpl);
+
+        return Result::OUT_OF_MEMORY;
+    }
+
+    return Result::SUCCESS;
+}
+
+static void NRI_CALL DestroyDescriptorHeap(DescriptorHeap* descriptorHeap) {
+    if (!descriptorHeap)
+        return;
+
+    DescriptorHeapVal& descriptorHeapVal = *(DescriptorHeapVal*)descriptorHeap;
+    descriptorHeapVal.GetDevice().GetDescriptorHeapInterfaceImpl().DestroyDescriptorHeap(descriptorHeapVal.GetImpl());
+    Destroy(&descriptorHeapVal);
+}
+
+static Result NRI_CALL WriteResourceDescriptors(DescriptorHeap& descriptorHeap, const WriteResourceDescriptorsDesc* writeDescs, uint32_t writeDescNum) {
+    return ((DescriptorHeapVal&)descriptorHeap).WriteResourceDescriptors(writeDescs, writeDescNum);
+}
+
+static Result NRI_CALL WriteSamplerDescriptors(DescriptorHeap& descriptorHeap, const WriteSamplerDescriptorsDesc* writeDescs, uint32_t writeDescNum) {
+    return ((DescriptorHeapVal&)descriptorHeap).WriteSamplerDescriptors(writeDescs, writeDescNum);
+}
+
+static void NRI_CALL CmdSetDescriptorHeap(CommandBuffer& commandBuffer, const DescriptorHeap& descriptorHeap) {
+    CommandBufferVal& commandBufferVal = (CommandBufferVal&)commandBuffer;
+    const DescriptorHeapVal& descriptorHeapVal = (const DescriptorHeapVal&)descriptorHeap;
+    DeviceVal& deviceVal = commandBufferVal.GetDevice();
+
+    NRI_RETURN_ON_FAILURE(&deviceVal, &descriptorHeapVal.GetDevice() == &deviceVal, ReturnVoid(), "'descriptorHeap' belongs to another device");
+
+    commandBufferVal.SetDescriptorHeap(*descriptorHeapVal.GetImpl());
+}
+
+Result DeviceVal::FillFunctionTable(DescriptorHeapInterface& table) const {
+    if (!m_IsExtSupported.descriptorHeap)
+        return Result::UNSUPPORTED;
+
+    table.CreateDescriptorHeap = ::CreateDescriptorHeap;
+    table.DestroyDescriptorHeap = ::DestroyDescriptorHeap;
+    table.WriteResourceDescriptors = ::WriteResourceDescriptors;
+    table.WriteSamplerDescriptors = ::WriteSamplerDescriptors;
+    table.CmdSetDescriptorHeap = ::CmdSetDescriptorHeap;
+
+    return Result::SUCCESS;
+}
+
+#pragma endregion
+
+//============================================================================================================================================================================================
 #pragma region[  Helper  ]
 
 static bool ValidateTextureUploadDesc(DeviceVal& device, uint32_t i, const TextureUploadDesc& textureUploadDesc) {
@@ -1232,6 +1306,27 @@ Result DeviceVal::FillFunctionTable(HelperInterface& table) const {
 
 #if NRI_ENABLE_IMGUI_EXTENSION
 
+static inline bool ValidateCopyImguiDataDesc(DeviceVal& deviceVal, const CopyImguiDataDesc& copyImguiDataDesc) {
+    NRI_RETURN_ON_FAILURE(&deviceVal, !copyImguiDataDesc.drawListNum || copyImguiDataDesc.drawLists, false, "'drawLists' is NULL");
+    NRI_RETURN_ON_FAILURE(&deviceVal, !copyImguiDataDesc.textureNum || copyImguiDataDesc.textures, false, "'textures' is NULL");
+
+    for (uint32_t i = 0; i < copyImguiDataDesc.drawListNum; i++)
+        NRI_RETURN_ON_FAILURE(&deviceVal, copyImguiDataDesc.drawLists[i], false, "'drawLists[%u]' is NULL", i);
+
+    for (uint32_t i = 0; i < copyImguiDataDesc.textureNum; i++)
+        NRI_RETURN_ON_FAILURE(&deviceVal, copyImguiDataDesc.textures[i], false, "'textures[%u]' is NULL", i);
+
+    return true;
+}
+
+static inline bool ValidateDrawImguiDesc(DeviceVal& deviceVal, const DrawImguiDesc& drawImguiDesc) {
+    NRI_RETURN_ON_FAILURE(&deviceVal, drawImguiDesc.displaySize.w && drawImguiDesc.displaySize.h, false, "'displaySize' is invalid");
+    NRI_RETURN_ON_FAILURE(&deviceVal, drawImguiDesc.hdrScale >= 0.0f, false, "'hdrScale' is negative or NaN");
+    NRI_RETURN_ON_FAILURE(&deviceVal, drawImguiDesc.attachmentFormat > Format::UNKNOWN && drawImguiDesc.attachmentFormat < Format::MAX_NUM, false, "'attachmentFormat' is invalid");
+
+    return true;
+}
+
 struct ImguiVal final : public ObjectVal {
     inline ImguiVal(DeviceVal& device, ImguiImpl* impl)
         : ObjectVal(device, impl) {
@@ -1268,18 +1363,48 @@ static void NRI_CALL DestroyImgui(Imgui* imgui) {
     Destroy(imguiVal);
 }
 
-static void NRI_CALL CmdCopyImguiData(CommandBuffer& commandBuffer, Streamer& streamer, Imgui& imgui, const CopyImguiDataDesc& copyImguiDataDesc) {
+static void NRI_CALL CmdCopyImguiData(CommandBuffer& commandBuffer, Streamer& streamer, Imgui& imgui, const CopyImguiDataDesc& copyImguiDataDesc, ImguiRenderData& imguiRenderData) {
+    imguiRenderData = {};
+
+    DeviceVal& deviceVal = GetDeviceVal(imgui);
     ImguiVal& imguiVal = (ImguiVal&)imgui;
     ImguiImpl* imguiImpl = imguiVal.GetImpl();
 
-    return imguiImpl->CmdCopyData(commandBuffer, streamer, copyImguiDataDesc);
+    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(commandBuffer) == &deviceVal, ReturnVoid(), "'commandBuffer' belongs to a different device");
+    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(streamer) == &deviceVal, ReturnVoid(), "'streamer' belongs to a different device");
+
+    if (!ValidateCopyImguiDataDesc(deviceVal, copyImguiDataDesc))
+        return;
+
+    imguiImpl->CmdCopyData(commandBuffer, streamer, copyImguiDataDesc, imguiRenderData);
+    imguiRenderData.imgui = &imgui;
 }
 
-static void NRI_CALL CmdDrawImgui(CommandBuffer& commandBuffer, Imgui& imgui, const DrawImguiDesc& drawImguiDesc) {
-    ImguiVal& imguiVal = (ImguiVal&)imgui;
+static void NRI_CALL CmdDrawImgui(CommandBuffer& commandBuffer, const ImguiRenderData& imguiRenderData, const DrawImguiDesc& drawImguiDesc) {
+    DeviceVal& deviceVal = GetDeviceVal(commandBuffer);
+
+    NRI_RETURN_ON_FAILURE(&deviceVal, imguiRenderData.imgui, ReturnVoid(), "'imguiRenderData.imgui' is NULL");
+
+    ImguiVal& imguiVal = (ImguiVal&)*imguiRenderData.imgui;
+    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(imguiVal) == &deviceVal, ReturnVoid(), "'imguiRenderData.imgui' belongs to a different device");
+    NRI_RETURN_ON_FAILURE(&deviceVal, !imguiRenderData.drawCmdNum || imguiRenderData.drawCommands, ReturnVoid(), "'imguiRenderData.drawCommands' is NULL");
+    NRI_RETURN_ON_FAILURE(&deviceVal, !imguiRenderData.drawCmdNum || imguiRenderData.vertices.buffer, ReturnVoid(), "'imguiRenderData.vertices.buffer' is NULL");
+
+    if (imguiRenderData.vertices.buffer) {
+        BufferVal& bufferVal = (BufferVal&)*imguiRenderData.vertices.buffer;
+        NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(bufferVal) == &deviceVal, ReturnVoid(), "'imguiRenderData.vertices.buffer' belongs to a different device");
+
+        const BufferDesc& bufferDesc = bufferVal.GetDesc();
+        NRI_RETURN_ON_FAILURE(&deviceVal, imguiRenderData.vertices.offset <= imguiRenderData.indexBufferOffset, ReturnVoid(), "'imguiRenderData.vertices.offset' is invalid");
+        NRI_RETURN_ON_FAILURE(&deviceVal, imguiRenderData.indexBufferOffset <= bufferDesc.size, ReturnVoid(), "'imguiRenderData.indexBufferOffset' is out of bounds");
+    }
+
+    if (imguiRenderData.drawCmdNum && !ValidateDrawImguiDesc(deviceVal, drawImguiDesc))
+        return;
+
     ImguiImpl* imguiImpl = imguiVal.GetImpl();
 
-    return imguiImpl->CmdDraw(commandBuffer, drawImguiDesc);
+    return imguiImpl->CmdDraw(commandBuffer, imguiRenderData, drawImguiDesc);
 }
 
 Result DeviceVal::FillFunctionTable(ImguiInterface& table) const {
@@ -1470,17 +1595,17 @@ static void NRI_CALL GetAccelerationStructureMemoryDesc2(const Device& device, c
     }
 
     Scratch<BottomLevelGeometryDesc> geometriesImplScratch = NRI_ALLOCATE_SCRATCH(deviceVal, BottomLevelGeometryDesc, geometryNum);
-    Scratch<BottomLevelMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(deviceVal, BottomLevelMicromapDesc, micromapNum);
+    Scratch<BottomLevelTrianglesMicromapDesc> micromapsImplScratch = NRI_ALLOCATE_SCRATCH(deviceVal, BottomLevelTrianglesMicromapDesc, micromapNum);
 
     BottomLevelGeometryDesc* geometriesImpl = geometriesImplScratch;
-    BottomLevelMicromapDesc* micromapsImpl = micromapsImplScratch;
+    BottomLevelTrianglesMicromapDesc* micromapsImpl = micromapsImplScratch;
 
     // Convert
     auto accelerationStructureDescImpl = accelerationStructureDesc;
 
     if (accelerationStructureDesc.type == AccelerationStructureType::BOTTOM_LEVEL) {
         accelerationStructureDescImpl.geometries = geometriesImplScratch;
-        ConvertBotomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometriesImpl, micromapsImpl);
+        ConvertBottomLevelGeometries(accelerationStructureDesc.geometries, geometryNum, geometriesImpl, micromapsImpl);
     }
 
     // Call
@@ -1511,8 +1636,8 @@ static Result NRI_CALL CreatePlacedMicromap(Device& device, Memory* memory, uint
     return ((DeviceVal&)device).CreatePlacedMicromap(memory, offset, micromapDesc, micromap);
 }
 
-static Result NRI_CALL WriteShaderGroupIdentifiers(const Pipeline& pipeline, uint32_t baseShaderGroupIndex, uint32_t shaderGroupNum, void* dst) {
-    return ((PipelineVal&)pipeline).WriteShaderGroupIdentifiers(baseShaderGroupIndex, shaderGroupNum, dst);
+static Result NRI_CALL WriteShaderGroupIdentifiers(const Pipeline& pipeline, uint32_t baseShaderGroupIndex, uint32_t shaderGroupNum, uint32_t dstStride, void* dst) {
+    return ((PipelineVal&)pipeline).WriteShaderGroupIdentifiers(baseShaderGroupIndex, shaderGroupNum, dstStride, dst);
 }
 
 static void NRI_CALL CmdBuildTopLevelAccelerationStructures(CommandBuffer& commandBuffer, const BuildTopLevelAccelerationStructureDesc* buildTopLevelAccelerationStructureDescs, uint32_t buildTopLevelAccelerationStructureDescNum) {
@@ -1535,12 +1660,12 @@ static void NRI_CALL CmdDispatchRaysIndirect(CommandBuffer& commandBuffer, const
     ((CommandBufferVal&)commandBuffer).DispatchRaysIndirect(buffer, offset);
 }
 
-static void NRI_CALL CmdWriteAccelerationStructuresSizes(CommandBuffer& commandBuffer, const AccelerationStructure* const* accelerationStructures, uint32_t accelerationStructureNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
-    ((CommandBufferVal&)commandBuffer).WriteAccelerationStructuresSizes(accelerationStructures, accelerationStructureNum, queryPool, queryPoolOffset);
+static void NRI_CALL CmdWriteAccelerationStructureSizes(CommandBuffer& commandBuffer, const AccelerationStructure* const* accelerationStructures, uint32_t accelerationStructureNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
+    ((CommandBufferVal&)commandBuffer).WriteAccelerationStructureSizes(accelerationStructures, accelerationStructureNum, queryPool, queryPoolOffset);
 }
 
-static void NRI_CALL CmdWriteMicromapsSizes(CommandBuffer& commandBuffer, const Micromap* const* micromaps, uint32_t micromapNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
-    ((CommandBufferVal&)commandBuffer).WriteMicromapsSizes(micromaps, micromapNum, queryPool, queryPoolOffset);
+static void NRI_CALL CmdWriteMicromapSizes(CommandBuffer& commandBuffer, const Micromap* const* micromaps, uint32_t micromapNum, QueryPool& queryPool, uint32_t queryPoolOffset) {
+    ((CommandBufferVal&)commandBuffer).WriteMicromapSizes(micromaps, micromapNum, queryPool, queryPoolOffset);
 }
 
 static void NRI_CALL CmdCopyAccelerationStructure(CommandBuffer& commandBuffer, AccelerationStructure& dst, const AccelerationStructure& src, CopyMode copyMode) {
@@ -1597,8 +1722,8 @@ Result DeviceVal::FillFunctionTable(RayTracingInterface& table) const {
     table.CmdBuildMicromaps = ::CmdBuildMicromaps;
     table.CmdDispatchRays = ::CmdDispatchRays;
     table.CmdDispatchRaysIndirect = ::CmdDispatchRaysIndirect;
-    table.CmdWriteAccelerationStructuresSizes = ::CmdWriteAccelerationStructuresSizes;
-    table.CmdWriteMicromapsSizes = ::CmdWriteMicromapsSizes;
+    table.CmdWriteAccelerationStructureSizes = ::CmdWriteAccelerationStructureSizes;
+    table.CmdWriteMicromapSizes = ::CmdWriteMicromapSizes;
     table.CmdCopyAccelerationStructure = ::CmdCopyAccelerationStructure;
     table.CmdCopyMicromap = ::CmdCopyMicromap;
     table.GetAccelerationStructureNativeObject = ::GetAccelerationStructureNativeObject;
@@ -1842,7 +1967,8 @@ Result DeviceVal::FillFunctionTable(VideoInterface& table) const {
 struct StreamerVal final : public ObjectVal {
     inline StreamerVal(DeviceVal& device, StreamerImpl* impl, const StreamerDesc& desc)
         : ObjectVal(device, impl)
-        , m_Desc(desc) {
+        , m_Desc(desc)
+        , m_CopyBatches(device.GetStdAllocator()) {
     }
 
     inline StreamerImpl* GetImpl() const {
@@ -1850,13 +1976,25 @@ struct StreamerVal final : public ObjectVal {
     }
 
     StreamerDesc m_Desc = {}; // only for .natvis
+    Vector<StreamerCopyBatch> m_CopyBatches;
+    Lock m_Lock;
 };
+
+static inline size_t FindStreamerCopyBatch(const Vector<StreamerCopyBatch>& copyBatches, StreamerCopyBatch copyBatch) {
+    for (size_t i = 0; i < copyBatches.size(); i++) {
+        if (copyBatches[i] == copyBatch)
+            return i;
+    }
+
+    return SIZE_MAX;
+}
 
 static Result NRI_CALL CreateStreamer(Device& device, const StreamerDesc& streamerDesc, Streamer*& streamer) {
     DeviceVal& deviceVal = (DeviceVal&)device;
 
     NRI_RETURN_ON_FAILURE(&deviceVal, streamerDesc.constantBufferMemoryLocation < MemoryLocation::MAX_NUM, Result::INVALID_ARGUMENT, "'constantBufferMemoryLocation' is invalid");
     NRI_RETURN_ON_FAILURE(&deviceVal, streamerDesc.dynamicBufferMemoryLocation < MemoryLocation::MAX_NUM, Result::INVALID_ARGUMENT, "'dynamicBufferMemoryLocation' is invalid");
+    NRI_RETURN_ON_FAILURE(&deviceVal, streamerDesc.hostDataCapacity <= SIZE_MAX, Result::INVALID_ARGUMENT, "'hostDataCapacity' exceeds the HOST address space");
 
     bool isUpload = streamerDesc.constantBufferMemoryLocation == MemoryLocation::HOST_UPLOAD || streamerDesc.constantBufferMemoryLocation == MemoryLocation::DEVICE_UPLOAD;
     NRI_RETURN_ON_FAILURE(&deviceVal, isUpload, Result::INVALID_ARGUMENT, "'constantBufferMemoryLocation' must be an UPLOAD heap");
@@ -1887,6 +2025,17 @@ static void NRI_CALL DestroyStreamer(Streamer* streamer) {
     Destroy(streamerVal);
 }
 
+static StreamerCopyBatch NRI_CALL BeginStreamerCopyBatch(Streamer& streamer) {
+    StreamerVal& streamerVal = (StreamerVal&)streamer;
+    StreamerImpl* streamerImpl = streamerVal.GetImpl();
+    ExclusiveScope lock(streamerVal.m_Lock);
+
+    StreamerCopyBatch copyBatch = streamerImpl->BeginCopyBatch();
+    streamerVal.m_CopyBatches.push_back(copyBatch);
+
+    return copyBatch;
+}
+
 static Buffer* NRI_CALL GetStreamerConstantBuffer(Streamer& streamer) {
     StreamerVal& streamerVal = (StreamerVal&)streamer;
     StreamerImpl* streamerImpl = streamerVal.GetImpl();
@@ -1905,6 +2054,22 @@ static uint32_t NRI_CALL StreamConstantData(Streamer& streamer, const void* data
     return streamerImpl->StreamConstantData(data, dataSize);
 }
 
+static void* NRI_CALL StreamHostData(Streamer& streamer, const void* data, uint64_t dataSize, uint32_t placementAlignment) {
+    DeviceVal& deviceVal = GetDeviceVal(streamer);
+    StreamerVal& streamerVal = (StreamerVal&)streamer;
+    StreamerImpl* streamerImpl = streamerVal.GetImpl();
+
+    NRI_RETURN_ON_FAILURE(&deviceVal, dataSize, nullptr, "'dataSize' is 0");
+    NRI_RETURN_ON_FAILURE(&deviceVal, data, nullptr, "'data' is NULL");
+    NRI_RETURN_ON_FAILURE(&deviceVal, !placementAlignment || !(placementAlignment & (placementAlignment - 1)), nullptr, "'placementAlignment' must be 0 or a power of 2");
+    NRI_RETURN_ON_FAILURE(&deviceVal, streamerVal.m_Desc.hostDataCapacity, nullptr, "'streamerDesc.hostDataCapacity' is 0");
+
+    void* hostData = streamerImpl->StreamHostData(data, dataSize, placementAlignment);
+    NRI_RETURN_ON_FAILURE(&deviceVal, hostData, nullptr, "'streamerDesc.hostDataCapacity' is insufficient");
+
+    return hostData;
+}
+
 static BufferOffset NRI_CALL StreamBufferData(Streamer& streamer, const StreamBufferDataDesc& streamBufferDataDesc) {
     DeviceVal& deviceVal = GetDeviceVal(streamer);
     StreamerVal& streamerVal = (StreamerVal&)streamer;
@@ -1912,6 +2077,14 @@ static BufferOffset NRI_CALL StreamBufferData(Streamer& streamer, const StreamBu
 
     NRI_RETURN_ON_FAILURE(&deviceVal, streamBufferDataDesc.dataChunkNum, {}, "'streamBufferDataDesc.dataChunkNum' must be > 0");
     NRI_RETURN_ON_FAILURE(&deviceVal, streamBufferDataDesc.dataChunks, {}, "'streamBufferDataDesc.dataChunks' is NULL");
+
+    if (streamBufferDataDesc.dstBuffer)
+        NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(*streamBufferDataDesc.dstBuffer) == &deviceVal, {}, "'streamBufferDataDesc.dstBuffer' belongs to a different device");
+
+    ExclusiveScope lock(streamerVal.m_Lock);
+
+    if (streamBufferDataDesc.copyBatch || streamBufferDataDesc.dstBuffer)
+        NRI_RETURN_ON_FAILURE(&deviceVal, FindStreamerCopyBatch(streamerVal.m_CopyBatches, streamBufferDataDesc.copyBatch) != SIZE_MAX, {}, "'streamBufferDataDesc.copyBatch' is invalid or inactive");
 
     return streamerImpl->StreamBufferData(streamBufferDataDesc);
 }
@@ -1925,13 +2098,16 @@ static BufferOffset NRI_CALL StreamTextureData(Streamer& streamer, const StreamT
     NRI_RETURN_ON_FAILURE(&deviceVal, streamTextureDataDesc.dataRowPitch, {}, "'streamTextureDataDesc.dataRowPitch' must be > 0");
     NRI_RETURN_ON_FAILURE(&deviceVal, streamTextureDataDesc.dataSlicePitch, {}, "'streamTextureDataDesc.dataSlicePitch' must be > 0");
     NRI_RETURN_ON_FAILURE(&deviceVal, streamTextureDataDesc.data, {}, "'streamTextureDataDesc.data' is NULL");
+    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(*streamTextureDataDesc.dstTexture) == &deviceVal, {}, "'streamTextureDataDesc.dstTexture' belongs to a different device");
 
-    if (streamTextureDataDesc.dstTexture) {
-        constexpr TextureUsageBits attachmentBits = TextureUsageBits::COLOR_ATTACHMENT | TextureUsageBits::DEPTH_STENCIL_ATTACHMENT | TextureUsageBits::SHADING_RATE_ATTACHMENT;
-        const TextureVal& textureVal = *(TextureVal*)streamTextureDataDesc.dstTexture;
-        const TextureDesc& textureDesc = textureVal.GetDesc();
-        NRI_RETURN_ON_FAILURE(&deviceVal, !(textureDesc.usage & attachmentBits), {}, "streaming data into potentially compressed attachments is unrecommended");
-    }
+    ExclusiveScope lock(streamerVal.m_Lock);
+
+    NRI_RETURN_ON_FAILURE(&deviceVal, FindStreamerCopyBatch(streamerVal.m_CopyBatches, streamTextureDataDesc.copyBatch) != SIZE_MAX, {}, "'streamTextureDataDesc.copyBatch' is invalid or inactive");
+
+    constexpr TextureUsageBits attachmentBits = TextureUsageBits::COLOR_ATTACHMENT | TextureUsageBits::DEPTH_STENCIL_ATTACHMENT | TextureUsageBits::SHADING_RATE_ATTACHMENT;
+    const TextureVal& textureVal = *(TextureVal*)streamTextureDataDesc.dstTexture;
+    const TextureDesc& textureDesc = textureVal.GetDesc();
+    NRI_RETURN_ON_FAILURE(&deviceVal, !(textureDesc.usage & attachmentBits), {}, "streaming data into potentially compressed attachments is unrecommended");
 
     return streamerImpl->StreamTextureData(streamTextureDataDesc);
 }
@@ -1939,24 +2115,37 @@ static BufferOffset NRI_CALL StreamTextureData(Streamer& streamer, const StreamT
 static void NRI_CALL EndStreamerFrame(Streamer& streamer) {
     StreamerVal& streamerVal = (StreamerVal&)streamer;
     StreamerImpl* streamerImpl = streamerVal.GetImpl();
+    ExclusiveScope lock(streamerVal.m_Lock);
 
     streamerImpl->EndFrame();
+    streamerVal.m_CopyBatches.clear();
 }
 
-static void NRI_CALL CmdCopyStreamedData(CommandBuffer& commandBuffer, Streamer& streamer) {
+static void NRI_CALL CmdCopyStreamedData(CommandBuffer& commandBuffer, Streamer& streamer, StreamerCopyBatch copyBatch) {
+    DeviceVal& deviceVal = GetDeviceVal(streamer);
     StreamerVal& streamerVal = (StreamerVal&)streamer;
     StreamerImpl* streamerImpl = streamerVal.GetImpl();
+    ExclusiveScope lock(streamerVal.m_Lock);
 
-    streamerImpl->CmdCopyStreamedData(commandBuffer);
+    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(commandBuffer) == &deviceVal, ReturnVoid(), "'commandBuffer' belongs to a different device");
+
+    size_t copyBatchIndex = FindStreamerCopyBatch(streamerVal.m_CopyBatches, copyBatch);
+    NRI_RETURN_ON_FAILURE(&deviceVal, copyBatchIndex != SIZE_MAX, ReturnVoid(), "'copyBatch' is invalid or inactive");
+
+    streamerImpl->CmdCopyStreamedData(commandBuffer, copyBatch);
+    streamerVal.m_CopyBatches[copyBatchIndex] = streamerVal.m_CopyBatches.back();
+    streamerVal.m_CopyBatches.pop_back();
 }
 
 Result DeviceVal::FillFunctionTable(StreamerInterface& table) const {
     table.CreateStreamer = ::CreateStreamer;
     table.DestroyStreamer = ::DestroyStreamer;
+    table.BeginStreamerCopyBatch = ::BeginStreamerCopyBatch;
     table.GetStreamerConstantBuffer = ::GetStreamerConstantBuffer;
     table.StreamBufferData = ::StreamBufferData;
     table.StreamTextureData = ::StreamTextureData;
     table.StreamConstantData = ::StreamConstantData;
+    table.StreamHostData = ::StreamHostData;
     table.EndStreamerFrame = ::EndStreamerFrame;
     table.CmdCopyStreamedData = ::CmdCopyStreamedData;
 
@@ -2054,6 +2243,8 @@ static Result NRI_CALL CreateUpscaler(Device& device, const UpscalerDesc& upscal
     NRI_RETURN_ON_FAILURE(&deviceVal, upscalerDesc.mode < UpscalerMode::MAX_NUM, Result::INVALID_ARGUMENT, "'mode' is invalid");
     NRI_RETURN_ON_FAILURE(&deviceVal, upscalerDesc.upscaleResolution.w != 0 && upscalerDesc.upscaleResolution.h != 0, Result::INVALID_ARGUMENT, "'upscaleResolution' is invalid");
     NRI_RETURN_ON_FAILURE(&deviceVal, IsUpscalerSupported(deviceVal.GetDesc(), upscalerDesc.type), Result::UNSUPPORTED, "'type' is not supported");
+    if (upscalerDesc.type == UpscalerType::NIS && !deviceVal.GetDesc().shaderFeatures.storageWriteWithoutFormat)
+        NRI_RETURN_ON_FAILURE(&deviceVal, upscalerDesc.outputFormat > Format::UNKNOWN && upscalerDesc.outputFormat < Format::MAX_NUM, Result::INVALID_ARGUMENT, "'outputFormat' is invalid");
 
     UpscalerImpl* impl = Allocate<UpscalerImpl>(deviceVal.GetAllocationCallbacks(), device, deviceVal.GetCoreInterface());
     Result result = impl->Create(upscalerDesc);
@@ -2110,6 +2301,8 @@ static void NRI_CALL CmdDispatchUpscale(CommandBuffer& commandBuffer, Upscaler& 
         return;
 
     if (upscalerVal.m_Desc.type == UpscalerType::NIS) {
+        const DescriptorVal& outputDescriptorVal = *(DescriptorVal*)dispatchUpscaleDesc.output.descriptor;
+        NRI_RETURN_ON_FAILURE(&deviceVal, deviceVal.GetDesc().shaderFeatures.storageWriteWithoutFormat || outputDescriptorVal.GetFormat() == upscalerVal.m_Desc.outputFormat, ReturnVoid(), "'output.descriptor' format does not match 'UpscalerDesc::outputFormat'");
         NRI_RETURN_ON_FAILURE(&deviceVal, dispatchUpscaleDesc.settings.nis.sharpness >= 0.0f && dispatchUpscaleDesc.settings.nis.sharpness <= 1.0f, ReturnVoid(), "'settings.nis.sharpness' is out of range");
     } else if (upscalerVal.m_Desc.type == UpscalerType::DLRR) {
         const DenoiserGuides& guides = dispatchUpscaleDesc.guides.denoiser;

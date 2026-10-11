@@ -1,4 +1,4 @@
-﻿// © 2021 NVIDIA Corporation
+// © 2021 NVIDIA Corporation
 
 #pragma once
 
@@ -132,6 +132,7 @@ struct DeviceD3D12 final : public DeviceBase {
     void Destruct() override;
     Result ReportDeviceLostInfo(DeviceLostDump& deviceLostDump) override;
     Result FillFunctionTable(CoreInterface& table) const override;
+    Result FillFunctionTable(DescriptorHeapInterface& table) const override;
     Result FillFunctionTable(HelperInterface& table) const override;
     Result FillFunctionTable(LowLatencyInterface& table) const override;
     Result FillFunctionTable(MeshShaderInterface& table) const override;
@@ -154,10 +155,6 @@ struct DeviceD3D12 final : public DeviceBase {
     Result WaitIdle();
     Result UploadHostMemoryToTexture(QueueD3D12& queue, const UploadHostMemoryToTextureDesc* copyDescs, uint32_t copyDescNum);
     Result ReadbackTextureToHostMemory(QueueD3D12& queue, const ReadbackTextureToHostMemoryDesc* copyDescs, uint32_t copyDescNum);
-    Result BindBufferMemory(const BindBufferMemoryDesc* bindBufferMemoryDescs, uint32_t bindBufferMemoryDescNum);
-    Result BindTextureMemory(const BindTextureMemoryDesc* bindTextureMemoryDescs, uint32_t bindTextureMemoryDescNum);
-    Result BindAccelerationStructureMemory(const BindAccelerationStructureMemoryDesc* bindAccelerationStructureMemoryDescs, uint32_t bindAccelerationStructureMemoryDescNum);
-    Result BindMicromapMemory(const BindMicromapMemoryDesc* bindMicromapMemoryDescs, uint32_t bindMicromapMemoryDescNum);
     FormatSupportBits GetFormatSupport(Format format) const;
 
 private:
@@ -191,7 +188,7 @@ private:
     ComPtr<ID3D12CommandSignature> m_DispatchRaysCommandSignature;
     ComPtr<D3D12MA::Allocator> m_Vma;
     ComPtr<ID3D12Resource> m_ZeroBuffer;
-    Vector<DescriptorHeapDesc> m_DescriptorHeaps;                                          // m_DescriptorHeapLock
+    Vector<DescriptorHeapDescD3D12> m_DescriptorHeaps;                                     // m_DescriptorHeapLock
     Vector<Vector<DescriptorHandle>> m_FreeDescriptors;                                    // m_FreeDescriptorLocks
     UnorderedMap<uint64_t, ComPtr<ID3D12CommandSignature>> m_DrawCommandSignatures;        // m_CommandSignatureLock
     UnorderedMap<uint64_t, ComPtr<ID3D12CommandSignature>> m_DrawIndexedCommandSignatures; // m_CommandSignatureLock

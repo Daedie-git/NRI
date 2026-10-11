@@ -39,18 +39,26 @@ uint64_t FenceWGPU::UpdateCompletedValue() const {
 }
 
 uint64_t FenceWGPU::GetValue() const {
+#if defined(__EMSCRIPTEN__)
     ExclusiveScope lock(m_Lock);
+#else
+    std::lock_guard<std::mutex> lock(m_Mutex);
+#endif
 
     return UpdateCompletedValue();
 }
 
 void FenceWGPU::Wait(uint64_t value) {
+    if (m_IsSwapChainSemaphore)
+        return;
+
+#if defined(__EMSCRIPTEN__)
     FenceSubmissionWGPU targetSubmission = {};
     bool hasTargetSubmission = false;
     {
         ExclusiveScope lock(m_Lock);
 
-        if (m_IsSwapChainSemaphore || value <= UpdateCompletedValue() || value > m_SubmittedValue)
+        if (value <= UpdateCompletedValue() || value > m_SubmittedValue)
             return;
 
         uint64_t submittedValue = m_CompletedValue;
@@ -67,19 +75,40 @@ void FenceWGPU::Wait(uint64_t value) {
     if (!hasTargetSubmission)
         return;
 
-#if defined(__EMSCRIPTEN__)
     WaitForFuture(m_Device.GetInstance(), targetSubmission.future);
-#else
-    WGPUSubmissionIndex index = targetSubmission.index;
-    wgpuDevicePoll(m_Device, WGPU_TRUE, &index);
-#endif
 
     ExclusiveScope lock(m_Lock);
     UpdateCompletedValue();
+#else
+    std::unique_lock<std::mutex> lock(m_Mutex);
+    while (m_CompletedValue < value) {
+        m_ConditionVariable.wait(lock, [this, value] {
+            return m_SubmittedValue >= value;
+        });
+
+        uint32_t completedNum = 0;
+        for (const FenceSubmissionWGPU& submission : m_Submissions) {
+            WGPUSubmissionIndex index = submission.index;
+            wgpuDevicePoll(m_Device, WGPU_TRUE, &index);
+            m_CompletedValue = std::max(m_CompletedValue, submission.value);
+            completedNum++;
+
+            if (m_CompletedValue >= value)
+                break;
+        }
+
+        if (completedNum)
+            m_Submissions.erase(m_Submissions.begin(), m_Submissions.begin() + completedNum);
+    }
+#endif
 }
 
 bool FenceWGPU::IsSatisfiedBySubmissionOrder(uint64_t value) const {
+#if defined(__EMSCRIPTEN__)
     ExclusiveScope lock(m_Lock);
+#else
+    std::lock_guard<std::mutex> lock(m_Mutex);
+#endif
 
     return m_IsSwapChainSemaphore || value <= m_SubmittedValue;
 }
@@ -100,15 +129,18 @@ void FenceWGPU::Signal(uint64_t value) {
 }
 #else
 void FenceWGPU::Signal(uint64_t value, WGPUSubmissionIndex submissionIndex) {
-    ExclusiveScope lock(m_Lock);
-
     if (m_IsSwapChainSemaphore)
         return;
 
-    m_SubmittedValue = std::max(m_SubmittedValue, value);
-    if (submissionIndex)
-        m_Submissions.push_back({value, submissionIndex});
-    else
-        m_CompletedValue = std::max(m_CompletedValue, value);
+    {
+        std::lock_guard<std::mutex> lock(m_Mutex);
+        m_SubmittedValue = std::max(m_SubmittedValue, value);
+        if (submissionIndex)
+            m_Submissions.push_back({value, submissionIndex});
+        else
+            m_CompletedValue = std::max(m_CompletedValue, value);
+    }
+
+    m_ConditionVariable.notify_all();
 }
 #endif

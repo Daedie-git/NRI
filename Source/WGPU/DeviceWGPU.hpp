@@ -1,14 +1,9 @@
 // © 2026 NVIDIA Corporation
 
+#if defined(__EMSCRIPTEN__)
 struct RequestAdapterContext {
     WGPUAdapter adapter = nullptr;
     WGPURequestAdapterStatus status = WGPURequestAdapterStatus_Error;
-    bool done = false;
-};
-
-struct RequestDeviceContext {
-    WGPUDevice device = nullptr;
-    WGPURequestDeviceStatus status = WGPURequestDeviceStatus_Error;
     bool done = false;
 };
 
@@ -18,6 +13,33 @@ static void OnAdapterRequested(WGPURequestAdapterStatus status, WGPUAdapter adap
     context.adapter = adapter;
     context.done = true;
 }
+#endif
+
+struct RequestDeviceContext {
+    WGPUDevice device = nullptr;
+    WGPURequestDeviceStatus status = WGPURequestDeviceStatus_Error;
+    bool done = false;
+};
+
+#if !defined(__EMSCRIPTEN__)
+static inline bool IsSameAdapter(const AdapterDesc& adapterDesc, const WGPUAdapterInfo& adapterInfo) {
+    if (adapterDesc.vendor != Vendor::UNKNOWN && adapterDesc.deviceId && adapterInfo.vendorID && adapterInfo.deviceID)
+        return adapterDesc.vendor == GetVendorFromPCIID(adapterInfo.vendorID) && adapterDesc.deviceId == adapterInfo.deviceID;
+
+    size_t nameLength = strlen(adapterDesc.name);
+
+    return adapterInfo.device.data && adapterInfo.device.length == nameLength && memcmp(adapterInfo.device.data, adapterDesc.name, nameLength) == 0;
+}
+
+static inline bool IsAdapterSupported(WGPUAdapter adapter) {
+    if (wgpuAdapterHasFeature(adapter, (WGPUFeatureName)WGPUNativeFeature_Immediates) != WGPU_TRUE)
+        return false;
+
+    WGPULimits limits = WGPU_LIMITS_INIT;
+
+    return wgpuAdapterGetLimits(adapter, &limits) == WGPUStatus_Success && limits.maxImmediateSize >= 256;
+}
+#endif
 
 static void OnDeviceRequested(WGPURequestDeviceStatus status, WGPUDevice device, WGPUStringView, void* userdata1, void*) {
     RequestDeviceContext& context = *(RequestDeviceContext*)userdata1;
@@ -237,16 +259,13 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
     if (!m_Instance)
         return Result::FAILURE;
 
+#if defined(__EMSCRIPTEN__)
     WGPURequestAdapterOptions adapterOptions = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
     adapterOptions.powerPreference = WGPUPowerPreference_HighPerformance;
 
     RequestAdapterContext adapterContext = {};
     WGPURequestAdapterCallbackInfo adapterCallbackInfo = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
-#if defined(__EMSCRIPTEN__)
     adapterCallbackInfo.mode = WGPUCallbackMode_WaitAnyOnly;
-#else
-    adapterCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
-#endif
     adapterCallbackInfo.callback = OnAdapterRequested;
     adapterCallbackInfo.userdata1 = &adapterContext;
 
@@ -257,6 +276,34 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
         return Result::FAILURE;
 
     m_Adapter = adapterContext.adapter;
+#else
+    WGPUInstanceEnumerateAdapterOptions adapterOptions = {};
+    adapterOptions.backends = WGPUInstanceBackend_Primary;
+
+    size_t adapterNum = wgpuInstanceEnumerateAdapters(m_Instance, &adapterOptions, nullptr);
+    Scratch<WGPUAdapter> adapters = NRI_ALLOCATE_SCRATCH(*this, WGPUAdapter, adapterNum);
+    adapterNum = wgpuInstanceEnumerateAdapters(m_Instance, &adapterOptions, adapters);
+
+    for (size_t i = 0; i < adapterNum; i++) {
+        WGPUAdapterInfo adapterInfo = WGPU_ADAPTER_INFO_INIT;
+        bool isSameAdapter = wgpuAdapterGetInfo(adapters[i], &adapterInfo) == WGPUStatus_Success && IsSameAdapter(*desc.adapterDesc, adapterInfo);
+        wgpuAdapterInfoFreeMembers(adapterInfo);
+
+        if (isSameAdapter && IsAdapterSupported(adapters[i])) {
+            m_Adapter = adapters[i];
+            adapters[i] = nullptr;
+            break;
+        }
+    }
+
+    for (size_t i = 0; i < adapterNum; i++) {
+        if (adapters[i])
+            wgpuAdapterRelease(adapters[i]);
+    }
+
+    if (!m_Adapter)
+        return Result::FAILURE;
+#endif
 
     std::array<WGPUFeatureName, 48> requiredFeatures = {};
     size_t requiredFeatureNum = 0;
@@ -324,7 +371,18 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
         requiredFeatures[requiredFeatureNum++] = (WGPUFeatureName)WGPUNativeFeature_TimestampQueryInsidePasses;
     }
 
+    WGPUNativeLimits adapterNativeLimits = WGPU_NATIVE_LIMITS_INIT;
+    WGPULimits adapterLimits = WGPU_LIMITS_INIT;
+    adapterLimits.nextInChain = &adapterNativeLimits.chain;
+    if (wgpuAdapterGetLimits(m_Adapter, &adapterLimits) != WGPUStatus_Success)
+        return Result::FAILURE;
+
+    WGPUNativeLimits requiredNativeLimits = WGPU_NATIVE_LIMITS_INIT;
+    requiredNativeLimits.maxBindingArrayElementsPerShaderStage = adapterNativeLimits.maxBindingArrayElementsPerShaderStage;
+    requiredNativeLimits.maxBindingArraySamplerElementsPerShaderStage = adapterNativeLimits.maxBindingArraySamplerElementsPerShaderStage;
+
     WGPULimits requiredLimits = WGPU_LIMITS_INIT;
+    requiredLimits.nextInChain = &requiredNativeLimits.chain;
     requiredLimits.maxImmediateSize = 256;
 
     WGPUDeviceExtras deviceExtras = {};
@@ -433,6 +491,7 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.pipelineLayout.rootConstantMaxSize = 256;
 #endif
     m_Desc.pipelineLayout.rootDescriptorMaxNum = 8;
+    m_Desc.pipelineLayout.rootSamplerMaxNum = limits.maxSamplersPerShaderStage;
 
     m_Desc.descriptorSet.samplerMaxNum = limits.maxSamplersPerShaderStage;
     m_Desc.descriptorSet.constantBufferMaxNum = limits.maxUniformBuffersPerShaderStage;
@@ -512,6 +571,8 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
 #endif
     m_Desc.features.shaderBytecodeWGSL = true;
     m_Desc.features.timestamp = m_IsTimestampQueryInsidePassesSupported;
+    m_Desc.features.rectColorClears = true;
+    m_Desc.features.rectDepthStencilClears = true;
     m_Desc.features.getMemoryDesc2 = true;
     m_Desc.features.componentSwizzle = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TextureComponentSwizzle) == WGPU_TRUE;
     m_Desc.features.rootConstantsOffset =
@@ -590,6 +651,12 @@ Result DeviceWGPU::WaitIdle() {
     return Result::SUCCESS;
 }
 
+void DeviceWGPU::WriteBuffer(WGPUBuffer buffer, uint64_t offset, const void* data, size_t size) {
+    ExclusiveScope lock(m_QueueLock);
+
+    wgpuQueueWriteBuffer(m_Queue, buffer, offset, data, size);
+}
+
 HostCopyLayoutWGPU DeviceWGPU::GetHostCopyLayout(const TextureWGPU& texture, const TextureRegionDesc& region, uint64_t& offset, bool alignForBufferCopy) const {
     const TextureDesc& textureDesc = texture.GetDesc();
     const FormatProps& formatProps = GetFormatProps(textureDesc.format);
@@ -616,6 +683,8 @@ HostCopyLayoutWGPU DeviceWGPU::GetHostCopyLayout(const TextureWGPU& texture, con
 Result DeviceWGPU::UploadHostMemoryToTexture(const UploadHostMemoryToTextureDesc* copyDescs, uint32_t copyDescNum) {
     if (!copyDescNum)
         return Result::SUCCESS;
+
+    ExclusiveScope lock(m_QueueLock);
 
     for (uint32_t i = 0; i < copyDescNum; i++) {
         const UploadHostMemoryToTextureDesc& copyDesc = copyDescs[i];
@@ -712,6 +781,7 @@ Result DeviceWGPU::ReadbackTextureToHostMemory(const ReadbackTextureToHostMemory
     }
 
     if (result == Result::SUCCESS) {
+        ExclusiveScope lock(m_QueueLock);
 #if defined(__EMSCRIPTEN__)
         wgpuQueueSubmit(m_Queue, 1, &commandBuffer);
 #else

@@ -11,9 +11,17 @@ struct QueryRange {
     uint32_t num;
 };
 
+struct TextureReadbackD3D11 {
+    TextureD3D11* texture;
+    TextureDataLayoutDesc dataLayout;
+    uint32_t rowSize;
+    uint32_t rowNum;
+};
+
 struct BufferD3D11 final : public DebugNameBase {
     inline BufferD3D11(DeviceD3D11& device)
-        : m_Device(device) {
+        : m_Device(device)
+        , m_TextureReadbacks(device.GetStdAllocator()) {
     }
 
     inline operator ID3D11Buffer*() const {
@@ -40,7 +48,7 @@ struct BufferD3D11 final : public DebugNameBase {
     Result Create(const BufferDesc& bufferDesc);
     Result Create(const BufferD3D11Desc& bufferD3D11Desc);
     Result Allocate(MemoryLocation memoryLocation, float priority);
-    TextureD3D11& RecreateReadbackTexture(const TextureD3D11& srcTexture, const TextureRegionDesc& srcRegion, const TextureDataLayoutDesc& readbackDataLayoutDesc);
+    void AddTextureReadback(TextureReadbackD3D11& textureReadback);
 
     //================================================================================================================
     // DebugNameBase
@@ -60,11 +68,9 @@ struct BufferD3D11 final : public DebugNameBase {
 private:
     DeviceD3D11& m_Device;
     ComPtr<ID3D11Buffer> m_Buffer;
-    TextureD3D11* m_ReadbackTexture = nullptr;
+    Vector<TextureReadbackD3D11> m_TextureReadbacks;
     BufferDesc m_Desc = {};
     QueryRange m_QueryRange = {};
-    TextureDataLayoutDesc m_ReadbackDataLayoutDesc = {};
-    bool m_IsReadbackDataChanged = false;
 };
 
 } // namespace nri

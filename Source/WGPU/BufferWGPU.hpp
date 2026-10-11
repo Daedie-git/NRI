@@ -138,7 +138,7 @@ void BufferWGPU::Unmap() {
         if (writeEnd > m_MapOffset + m_MapSize)
             memset(m_CpuMemory.data() + m_MapOffset + m_MapSize, 0, (size_t)(writeEnd - (m_MapOffset + m_MapSize)));
 
-        wgpuQueueWriteBuffer(m_Device.GetQueue(), m_Buffer, writeOffset, m_CpuMemory.data() + writeOffset, (size_t)(writeEnd - writeOffset));
+        m_Device.WriteBuffer(m_Buffer, writeOffset, m_CpuMemory.data() + writeOffset, (size_t)(writeEnd - writeOffset));
     }
 
     m_MapOffset = 0;

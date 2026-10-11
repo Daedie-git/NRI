@@ -16,6 +16,11 @@ struct BufferD3D12 final : public DebugNameBase {
     }
 
     inline ~BufferD3D12() {
+        // The CPU never writes a readback buffer, so its unmap reports an empty written range.
+        if (m_MappedMemory) {
+            D3D12_RANGE writtenRange = {};
+            m_Buffer->Unmap(0, m_IsReadback ? &writtenRange : nullptr);
+        }
     }
 
     inline operator ID3D12ResourceBest*() const {
@@ -62,6 +67,7 @@ private:
     ComPtr<D3D12MA::Allocation> m_VmaAllocation = nullptr;
     uint8_t* m_MappedMemory = nullptr;
     BufferDesc m_Desc = {};
+    bool m_IsReadback = false;
 };
 
 inline D3D12_GPU_VIRTUAL_ADDRESS GetBufferAddress(const Buffer* buffer, uint64_t offset) {

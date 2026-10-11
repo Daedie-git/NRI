@@ -16,18 +16,64 @@ jobs:
           submodules: true
 
       - name: Deploy
-        run: .\1-Deploy.bat
+        run: .\Scripts\Windows\1-Deploy.bat
 
       - name: Build
-        run: .\2-Build.bat
+        run: .\Scripts\Windows\2-Build.bat
 
       - name: Prepare SDK
-        run: .\3-PrepareSDK.bat
+        run: .\Scripts\Windows\3-PrepareSDK.bat
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: NRI SDK (Windows x64)
+          path: _NRI_SDK
+
+  Build-Windows-ARM64:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Deploy
+        run: .\Scripts\Windows\1-Deploy.bat -G "Visual Studio 17 2022" -A ARM64
+
+      - name: Build
+        run: .\Scripts\Windows\2-Build.bat
+
+      - name: Prepare SDK
+        run: .\Scripts\Windows\3-PrepareSDK.bat
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NRI SDK (Windows ARM64)
+          path: _NRI_SDK
+
+  Build-Windows-ARM64EC:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Deploy
+        run: .\Scripts\Windows\1-Deploy.bat -G "Visual Studio 17 2022" -A ARM64EC
+
+      - name: Build
+        run: .\Scripts\Windows\2-Build.bat
+
+      - name: Prepare SDK
+        run: .\Scripts\Windows\3-PrepareSDK.bat
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NRI SDK (Windows ARM64EC)
           path: _NRI_SDK
 
   Build-Ubuntu:
@@ -49,16 +95,111 @@ jobs:
           sudo apt-get install -y libx11-dev libwayland-dev ninja-build
 
       - name: Deploy
-        run: bash 1-Deploy.sh
+        run: bash Scripts/Linux/1-Deploy.sh
 
       - name: Build
-        run: bash 2-Build.sh
+        run: bash Scripts/Linux/2-Build.sh
 
       - name: Prepare SDK
-        run: bash 3-PrepareSDK.sh
+        run: bash Scripts/Linux/3-PrepareSDK.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: NRI SDK (Linux x64)
+          path: _NRI_SDK
+
+  Build-Android-ARM64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: 'latest'
+
+      - name: Deploy
+        run: >-
+          bash Scripts/Linux/1-Deploy.sh
+          -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+          -DANDROID_ABI=arm64-v8a
+          -DANDROID_PLATFORM=android-24
+
+      - name: Build
+        run: cmake --build _Build --parallel
+
+      - name: Prepare SDK
+        run: bash Scripts/Linux/3-PrepareSDK.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NRI SDK (Android ARM64)
+          path: _NRI_SDK
+
+  Build-macOS:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup CMake
+        uses: jwlawson/actions-setup-cmake@v2
+        with:
+          cmake-version: 'latest'
+
+      - name: Install dependencies
+        run: brew install ninja
+
+      - name: Setup Vulkan SDK
+        run: |
+          version=$(curl --fail --silent --show-error --location --retry 3 https://vulkan.lunarg.com/sdk/latest/mac.txt)
+          sdk="$RUNNER_TEMP/VulkanSDK/macOS"
+          echo "VULKAN_SDK_VERSION=$version" >> "$GITHUB_ENV"
+          echo "VULKAN_SDK=$sdk" >> "$GITHUB_ENV"
+          echo "$sdk/bin" >> "$GITHUB_PATH"
+          echo "DYLD_LIBRARY_PATH=$sdk/lib/VulkanLoader/lib:$sdk/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+
+      - name: Cache Vulkan SDK
+        id: vulkan-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/VulkanSDK
+          key: vulkan-sdk-macos-${{ runner.arch }}-${{ env.VULKAN_SDK_VERSION }}
+
+      - name: Install Vulkan SDK
+        if: steps.vulkan-cache.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 \
+            "https://sdk.lunarg.com/sdk/download/$VULKAN_SDK_VERSION/mac/vulkansdk-macos-$VULKAN_SDK_VERSION.zip" \
+            --output "$RUNNER_TEMP/vulkan-sdk.zip"
+          unzip -q "$RUNNER_TEMP/vulkan-sdk.zip" -d "$RUNNER_TEMP/vulkan-installer"
+          installer="vulkansdk-macOS-$VULKAN_SDK_VERSION"
+          sudo "$RUNNER_TEMP/vulkan-installer/$installer.app/Contents/MacOS/$installer" \
+            --root "$RUNNER_TEMP/VulkanSDK" --accept-licenses --default-answer --confirm-command install
+
+      - name: Deploy
+        run: >-
+          bash Scripts/MacOS/1-Deploy.sh
+          -DNRI_ENABLE_NIS_SDK=ON
+          -DNRI_ENABLE_IMGUI_EXTENSION=ON
+
+      - name: Build
+        run: bash Scripts/MacOS/2-Build.sh
+
+      - name: Prepare SDK
+        run: bash Scripts/MacOS/3-PrepareSDK.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NRI SDK (macOS ${{ runner.arch }})
           path: _NRI_SDK

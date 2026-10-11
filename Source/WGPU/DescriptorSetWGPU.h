@@ -37,10 +37,10 @@ struct DescriptorSetBindGroupWGPU {
 };
 
 struct DescriptorSetWGPU final : public DebugNameBase {
-    DescriptorSetWGPU(DeviceWGPU& device, const DescriptorSetMappingWGPU& mapping);
+    DescriptorSetWGPU(DeviceWGPU& device, const DescriptorSetMappingWGPU& mapping, bool isCopySource);
     ~DescriptorSetWGPU();
 
-    inline WGPUBindGroup GetBindGroup() const {
+    inline WGPUBindGroup GetBindGroup() {
         return GetBindGroup(m_Mapping);
     }
 
@@ -54,20 +54,21 @@ struct DescriptorSetWGPU final : public DebugNameBase {
 
     void UpdateRange(uint32_t rangeIndex, uint32_t baseDescriptor, const Descriptor* const* descriptors, uint32_t descriptorNum);
     void CopyRangeFrom(uint32_t dstRangeIndex, uint32_t dstBaseDescriptor, const DescriptorSetWGPU& srcDescriptorSet, uint32_t srcRangeIndex, uint32_t srcBaseDescriptor, uint32_t descriptorNum);
-    void FinalizeUpdate() const;
+    void FinalizeUpdate();
     void GetOffsets(uint32_t& resourceHeapOffset, uint32_t& samplerHeapOffset) const;
-    WGPUBindGroup GetBindGroup(const DescriptorSetMappingWGPU& mapping) const;
+    WGPUBindGroup GetBindGroup(const DescriptorSetMappingWGPU& mapping);
 
 private:
-    bool RecreateBindGroup(const DescriptorSetMappingWGPU& mapping, DescriptorSetBindGroupWGPU& cache) const;
+    bool RecreateBindGroup(const DescriptorSetMappingWGPU& mapping, DescriptorSetBindGroupWGPU& cache);
 
 private:
     DeviceWGPU& m_Device;
     const DescriptorSetMappingWGPU& m_Mapping;
     Vector<DescriptorWGPU*> m_Descriptors;
-    mutable Vector<DescriptorSetBindGroupWGPU> m_BindGroups;
-    mutable Lock m_BindGroupLock;
+    Vector<DescriptorSetBindGroupWGPU> m_BindGroups;
     uint64_t m_UpdateVersion = 1;
+    bool m_IsCopySource = false;
+    Lock m_BindGroupLock;
 };
 
 } // namespace nri

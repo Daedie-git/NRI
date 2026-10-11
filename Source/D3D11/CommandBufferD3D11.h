@@ -9,6 +9,11 @@ struct AttachmentDescD3D11 {
     DescriptorD3D11* resolveDst;
 };
 
+struct PendingTextureReadbackD3D11 {
+    BufferD3D11* dstBuffer;
+    TextureReadbackD3D11 textureReadback;
+};
+
 struct CommandBufferD3D11 final : public CommandBufferBase {
     CommandBufferD3D11(DeviceD3D11& device);
     ~CommandBufferD3D11();
@@ -93,10 +98,13 @@ struct CommandBufferD3D11 final : public CommandBufferBase {
     void Annotation(const char* name, uint32_t bgra);
 
 private:
+    void DiscardTextureReadbacks();
+
     DeviceD3D11& m_Device;
     ComPtr<ID3D11DeviceContextBest> m_DeferredContext; // can be immediate to redirect data from emulation
     ComPtr<ID3D11CommandList> m_CommandList;
     ComPtr<ID3DUserDefinedAnnotation> m_Annotation;
+    Vector<PendingTextureReadbackD3D11> m_PendingTextureReadbacks;
     std::array<AttachmentDescD3D11, D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT> m_RenderTargets = {};
     ID3D11DepthStencilView* m_DepthStencil = nullptr;
     PipelineLayoutD3D11* m_PipelineLayout = nullptr;
