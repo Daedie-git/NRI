@@ -39,6 +39,10 @@ struct PipelineLayoutD3D12 final : public DebugNameBase {
         return m_Device;
     }
 
+    inline uint64_t GetHash() const {
+        return m_Hash;
+    }
+
     inline bool IsDrawParametersEmulationEnabled() const {
         return m_DrawParametersEmulation;
     }
@@ -78,6 +82,7 @@ private:
     Vector<DescriptorSetMapping> m_DescriptorSetMappings;
     uint32_t m_BaseRootConstant = 0;
     uint32_t m_BaseRootDescriptor = 0;
+    uint64_t m_Hash = 0;
     RootParameterIndexType m_DrawParametersRootConstantIndex = ROOT_PARAMETER_UNUSED;
     RootParameterIndexType m_DrawIndexRootConstantIndex = ROOT_PARAMETER_UNUSED;
     bool m_DrawParametersEmulation = false;
