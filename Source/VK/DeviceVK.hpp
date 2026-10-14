@@ -741,11 +741,11 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
             // NVIDIA 610.57.04 retains the validation layer's temporary H.264
             // picture-info pointer until submission. Keep validation checks on,
             // but avoid the handle wrapper's short-lived parameter copies.
+            // The layer keeps one process-wide wrapping mode, so the choice
+            // follows the driver alone: a queue-dependent choice leaves devices
+            // created under the other mode handing wrapped handles to the driver.
             const uint32_t affectedDriver = (610u << 22) | (57u << 14) | (4u << 6);
-            if (m_Desc.adapterDesc.vendor == Vendor::NVIDIA && m_Desc.adapterDesc.driverVersion == affectedDriver) {
-                for (uint32_t i = 0; i < desc.queueFamilyNum; i++)
-                    disableValidationHandleWrapping |= desc.queueFamilies[i].queueType == QueueType::VIDEO_DECODE && desc.queueFamilies[i].queueNum != 0;
-            }
+            disableValidationHandleWrapping = m_Desc.adapterDesc.vendor == Vendor::NVIDIA && m_Desc.adapterDesc.driverVersion == affectedDriver;
 #endif
             res = CreateInstance(desc.enableGraphicsAPIValidation, disableValidationHandleWrapping, desiredInstanceExts);
             if (res != Result::SUCCESS)
