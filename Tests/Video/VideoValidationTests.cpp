@@ -565,6 +565,11 @@ TEST_CASE("VID-VAL-004 AV1 aliases preserve DPB identity", "[video][validation][
     desc.sequence = &sequence;
     desc.references = references.data();
     desc.referenceNum = (uint32_t)references.size();
+    nri::VideoEncodePictureDesc pictureDesc = {};
+    pictureDesc.frameType = nri::VideoFrameType::P;
+    nri::VideoAV1EncodePictureDesc av1PictureDesc = {};
+    desc.pictureDesc = &pictureDesc;
+    desc.av1PictureDesc = &av1PictureDesc;
     nri::VideoAV1EncodeDecodeInfo info = {};
 
     REQUIRE(harness.GetVideo().GetVideoAV1EncodeDecodeInfo(*session, (nri::Buffer&)bufferVal, 0, desc, info) == nri::Result::SUCCESS);
@@ -603,9 +608,9 @@ TEST_CASE("VID-REG-006 decode DPB slots stay within the session", "[video][valid
     nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
     nri::VideoReference reference = {};
     reference.picture = referencePicture;
-    reference.slot = 4;
+    reference.slot = 3;
     nri::VideoH264DecodeReferenceDesc defaultCodecReference = {};
-    defaultCodecReference.slot = 4;
+    defaultCodecReference.slot = 3;
     nri::VideoH264DecodePictureDesc defaultDecodePicture = MakeH264DecodePicture();
     defaultDecodePicture.references = &defaultCodecReference;
     defaultDecodePicture.referenceNum = 1;
@@ -638,7 +643,7 @@ TEST_CASE("VID-REG-006 decode DPB slots stay within the session", "[video][valid
     reference.slot = 5;
     harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
     REQUIRE(harness.GetBackend().GetDecodeCallNum() == 2);
-    reference.slot = 4;
+    reference.slot = 3;
     desc.dstSlot = UINT32_MAX;
     harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
     REQUIRE(harness.GetBackend().GetDecodeCallNum() == 2);
@@ -675,13 +680,13 @@ TEST_CASE("VID-REG-007 encode DPB slots stay within the session", "[video][valid
     nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
     nri::VideoReference reference = {};
     reference.picture = reconstructedPicture;
-    reference.slot = 4;
+    reference.slot = 3;
     nri::VideoEncodePictureDesc encodePicture = {};
     encodePicture.frameType = nri::VideoFrameType::P;
     nri::VideoH264EncodeReferenceDesc codecReference = {};
     codecReference.frameType = nri::VideoFrameType::P;
     codecReference.listIndex = 0;
-    codecReference.slot = 4;
+    codecReference.slot = 3;
     nri::VideoH264EncodePictureDesc picture = {};
     picture.references = &codecReference;
     picture.referenceNum = 1;
@@ -704,7 +709,7 @@ TEST_CASE("VID-REG-007 encode DPB slots stay within the session", "[video][valid
     reference.slot = 5;
     harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
     REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
-    reference.slot = 4;
+    reference.slot = 3;
     desc.reconstructedSlot = UINT32_MAX;
     harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
     REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
