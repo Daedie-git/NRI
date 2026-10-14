@@ -1361,12 +1361,12 @@ NRI_INLINE void CommandBufferVK::EncodeVideo(const VideoEncodeDesc& videoEncodeD
     const bool needsRateControlUpdate = !needsSessionReset && !IsVideoEncodeRateControlEqual(session.GetRateControl(), rateControlDesc);
 
     VideoEncodeRateControlVK rateControl = {};
-    FillVideoEncodeRateControl(rateControl, rateControlDesc, session.GetDesc());
+    FillVideoEncodeRateControl(rateControl, rateControlDesc, session.GetDesc(), session.GetEncodeQpMin(), session.GetEncodeQpMax());
 
     VideoEncodeRateControlVK currentRateControl = {};
 
     if (needsRateControlUpdate)
-        FillVideoEncodeRateControl(currentRateControl, session.GetRateControl(), session.GetDesc());
+        FillVideoEncodeRateControl(currentRateControl, session.GetRateControl(), session.GetDesc(), session.GetEncodeQpMin(), session.GetEncodeQpMax());
 
     VkVideoEncodeAV1GopRemainingFrameInfoKHR av1GopRemainingFrameInfo = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_AV1_GOP_REMAINING_FRAME_INFO_KHR};
     VkVideoEncodeQualityLevelInfoKHR qualityLevelInfo = {VK_STRUCTURE_TYPE_VIDEO_ENCODE_QUALITY_LEVEL_INFO_KHR};
