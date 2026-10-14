@@ -67,6 +67,15 @@ target_link_libraries(NRI_VideoTests
 if(TARGET NRI_Validation)
     target_link_libraries(NRI_VideoTests PRIVATE NRI_Validation)
 endif()
+if(WIN32)
+    # "NRI_Validation" and "NRI_Shared" reference the D3D wrappers and DXGI
+    foreach(nri_backend NRI_D3D12 NRI_D3D11)
+        if(TARGET ${nri_backend})
+            target_link_libraries(NRI_VideoTests PRIVATE ${nri_backend})
+        endif()
+    endforeach()
+    target_link_libraries(NRI_VideoTests PRIVATE dxgi)
+endif()
 if(TARGET NRI_VK)
     target_link_libraries(NRI_VideoTests PRIVATE NRI_VK)
     target_include_directories(NRI_VideoTests
