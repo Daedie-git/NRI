@@ -61,7 +61,7 @@ std::vector<uint8_t> MakeFrameObu(const std::vector<uint8_t>& payload) {
     return obu;
 }
 
-std::vector<uint8_t> MakeInterFramePayload(uint8_t baseQIndex = 32) {
+std::vector<uint8_t> MakeInterFramePayload(uint8_t baseQIndex = 32, bool hasCdef = false) {
     BitWriter writer;
     writer.WriteBit(0);     // show_existing_frame
     writer.WriteBits(1, 2); // INTER_FRAME
@@ -95,6 +95,16 @@ std::vector<uint8_t> MakeInterFramePayload(uint8_t baseQIndex = 32) {
         writer.WriteBits(0, 6); // loop_filter_level[1]
         writer.WriteBits(0, 3); // loop_filter_sharpness
         writer.WriteBit(0);     // loop_filter_delta_enabled
+        if (hasCdef) {
+            writer.WriteBits(1, 2); // cdef_damping_minus_3
+            writer.WriteBits(1, 2); // cdef_bits: two strengths
+            for (uint32_t i = 0; i < 2; i++) {
+                writer.WriteBits(5, 4);     // cdef_y_pri_strength
+                writer.WriteBits(1 + i, 2); // cdef_y_sec_strength: 1, 2
+                writer.WriteBits(2, 4);     // cdef_uv_pri_strength
+                writer.WriteBits(3, 2);     // cdef_uv_sec_strength: 3 (stands for 4)
+            }
+        }
         writer.WriteBit(1);     // tx_mode select
     }
     writer.WriteBit(0); // reference_select
@@ -220,6 +230,26 @@ TEST_CASE("VID-PAR-001 AV1 inter-frame metadata parses all references", "[video]
 
     for (uint32_t i = 0; i < info.picture.tileNum; i++)
         REQUIRE(uint64_t(info.picture.tiles[i].offset) + info.picture.tiles[i].size <= info.bitstreamSize);
+}
+
+TEST_CASE("VID-REG-030 AV1 CDEF secondary strengths are passed as coded", "[video][parser][regression][short]") {
+    const std::vector<uint8_t> payload = MakeFrameObu(MakeInterFramePayload(32, true));
+    const nri::VideoEncodeFeedback feedback = MakeFeedback(payload.size());
+    nri::VideoAV1SequenceDesc sequence = MakeSequence();
+    sequence.flags |= nri::VideoAV1SequenceBits::ENABLE_CDEF;
+    const std::array<nri::VideoAV1ReferenceDesc, 8> references = MakeReferences();
+    const nri::VideoAV1EncodeDecodeInfoDesc desc = MakeDecodeInfoDesc(feedback, sequence, payload, payload.size(), references);
+
+    nri::VideoAV1EncodeDecodeInfo info = {};
+    REQUIRE(nri::video::av1::GetEncodeDecodeInfoFromHeader(desc, info) == nri::Result::SUCCESS);
+    REQUIRE(info.picture.cdefDampingMinus3 == 1);
+    REQUIRE(info.picture.cdefBits == 1);
+    REQUIRE(info.cdef.yPrimaryStrength[1] == 5);
+    REQUIRE(info.cdef.ySecondaryStrength[0] == 1);
+    REQUIRE(info.cdef.ySecondaryStrength[1] == 2);
+    REQUIRE(info.cdef.uvPrimaryStrength[0] == 2);
+    REQUIRE(info.cdef.uvSecondaryStrength[0] == 3);
+    REQUIRE(info.cdef.uvSecondaryStrength[1] == 3);
 }
 
 TEST_CASE("VID-REG-003 AV1 parse result does not depend on caller bytes", "[video][parser][regression][short]") {
