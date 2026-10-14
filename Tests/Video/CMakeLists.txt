@@ -88,6 +88,13 @@ if(WIN32 AND TARGET NRI_D3D12 AND NRI_ENABLE_AGILITY_SDK_SUPPORT)
             "${PROJECT_SOURCE_DIR}/Source/D3D12"
             "${agilitysdk_SOURCE_DIR}/build/native/include"
     )
+    # "SharedD3D12.h" includes the vendor extension headers
+    if(NRI_ENABLE_NVAPI)
+        target_include_directories(NRI_VideoTests PRIVATE "${nvapi_SOURCE_DIR}")
+    endif()
+    if(NRI_ENABLE_AMDAGS)
+        target_include_directories(NRI_VideoTests PRIVATE "${amdags_SOURCE_DIR}/ags_lib/inc")
+    endif()
 endif()
 target_include_directories(NRI_VideoTests
     PRIVATE
