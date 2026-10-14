@@ -87,6 +87,11 @@ if(WIN32 AND TARGET NRI_D3D12 AND NRI_ENABLE_AGILITY_SDK_SUPPORT)
         PRIVATE
             "${PROJECT_SOURCE_DIR}/Source/D3D12"
             "${agilitysdk_SOURCE_DIR}/build/native/include"
+            "${d3d12ma_SOURCE_DIR}/include"
+    )
+    target_compile_definitions(NRI_VideoTests
+        PRIVATE
+            NRI_AGILITY_SDK_VERSION_MAJOR=${NRI_AGILITY_SDK_VERSION_MAJOR}
     )
     # "SharedD3D12.h" includes the vendor extension headers
     if(NRI_ENABLE_NVAPI)
