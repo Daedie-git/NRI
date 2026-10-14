@@ -4,6 +4,8 @@
 
 #include <type_traits>
 
+#include <D3D12MemAlloc.h> // "DeviceD3D12.h" needs "D3D12MA::Allocator"
+
 #include "SharedD3D12.h"
 
 TEST_CASE("VID-REG-024 D3D12 AV1 metadata uses the Agility SDK types", "[video][d3d12][regression][short]") {

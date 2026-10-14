@@ -5,10 +5,12 @@
 #include <array>
 #include <cstdlib>
 
+// clang-format off
+#include "SharedExternal.h" // must come first: its D3D headers include "windows.h", which defines "ERROR" (see "NRIMacro.h")
+// clang-format on
 #include "NRI.h"
 
 #include "Extensions/NRIVideo.h"
-#include "SharedExternal.h"
 
 TEST_CASE("VID-STRESS-001 serializers remain stable across repeated calls", "[video][stress]") {
     uint32_t iterationNum = 1000000;
