@@ -10,12 +10,13 @@
 #include <limits>
 #include <vector>
 
+// clang-format off
+#include "SharedVal.h" // must come first: its D3D headers include "windows.h", which defines "ERROR" (see "NRIMacro.h")
+// clang-format on
 #include "NRI.h"
 
 #include "Extensions/NRIDeviceCreation.h"
 #include "Extensions/NRIVideo.h"
-
-#include "SharedVal.h"
 
 #include "BufferVal.h"
 #include "CommandBufferVal.h"

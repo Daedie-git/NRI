@@ -2,10 +2,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+// clang-format off
+#include "SharedExternal.h" // must come first: its D3D headers include "windows.h", which defines "ERROR" (see "NRIMacro.h")
+// clang-format on
 #include "NRI.h"
 
 #include "Extensions/NRIVideo.h"
-#include "SharedExternal.h"
 
 TEST_CASE("VID-REG-008 H.264 setup slot override requires hasReferenceSlot", "[video][state][regression][short]") {
     nri::VideoH264DecodePictureDesc picture = {};
