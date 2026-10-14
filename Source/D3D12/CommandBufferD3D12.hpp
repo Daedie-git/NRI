@@ -1315,6 +1315,27 @@ NRI_INLINE void CommandBufferD3D12::EncodeVideo(const VideoEncodeDesc& videoEnco
     hevcGop.GOPLength = sessionDesc.maxReferenceNum ? 60 : 1;
     hevcGop.PPicturePeriod = sessionDesc.maxReferenceNum > 1 ? 2 : 1;
 
+    // The driver writes slice headers: "frame_num" and "pic_order_cnt_lsb" widths and the POC type must match the SPS written by the application
+    const VideoSessionParametersD3D12* encodeParameters = (VideoSessionParametersD3D12*)videoEncodeDesc.parameters;
+    if (encodeParameters && encodeParameters->GetH264Parameters() && sessionDesc.codec == VideoCodec::H264) {
+        const VideoH264SessionParametersDesc& parameters = *encodeParameters->GetH264Parameters();
+        const VideoH264PictureParameterSetDesc* pps = video::FindParameterSet(parameters.pictureParameterSets, parameters.pictureParameterSetNum, &VideoH264PictureParameterSetDesc::pictureParameterSetId,
+            videoEncodeDesc.h264PictureDesc ? videoEncodeDesc.h264PictureDesc->pictureParameterSetId : 0);
+        const VideoH264SequenceParameterSetDesc* sps = pps ? video::FindParameterSet(parameters.sequenceParameterSets, parameters.sequenceParameterSetNum, &VideoH264SequenceParameterSetDesc::sequenceParameterSetId, pps->sequenceParameterSetId) : nullptr;
+        if (sps) {
+            h264Gop.pic_order_cnt_type = sps->pictureOrderCountType;
+            h264Gop.log2_max_frame_num_minus4 = sps->log2MaxFrameNumMinus4;
+            h264Gop.log2_max_pic_order_cnt_lsb_minus4 = sps->log2MaxPictureOrderCountLsbMinus4;
+        }
+    }
+    if (encodeParameters && encodeParameters->GetH265Parameters() && sessionDesc.codec == VideoCodec::H265) {
+        const VideoH265SessionParametersDesc& parameters = *encodeParameters->GetH265Parameters();
+        const VideoH265SequenceParameterSetDesc* sps = video::FindParameterSet(parameters.sequenceParameterSets, parameters.sequenceParameterSetNum, &VideoH265SequenceParameterSetDesc::sequenceParameterSetId,
+            videoEncodeDesc.h265PictureDesc ? videoEncodeDesc.h265PictureDesc->sequenceParameterSetId : 0);
+        if (sps)
+            hevcGop.log2_max_pic_order_cnt_lsb_minus4 = sps->log2MaxPictureOrderCountLsbMinus4;
+    }
+
     D3D12_VIDEO_ENCODER_ENCODEFRAME_INPUT_ARGUMENTS1 input = {};
     D3D12_VIDEO_ENCODER_ENCODEFRAME_OUTPUT_ARGUMENTS1 output = {};
     D3D12_VIDEO_ENCODER_COMPRESSED_BITSTREAM& bitstream = output.Bitstream.FrameOutputBuffer;
@@ -1404,6 +1425,18 @@ NRI_INLINE void CommandBufferD3D12::EncodeVideo(const VideoEncodeDesc& videoEnco
     h264Picture.pList0ReferenceFrames = h264List0ReferenceNum ? (UINT*)h264List0References : nullptr;
     h264Picture.List1ReferenceFramesCount = h264List1ReferenceNum;
     h264Picture.pList1ReferenceFrames = h264List1ReferenceNum ? (UINT*)h264List1References : nullptr;
+    // The driver does not know the PPS: the slice header carries "num_ref_idx_active_override_flag" only if requested (otherwise the active counts equal the PPS defaults)
+    if (sessionDesc.codec == VideoCodec::H264 && (session.GetCodecConfigurationSupportFlags() & D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_SUPPORT_H264_FLAG_NUM_REF_IDX_ACTIVE_OVERRIDE_FLAG_SLICE_SUPPORT) && encodeParameters && encodeParameters->GetH264Parameters()) {
+        const VideoH264SessionParametersDesc& parameters = *encodeParameters->GetH264Parameters();
+        const VideoH264PictureParameterSetDesc* pps = video::FindParameterSet(parameters.pictureParameterSets, parameters.pictureParameterSetNum, &VideoH264PictureParameterSetDesc::pictureParameterSetId, (uint8_t)h264Picture.pic_parameter_set_id);
+        const bool isInterPicture = pictureDesc.frameType == VideoFrameType::P || pictureDesc.frameType == VideoFrameType::B;
+        if (pps && isInterPicture) {
+            const bool isL0Different = h264List0ReferenceNum != pps->refIndexL0DefaultActiveMinus1 + 1u;
+            const bool isL1Different = pictureDesc.frameType == VideoFrameType::B && h264List1ReferenceNum != pps->refIndexL1DefaultActiveMinus1 + 1u;
+            if (isL0Different || isL1Different)
+                h264Picture.Flags |= D3D12_VIDEO_ENCODER_PICTURE_CONTROL_CODEC_DATA_H264_FLAG_REQUEST_NUM_REF_IDX_ACTIVE_OVERRIDE_FLAG_SLICE;
+        }
+    }
     h264Picture.ReferenceFramesReconPictureDescriptorsCount = videoEncodeDesc.referenceNum;
     h264Picture.pReferenceFramesReconPictureDescriptors = videoEncodeDesc.referenceNum ? (D3D12_VIDEO_ENCODER_REFERENCE_PICTURE_DESCRIPTOR_H264*)h264ReferenceDescriptors : nullptr;
 
@@ -1458,6 +1491,19 @@ NRI_INLINE void CommandBufferD3D12::EncodeVideo(const VideoEncodeDesc& videoEnco
         hevcPicture.pList0ReferenceFrames = hevcReferenceLists.list0Num ? (UINT*)hevcList0References : nullptr;
         hevcPicture.List1ReferenceFramesCount = hevcReferenceLists.list1Num;
         hevcPicture.pList1ReferenceFrames = hevcReferenceLists.list1Num ? (UINT*)hevcList1References : nullptr;
+        hevcPicture.num_ref_idx_l0_active_minus1 = hevcReferenceLists.list0Num ? hevcReferenceLists.list0Num - 1 : 0;
+        hevcPicture.num_ref_idx_l1_active_minus1 = hevcReferenceLists.list1Num ? hevcReferenceLists.list1Num - 1 : 0;
+        if ((session.GetCodecConfigurationSupportFlags() & D3D12_VIDEO_ENCODER_CODEC_CONFIGURATION_SUPPORT_HEVC_FLAG_NUM_REF_IDX_ACTIVE_OVERRIDE_FLAG_SLICE_SUPPORT) && encodeParameters && encodeParameters->GetH265Parameters()) {
+            const VideoH265SessionParametersDesc& parameters = *encodeParameters->GetH265Parameters();
+            const VideoH265PictureParameterSetDesc* pps = video::FindParameterSet(parameters.pictureParameterSets, parameters.pictureParameterSetNum, &VideoH265PictureParameterSetDesc::pictureParameterSetId, (uint8_t)hevcPicture.slice_pic_parameter_set_id);
+            const bool isInterPicture = pictureDesc.frameType == VideoFrameType::P || pictureDesc.frameType == VideoFrameType::B;
+            if (pps && isInterPicture) {
+                const bool isL0Different = hevcReferenceLists.list0Num != pps->refIndexL0DefaultActiveMinus1 + 1u;
+                const bool isL1Different = pictureDesc.frameType == VideoFrameType::B && hevcReferenceLists.list1Num != pps->refIndexL1DefaultActiveMinus1 + 1u;
+                if (isL0Different || isL1Different)
+                    hevcPicture.Flags |= D3D12_VIDEO_ENCODER_PICTURE_CONTROL_CODEC_DATA_HEVC_FLAG_REQUEST_NUM_REF_IDX_ACTIVE_OVERRIDE_FLAG_SLICE;
+            }
+        }
         hevcPicture.ReferenceFramesReconPictureDescriptorsCount = videoEncodeDesc.referenceNum;
         hevcPicture.pReferenceFramesReconPictureDescriptors = videoEncodeDesc.referenceNum ? (D3D12_VIDEO_ENCODER_REFERENCE_PICTURE_DESCRIPTOR_HEVC*)hevcReferenceDescriptors : nullptr;
     }

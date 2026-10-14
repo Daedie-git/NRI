@@ -67,6 +67,15 @@ target_link_libraries(NRI_VideoTests
 if(TARGET NRI_Validation)
     target_link_libraries(NRI_VideoTests PRIVATE NRI_Validation)
 endif()
+if(WIN32)
+    # "NRI_Validation" and "NRI_Shared" reference the D3D wrappers and DXGI
+    foreach(nri_backend NRI_D3D12 NRI_D3D11)
+        if(TARGET ${nri_backend})
+            target_link_libraries(NRI_VideoTests PRIVATE ${nri_backend})
+        endif()
+    endforeach()
+    target_link_libraries(NRI_VideoTests PRIVATE dxgi)
+endif()
 if(TARGET NRI_VK)
     target_link_libraries(NRI_VideoTests PRIVATE NRI_VK)
     target_include_directories(NRI_VideoTests
@@ -87,7 +96,19 @@ if(WIN32 AND TARGET NRI_D3D12 AND NRI_ENABLE_AGILITY_SDK_SUPPORT)
         PRIVATE
             "${PROJECT_SOURCE_DIR}/Source/D3D12"
             "${agilitysdk_SOURCE_DIR}/build/native/include"
+            "${d3d12ma_SOURCE_DIR}/include"
     )
+    target_compile_definitions(NRI_VideoTests
+        PRIVATE
+            NRI_AGILITY_SDK_VERSION_MAJOR=${NRI_AGILITY_SDK_VERSION_MAJOR}
+    )
+    # "SharedD3D12.h" includes the vendor extension headers
+    if(NRI_ENABLE_NVAPI)
+        target_include_directories(NRI_VideoTests PRIVATE "${nvapi_SOURCE_DIR}")
+    endif()
+    if(NRI_ENABLE_AMDAGS)
+        target_include_directories(NRI_VideoTests PRIVATE "${amdags_SOURCE_DIR}/ags_lib/inc")
+    endif()
 endif()
 target_include_directories(NRI_VideoTests
     PRIVATE

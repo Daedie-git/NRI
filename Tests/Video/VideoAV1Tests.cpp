@@ -7,10 +7,12 @@
 #include <cstring>
 #include <vector>
 
+// clang-format off
+#include "SharedExternal.h" // must come first: its D3D headers include "windows.h", which defines "ERROR" (see "NRIMacro.h")
+// clang-format on
 #include "NRI.h"
 
 #include "Extensions/NRIVideo.h"
-#include "SharedExternal.h"
 
 namespace {
 
