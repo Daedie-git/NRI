@@ -61,6 +61,11 @@ set(NRI_SHADERS_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Shaders" CACHE STRING "Shader
 set(NRI_NVAPI_CUSTOM_PATH "" CACHE STRING "Path to a custom NVAPI library directory")
 
 option(NRI_STATIC_LIBRARY "Build static library" OFF)
+option(NRI_BUILD_TESTS "Build NRI unit and integration tests" OFF)
+option(NRI_BUILD_VIDEO_HARDWARE_TESTS "Build hardware-dependent NRI video tests" OFF)
+option(NRI_VIDEO_REQUIRE_FULL_CODEC_MATRIX "Require H.264, H.265 and AV1 encode/decode in video hardware tests" ON)
+option(NRI_VIDEO_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer for NRI video tests" OFF)
+option(NRI_VIDEO_REGISTER_LONG_TESTS "Register long-running video tests with CTest" OFF)
 option(NRI_ENABLE_NVTX_SUPPORT "Annotations for NVIDIA Nsight Systems" ON)
 option(NRI_ENABLE_DEBUG_NAMES_AND_ANNOTATIONS "Enable debug names, host and device annotations" ON)
 option(NRI_ENABLE_NONE_SUPPORT "Enable NONE backend" ON)
@@ -97,8 +102,13 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR}) # if not submodule
         set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "")
     endif()
 
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .dll
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .so
+    if(NRI_BUILD_TESTS AND NRI_VIDEO_ENABLE_SANITIZERS)
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+        set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    else()
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .dll
+        set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .so
+    endif()
 endif()
 
 # Enable grouping of source files into folders in IDEs
@@ -137,6 +147,20 @@ endforeach()
 
 # Construct list of dependencies # TODO: update to latest releases from time to time
 set(DEPS)
+
+if(NRI_BUILD_TESTS)
+    enable_language(C)
+    include(CTest)
+
+    fetchcontent_declare(
+        catch2
+        DOWNLOAD_EXTRACT_TIMESTAMP 1
+        DOWNLOAD_NO_PROGRESS 1
+        URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.15.0.tar.gz
+        URL_HASH SHA256=9650c55e497759cc39b977e45524bc8acb15256061c112080916ab6cb0b1ea66
+    )
+    list(APPEND DEPS catch2)
+endif()
 
 # Dependencies:
 # - URL - good (no fat ".git" folder)
@@ -1237,4 +1261,8 @@ if(NRI_ENABLE_SHADERMAKE)
     )
 
     message("NRI: shaders path '${NRI_SHADERS_PATH}'")
+endif()
+
+if(NRI_BUILD_TESTS)
+    add_subdirectory(Tests)
 endif()
