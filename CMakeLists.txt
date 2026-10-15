@@ -34,7 +34,7 @@ if(CMAKE_GENERATOR_PLATFORM STREQUAL "ARM64EC")
 elseif((CMAKE_GENERATOR_PLATFORM MATCHES "ARM64") OR (CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64"))
     set(IS_ARM64 TRUE)
     set(BIN_ARCHITECTURE "arm64")
-    set(NVAPI_BIN_ARCHITECTURE "aarch64")
+    set(NVAPI_BIN_ARCHITECTURE "arm64")
     set(WGPU_BIN_ARCHITECTURE "aarch64")
 elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(IS_ARM64 FALSE)
@@ -60,80 +60,30 @@ set(NRI_WGPU_VERSION "v29.0.1.1")
 set(NRI_SHADERS_PATH "${CMAKE_CURRENT_SOURCE_DIR}/_Shaders" CACHE STRING "Shader output path override")
 set(NRI_NVAPI_CUSTOM_PATH "" CACHE STRING "Path to a custom NVAPI library directory")
 
-# A shared library on iOS requires framework packaging and code signing
-if(IOS)
-    set(NRI_STATIC_LIBRARY_DEFAULT ON)
-else()
-    set(NRI_STATIC_LIBRARY_DEFAULT OFF)
-endif()
-
-option(NRI_STATIC_LIBRARY "Build static library" ${NRI_STATIC_LIBRARY_DEFAULT})
+option(NRI_STATIC_LIBRARY "Build static library" OFF)
+option(NRI_BUILD_TESTS "Build NRI unit and integration tests" OFF)
+option(NRI_BUILD_VIDEO_HARDWARE_TESTS "Build hardware-dependent NRI video tests" OFF)
+option(NRI_VIDEO_REQUIRE_FULL_CODEC_MATRIX "Require H.264, H.265 and AV1 encode/decode in video hardware tests" ON)
+option(NRI_VIDEO_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer for NRI video tests" OFF)
+option(NRI_VIDEO_REGISTER_LONG_TESTS "Register long-running video tests with CTest" OFF)
+option(NRI_ENABLE_NVTX_SUPPORT "Annotations for NVIDIA Nsight Systems" ON)
 option(NRI_ENABLE_DEBUG_NAMES_AND_ANNOTATIONS "Enable debug names, host and device annotations" ON)
 option(NRI_ENABLE_NONE_SUPPORT "Enable NONE backend" ON)
+option(NRI_ENABLE_VK_SUPPORT "Enable Vulkan backend" ON)
 option(NRI_ENABLE_VALIDATION_SUPPORT "Enable Validation backend (otherwise 'enableNRIValidation' is ignored)" ON)
+option(NRI_ENABLE_NIS_SDK "Enable NVIDIA Image Sharpening SDK" OFF)
 option(NRI_ENABLE_IMGUI_EXTENSION "Enable 'NRIImgui' extension" OFF)
 option(NRI_STREAMER_THREAD_SAFE "'NRIStreamer' thread safety (OFF is faster)" ON)
 
-# Metal 4 requires Xcode 26 or newer (AppleClang 17 or newer)
-set(NRI_METAL_SUPPORT_DEFAULT ON)
-if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17)
-    set(NRI_METAL_SUPPORT_DEFAULT OFF)
-    message(STATUS "NRI: Metal 4 backend is disabled by default (requires Xcode 26 or newer)")
-endif()
-
-# Internal shaders are precompiled, which requires the Metal toolchain ("xcodebuild -downloadComponent MetalToolchain")
-if(APPLE AND NRI_METAL_SUPPORT_DEFAULT)
-    if(IOS)
-        set(NRI_METAL_PROBE_SDK iphoneos)
-    else()
-        set(NRI_METAL_PROBE_SDK macosx)
-    endif()
-
-    execute_process(COMMAND xcrun -sdk ${NRI_METAL_PROBE_SDK} metal --version RESULT_VARIABLE NRI_METAL_PROBE_RESULT OUTPUT_QUIET ERROR_QUIET)
-
-    if(NOT NRI_METAL_PROBE_RESULT EQUAL 0)
-        set(NRI_METAL_SUPPORT_DEFAULT OFF)
-        message(STATUS "NRI: Metal 4 backend is disabled by default (the Metal toolchain for '${NRI_METAL_PROBE_SDK}' is not installed)")
-    endif()
-endif()
-
-# Metal Shader Converter (macOS and iOS devices, no simulator build) is enabled by default if installed
-set(NRI_METAL_SHADER_CONVERTER_DEFAULT OFF)
-if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(NRI_METAL_SHADER_CONVERTER_SUPPORTED ON)
-    set(NRI_METAL_SHADER_CONVERTER_FIND_ARGS "")
-elseif(IOS AND NOT CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
-    set(NRI_METAL_SHADER_CONVERTER_SUPPORTED ON)
-    set(NRI_METAL_SHADER_CONVERTER_FIND_ARGS PATHS "/usr/local/lib_iOS" NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
-else()
-    set(NRI_METAL_SHADER_CONVERTER_SUPPORTED OFF)
-endif()
-
-if(NRI_METAL_SHADER_CONVERTER_SUPPORTED)
-    set(NRI_METAL_SHADER_CONVERTER_INCLUDE_PATH "" CACHE PATH "Path to Metal Shader Converter headers")
-    set(NRI_METAL_SHADER_CONVERTER_LIBRARY "" CACHE FILEPATH "Path to the Metal Shader Converter library")
-
-    find_library(NRI_METAL_SHADER_CONVERTER_PROBE NAMES metalirconverter ${NRI_METAL_SHADER_CONVERTER_FIND_ARGS} NO_CACHE)
-    if(NRI_METAL_SHADER_CONVERTER_LIBRARY OR NRI_METAL_SHADER_CONVERTER_PROBE)
-        set(NRI_METAL_SHADER_CONVERTER_DEFAULT ON)
-    endif()
-endif()
-
 cmake_dependent_option(NRI_ENABLE_D3D11_SUPPORT "Enable D3D11 backend" ON "WIN32" OFF)
 cmake_dependent_option(NRI_ENABLE_D3D12_SUPPORT "Enable D3D12 backend" ON "WIN32" OFF)
-cmake_dependent_option(NRI_ENABLE_NVTX_SUPPORT "Annotations for NVIDIA Nsight Systems" ON "NOT IOS" OFF)
-cmake_dependent_option(NRI_ENABLE_VK_SUPPORT "Enable Vulkan backend" ON "NOT IOS" OFF)
-cmake_dependent_option(NRI_ENABLE_NIS_SDK "Enable NVIDIA Image Sharpening SDK" OFF "NOT IOS" OFF)
-cmake_dependent_option(NRI_ENABLE_WGPU_SUPPORT "Enable WebGPU backend" ${GITHUB_CI} "WGPU_BIN_ARCHITECTURE; NOT ANDROID; NOT IOS" OFF)
-cmake_dependent_option(NRI_ENABLE_METAL_SUPPORT "Enable Metal 4 backend" ${NRI_METAL_SUPPORT_DEFAULT} "APPLE" OFF)
-cmake_dependent_option(NRI_ENABLE_METAL_SHADER_CONVERTER "Enable DXIL conversion in the Metal backend" ${NRI_METAL_SHADER_CONVERTER_DEFAULT} "NRI_ENABLE_METAL_SUPPORT; NRI_METAL_SHADER_CONVERTER_SUPPORTED" OFF)
-cmake_dependent_option(NRI_METAL_CPP_PRIVATE_IMPLEMENTATION "Compile metal-cpp implementation into NRI (static NRI: turn OFF if the app provides it)" ON "NRI_ENABLE_METAL_SUPPORT; NRI_STATIC_LIBRARY" ${NRI_ENABLE_METAL_SUPPORT})
+cmake_dependent_option(NRI_ENABLE_WGPU_SUPPORT "Enable WebGPU backend" ${GITHUB_CI} "WGPU_BIN_ARCHITECTURE; NOT ANDROID" OFF)
 cmake_dependent_option(NRI_ENABLE_AMDAGS "Enable AMD AGS library for D3D" ON "(NRI_ENABLE_D3D11_SUPPORT OR NRI_ENABLE_D3D12_SUPPORT); NOT IS_ARM64" OFF)
-cmake_dependent_option(NRI_ENABLE_NVAPI "Enable NVAPI library for D3D" ON "(NRI_ENABLE_D3D11_SUPPORT OR NRI_ENABLE_D3D12_SUPPORT)" OFF)
+cmake_dependent_option(NRI_ENABLE_NVAPI "Enable NVAPI library for D3D" ON "(NRI_ENABLE_D3D11_SUPPORT OR NRI_ENABLE_D3D12_SUPPORT); NOT IS_ARM64" OFF)
 cmake_dependent_option(NRI_ENABLE_AGILITY_SDK_SUPPORT "Enable Agility SDK support to unlock access to latest D3D12 features" ON "NRI_ENABLE_D3D12_SUPPORT" OFF)
 cmake_dependent_option(NRI_ENABLE_XLIB_SUPPORT "Enable X11 support" ON "XLIB_HEADERS" OFF)
 cmake_dependent_option(NRI_ENABLE_WAYLAND_SUPPORT "Enable Wayland support" ON "WAYLAND_HEADERS" OFF)
-cmake_dependent_option(NRI_ENABLE_NGX_SDK "Enable NVIDIA NGX (DLSS) SDK" OFF "(NRI_ENABLE_D3D11_SUPPORT OR NRI_ENABLE_D3D12_SUPPORT OR NRI_ENABLE_VK_SUPPORT); WIN32 OR NOT IS_ARM64" OFF)
+cmake_dependent_option(NRI_ENABLE_NGX_SDK "Enable NVIDIA NGX (DLSS) SDK" OFF "(NRI_ENABLE_D3D11_SUPPORT OR NRI_ENABLE_D3D12_SUPPORT OR NRI_ENABLE_VK_SUPPORT); NOT IS_ARM64" OFF)
 cmake_dependent_option(NRI_ENABLE_FFX_SDK "Enable AMD FidelityFX SDK" OFF "(NRI_ENABLE_VK_SUPPORT OR NRI_ENABLE_D3D12_SUPPORT); WIN32; NOT IS_ARM64" OFF)
 cmake_dependent_option(NRI_ENABLE_XESS_SDK "Enable INTEL XeSS SDK" OFF "NRI_ENABLE_D3D12_SUPPORT; WIN32; NOT IS_ARM64" OFF)
 
@@ -152,8 +102,13 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR}) # if not submodule
         set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "")
     endif()
 
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .dll
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .so
+    if(NRI_BUILD_TESTS AND NRI_VIDEO_ENABLE_SANITIZERS)
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+        set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    else()
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .dll
+        set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .so
+    endif()
 endif()
 
 # Enable grouping of source files into folders in IDEs
@@ -168,9 +123,6 @@ foreach(opt IN ITEMS
     NRI_ENABLE_NONE_SUPPORT
     NRI_ENABLE_VK_SUPPORT
     NRI_ENABLE_WGPU_SUPPORT
-    NRI_ENABLE_METAL_SUPPORT
-    NRI_ENABLE_METAL_SHADER_CONVERTER
-    NRI_METAL_CPP_PRIVATE_IMPLEMENTATION
     NRI_ENABLE_VALIDATION_SUPPORT
     NRI_ENABLE_NIS_SDK
     NRI_ENABLE_IMGUI_EXTENSION
@@ -195,6 +147,20 @@ endforeach()
 
 # Construct list of dependencies # TODO: update to latest releases from time to time
 set(DEPS)
+
+if(NRI_BUILD_TESTS)
+    enable_language(C)
+    include(CTest)
+
+    fetchcontent_declare(
+        catch2
+        DOWNLOAD_EXTRACT_TIMESTAMP 1
+        DOWNLOAD_NO_PROGRESS 1
+        URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.15.0.tar.gz
+        URL_HASH SHA256=9650c55e497759cc39b977e45524bc8acb15256061c112080916ab6cb0b1ea66
+    )
+    list(APPEND DEPS catch2)
+endif()
 
 # Dependencies:
 # - URL - good (no fat ".git" folder)
@@ -224,18 +190,6 @@ if(NRI_ENABLE_NVTX_SUPPORT)
     list(APPEND DEPS nvtx)
 endif()
 
-if(NRI_ENABLE_METAL_SUPPORT)
-    # metal-cpp (macOS 27 SDK, the backend requires macOS 26+)
-    fetchcontent_declare(
-        metal_cpp
-        DOWNLOAD_EXTRACT_TIMESTAMP 1
-        DOWNLOAD_NO_PROGRESS 1
-        SOURCE_SUBDIR "ignore CMakeLists.txt"
-        URL "https://github.com/apple/metal-cpp/archive/27c4382b7151d55a51692cdcb27aaa98752240de.zip"
-    )
-    list(APPEND DEPS metal_cpp)
-endif()
-
 if(NRI_ENABLE_VK_SUPPORT)
     # Vulkan headers
     fetchcontent_declare(
@@ -243,7 +197,7 @@ if(NRI_ENABLE_VK_SUPPORT)
         DOWNLOAD_EXTRACT_TIMESTAMP 1
         DOWNLOAD_NO_PROGRESS 1
         SOURCE_SUBDIR "ignore CMakeLists.txt"
-        URL "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.365.zip"
+        URL "https://github.com/KhronosGroup/Vulkan-Headers/archive/refs/tags/v1.4.364.zip"
     )
     list(APPEND DEPS vulkan_headers)
 
@@ -259,14 +213,6 @@ if(NRI_ENABLE_VK_SUPPORT)
 endif()
 
 set(NGX_VERSION "310.9.1")
-if(IS_ARM64)
-    set(NGX_WINDOWS_DIR "Windows_aarch64")
-    set(NGX_WINDOWS_LIB_DIR "Windows_aarch64")
-else()
-    set(NGX_WINDOWS_DIR "Windows_x86_64")
-    set(NGX_WINDOWS_LIB_DIR "Windows_x86_64/x64")
-endif()
-
 if(NRI_ENABLE_NGX_SDK)
     # NVIDIA NGX SDK
     fetchcontent_declare(
@@ -280,28 +226,15 @@ if(NRI_ENABLE_NGX_SDK)
 endif()
 
 if(NRI_ENABLE_FFX_SDK)
-    # Keep the legacy SDK for Vulkan (the newer FSR SDK only supports D3D12)
-    if(NRI_ENABLE_VK_SUPPORT)
-        fetchcontent_declare(
-            ffx
-            DOWNLOAD_EXTRACT_TIMESTAMP 1
-            DOWNLOAD_NO_PROGRESS 1
-            SOURCE_SUBDIR "ignore CMakeLists.txt"
-            URL "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v1.1.4/FidelityFX-SDK-v1.1.4.zip"
-        )
-        list(APPEND DEPS ffx)
-    endif()
-
-    if(NRI_ENABLE_D3D12_SUPPORT)
-        fetchcontent_declare(
-            fsr
-            DOWNLOAD_EXTRACT_TIMESTAMP 1
-            DOWNLOAD_NO_PROGRESS 1
-            SOURCE_SUBDIR "ignore CMakeLists.txt"
-            URL "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/archive/refs/tags/v2.3.0.zip"
-        )
-        list(APPEND DEPS fsr)
-    endif()
+    # AMD FidelityFX SDK
+    fetchcontent_declare(
+        ffx
+        DOWNLOAD_EXTRACT_TIMESTAMP 1
+        DOWNLOAD_NO_PROGRESS 1
+        SOURCE_SUBDIR "ignore CMakeLists.txt"
+        URL "https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/download/v1.1.4/FidelityFX-SDK-v1.1.4.zip"
+    )
+    list(APPEND DEPS ffx)
 endif()
 
 if(NRI_ENABLE_XESS_SDK)
@@ -390,7 +323,7 @@ if(NRI_ENABLE_SHADERMAKE AND NOT TARGET ShaderMake)
         shadermake
         DOWNLOAD_EXTRACT_TIMESTAMP 1
         DOWNLOAD_NO_PROGRESS 1
-        URL "https://github.com/NVIDIA-RTX/ShaderMake/archive/3f01623a76b092ac127d2debd79a672f55d77665.zip"
+        URL "https://github.com/NVIDIA-RTX/ShaderMake/archive/9c978c37ccd1c00b8669d633735823fe25ee3647.zip"
     )
     list(APPEND DEPS shadermake)
 endif()
@@ -412,7 +345,7 @@ endif()
 if(NRI_ENABLE_NVAPI)
     find_library(NVAPI_LIB
         NAMES
-            nvapi64 nvapia64 nvapi
+            nvapi64 nvapi
         PATHS
             "${nvapi_SOURCE_DIR}/${NVAPI_BIN_ARCHITECTURE}"
         REQUIRED
@@ -465,7 +398,7 @@ if(NRI_ENABLE_NGX_SDK)
             message("NRI: using NGX LIB with static runtime")
         endif()
 
-        set(NGX_LIB "${ngx_SOURCE_DIR}/lib/${NGX_WINDOWS_LIB_DIR}/nvsdk_ngx_${NGX_SUFFIX}$<$<CONFIG:Debug>:_dbg>.lib")
+        set(NGX_LIB "${ngx_SOURCE_DIR}/lib/Windows_x86_64/x64/nvsdk_ngx_${NGX_SUFFIX}$<$<CONFIG:Debug>:_dbg>.lib")
     else()
         set(NGX_LIB "${ngx_SOURCE_DIR}/lib/Linux_x86_64/libnvsdk_ngx.a")
     endif()
@@ -510,11 +443,7 @@ target_include_directories(NRI_Shared
         $<$<BOOL:${NRI_ENABLE_NGX_SDK}>:
             ${ngx_SOURCE_DIR}/include
         >
-        $<$<AND:$<BOOL:${NRI_ENABLE_FFX_SDK}>,$<BOOL:${NRI_ENABLE_D3D12_SUPPORT}>>:
-            ${fsr_SOURCE_DIR}/Kits/FidelityFX/api/include
-            ${fsr_SOURCE_DIR}/Kits/FidelityFX/upscalers/include
-        >
-        $<$<AND:$<BOOL:${NRI_ENABLE_FFX_SDK}>,$<NOT:$<BOOL:${NRI_ENABLE_D3D12_SUPPORT}>>>:
+        $<$<BOOL:${NRI_ENABLE_FFX_SDK}>:
             ${ffx_SOURCE_DIR}/ffx-api/include/ffx_api
         >
         $<$<BOOL:${NRI_ENABLE_XESS_SDK}>:
@@ -532,7 +461,7 @@ target_compile_options(NRI_Shared
     PUBLIC
         # Options for Clang/GCC compilers
         # No "nullability-completeness" caused by VMA
-        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:AppleClang>,$<CXX_COMPILER_ID:GNU>>:
+        $<$<OR:$<CXX_COMPILER_ID:Clang>,$<CXX_COMPILER_ID:GNU>>:
             $<$<NOT:$<CXX_COMPILER_FRONTEND_VARIANT:MSVC>>:
                 -Wextra
                 -Werror
@@ -964,188 +893,6 @@ if(NRI_ENABLE_WGPU_SUPPORT)
     )
 endif()
 
-# Metal
-if(NRI_ENABLE_METAL_SUPPORT)
-    if(CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 17)
-        message(FATAL_ERROR "NRI: Metal 4 requires Xcode 26 or newer (AppleClang 17 or newer)")
-    endif()
-
-    if(NOT EXISTS "${metal_cpp_SOURCE_DIR}/Metal/Metal.hpp" OR NOT EXISTS "${metal_cpp_SOURCE_DIR}/Metal/MTL4ArgumentTable.hpp")
-        message(FATAL_ERROR "NRI: Metal 4 metal-cpp headers were not found at '${metal_cpp_SOURCE_DIR}'")
-    endif()
-
-    if(NRI_ENABLE_METAL_SHADER_CONVERTER)
-        if(NOT NRI_METAL_SHADER_CONVERTER_INCLUDE_PATH)
-            unset(NRI_METAL_SHADER_CONVERTER_INCLUDE_PATH CACHE)
-        endif()
-        if(NOT NRI_METAL_SHADER_CONVERTER_LIBRARY)
-            unset(NRI_METAL_SHADER_CONVERTER_LIBRARY CACHE)
-        endif()
-        find_path(NRI_METAL_SHADER_CONVERTER_INCLUDE_PATH metal_irconverter/metal_irconverter.h PATHS "/usr/local/include" NO_CMAKE_FIND_ROOT_PATH REQUIRED)
-        find_library(NRI_METAL_SHADER_CONVERTER_LIBRARY NAMES metalirconverter ${NRI_METAL_SHADER_CONVERTER_FIND_ARGS} REQUIRED)
-        message(STATUS "NRI: Metal Shader Converter headers: ${NRI_METAL_SHADER_CONVERTER_INCLUDE_PATH}")
-        message(STATUS "NRI: Metal Shader Converter library: ${NRI_METAL_SHADER_CONVERTER_LIBRARY}")
-    endif()
-
-    # MetalFX is not in the iOS simulator SDK (with the Xcode generator "CMAKE_OSX_SYSROOT" must match the SDK used for building)
-    if(IOS AND CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
-        set(NRI_METALFX_FRAMEWORK "")
-    else()
-        set(NRI_METALFX_FRAMEWORK "-framework MetalFX")
-    endif()
-
-    # Precompiles "Shaders/<NAME>.metal" into "<NAME>.metallib.h" ("g_<NAME>_metallib" byte array) and makes "TARGET" depend on it.
-    # iOS: device and simulator variants are selected by "TARGET_OS_SIMULATOR", since generators like Xcode pick the SDK at build time
-    find_program(NRI_XCRUN xcrun REQUIRED)
-
-    set(NRI_METALLIB_SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/EmbedMetallib.cmake")
-    file(CONFIGURE
-        OUTPUT "${NRI_METALLIB_SCRIPT}"
-        CONTENT [=[
-function(to_array IN VAR)
-    file(READ "${IN}" DATA HEX)
-    string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," DATA "${DATA}")
-    set(${VAR} "unsigned char g_${NAME}_metallib[] = {${DATA}};\n" PARENT_SCOPE)
-endfunction()
-to_array("${IN}" DATA)
-if(IN_SIMULATOR)
-    to_array("${IN_SIMULATOR}" DATA_SIMULATOR)
-    set(DATA "#include <TargetConditionals.h>\n#if TARGET_OS_SIMULATOR\n${DATA_SIMULATOR}#else\n${DATA}#endif\n")
-endif()
-file(WRITE "${OUT}" "${DATA}")
-]=]
-        @ONLY
-    )
-
-    function(nri_embed_metallib NAME TARGET)
-        set(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/Shaders/${NAME}.metal")
-        set(HEADER "${CMAKE_CURRENT_BINARY_DIR}/${NAME}.metallib.h")
-
-        if(IOS)
-            set(SDKS iphoneos iphonesimulator)
-        else()
-            set(SDKS macosx)
-        endif()
-
-        set(COMMANDS "")
-        set(INPUTS "")
-        foreach(SDK IN LISTS SDKS)
-            set(AIR "${CMAKE_CURRENT_BINARY_DIR}/${NAME}.${SDK}.air")
-            set(METALLIB "${CMAKE_CURRENT_BINARY_DIR}/${NAME}.${SDK}.metallib")
-            if(SDK STREQUAL "macosx")
-                set(VERSION_MIN "-mmacosx-version-min=26.0")
-                list(APPEND INPUTS -D "IN=${METALLIB}")
-            elseif(SDK STREQUAL "iphonesimulator")
-                set(VERSION_MIN "-mios-simulator-version-min=26.0")
-                list(APPEND INPUTS -D "IN_SIMULATOR=${METALLIB}")
-            else()
-                set(VERSION_MIN "-mios-version-min=26.0")
-                list(APPEND INPUTS -D "IN=${METALLIB}")
-            endif()
-            list(APPEND COMMANDS
-                COMMAND "${NRI_XCRUN}" -sdk ${SDK} metal -std=metal4.0 ${VERSION_MIN} -c "${SOURCE}" -o "${AIR}"
-                COMMAND "${NRI_XCRUN}" -sdk ${SDK} metallib "${AIR}" -o "${METALLIB}"
-            )
-        endforeach()
-
-        add_custom_command(
-            OUTPUT "${HEADER}"
-            ${COMMANDS}
-            COMMAND "${CMAKE_COMMAND}" ${INPUTS} -D "OUT=${HEADER}" -D "NAME=${NAME}" -P "${NRI_METALLIB_SCRIPT}"
-            DEPENDS "${SOURCE}" "${NRI_METALLIB_SCRIPT}"
-            VERBATIM
-        )
-        add_custom_target(NRI_Metal_${NAME}Shader
-            DEPENDS "${HEADER}"
-        )
-        add_dependencies(${TARGET} NRI_Metal_${NAME}Shader)
-        target_include_directories(${TARGET}
-            PRIVATE
-                "${CMAKE_CURRENT_BINARY_DIR}"
-        )
-    endfunction()
-
-    if(NRI_ENABLE_IMGUI_EXTENSION)
-        nri_embed_metallib(Imgui NRI_Shared)
-    endif()
-
-    set(METAL_SOURCE
-        "Source/Metal/AccelerationStructureMetal.h"
-        "Source/Metal/AccelerationStructureMetal.hpp"
-        "Source/Metal/BufferMetal.h"
-        "Source/Metal/BufferMetal.hpp"
-        "Source/Metal/CommandAllocatorMetal.h"
-        "Source/Metal/CommandAllocatorMetal.hpp"
-        "Source/Metal/CommandBufferMetal.h"
-        "Source/Metal/CommandBufferMetal.hpp"
-        "Source/Metal/ConversionMetal.h"
-        "Source/Metal/ConversionMetal.hpp"
-        "Source/Metal/DescriptorMetal.h"
-        "Source/Metal/DescriptorMetal.hpp"
-        "Source/Metal/DescriptorPoolMetal.h"
-        "Source/Metal/DescriptorPoolMetal.hpp"
-        "Source/Metal/DescriptorSetMetal.h"
-        "Source/Metal/DescriptorSetMetal.hpp"
-        "Source/Metal/DeviceMetal.h"
-        "Source/Metal/DeviceMetal.hpp"
-        "Source/Metal/FenceMetal.h"
-        "Source/Metal/FenceMetal.hpp"
-        "Source/Metal/ImplMetal.cpp"
-        "Source/Metal/InternalShadersMetal.h"
-        "Source/Metal/InternalShadersMetal.hpp"
-        "Source/Metal/MemoryMetal.h"
-        "Source/Metal/MemoryMetal.hpp"
-        "Source/Metal/PipelineCacheMetal.h"
-        "Source/Metal/PipelineCacheMetal.hpp"
-        "Source/Metal/PipelineLayoutMetal.h"
-        "Source/Metal/PipelineLayoutMetal.hpp"
-        "Source/Metal/PipelineMetal.h"
-        "Source/Metal/PipelineMetal.hpp"
-        "Source/Metal/QueryPoolMetal.h"
-        "Source/Metal/QueryPoolMetal.hpp"
-        "Source/Metal/QueueMetal.h"
-        "Source/Metal/QueueMetal.hpp"
-        "Source/Metal/SharedMetal.h"
-        "Source/Metal/SwapChainMetal.h"
-        "Source/Metal/SwapChainMetal.hpp"
-        "Source/Metal/TextureMetal.h"
-        "Source/Metal/TextureMetal.hpp"
-    )
-
-    target_include_directories(NRI_Shared PRIVATE "${metal_cpp_SOURCE_DIR}") # MetalFX in "UpscalerInterface.hpp"
-
-    add_library(NRI_Metal STATIC)
-    target_sources(NRI_Metal
-        PRIVATE
-            ${METAL_SOURCE}
-    )
-    target_include_directories(NRI_Metal
-        PRIVATE
-            "${metal_cpp_SOURCE_DIR}"
-            $<$<BOOL:${NRI_ENABLE_METAL_SHADER_CONVERTER}>:
-                "${NRI_METAL_SHADER_CONVERTER_INCLUDE_PATH}"
-            >
-    )
-    target_link_libraries(NRI_Metal
-        PRIVATE
-            NRI_Shared
-            "-framework Foundation"
-            "-framework Metal"
-            ${NRI_METALFX_FRAMEWORK}
-            "-framework QuartzCore"
-            "-framework CoreGraphics"
-            $<$<BOOL:${NRI_ENABLE_METAL_SHADER_CONVERTER}>:
-                "${NRI_METAL_SHADER_CONVERTER_LIBRARY}"
-            >
-    )
-    set_target_properties(NRI_Metal
-        PROPERTIES
-            FOLDER "NRI"
-    )
-
-    nri_embed_metallib(InternalMetal NRI_Metal)
-endif()
-
 # Validation
 if(NRI_ENABLE_VALIDATION_SUPPORT)
     set(NRI_VALIDATION_SOURCE
@@ -1217,7 +964,6 @@ endif()
 set(NRI_HEADERS
     "Include/NRI.h"
     "Include/NRI.hlsl"
-    "Include/NRI.metal"
     "Include/NRIDescs.h"
     "Include/NRIMacro.h"
 )
@@ -1228,10 +974,6 @@ source_group("Include"
 set_source_files_properties(${NRI_HEADERS}
     PROPERTIES
         VS_SETTINGS "ExcludedFromBuild=true" # do not compile HLSL
-)
-set_source_files_properties("Include/NRI.metal"
-    PROPERTIES
-        HEADER_FILE_ONLY TRUE # do not compile MSL
 )
 
 # Extensions headers
@@ -1249,7 +991,6 @@ set(NRI_EXTENSIONS
     "Include/Extensions/NRIVideo.h"
     "Include/Extensions/NRIWrapperD3D11.h"
     "Include/Extensions/NRIWrapperD3D12.h"
-    "Include/Extensions/NRIWrapperMetal.h"
     "Include/Extensions/NRIWrapperVK.h"
 )
 source_group("Include/Extensions"
@@ -1346,9 +1087,6 @@ target_link_libraries(NRI
         $<$<BOOL:${NRI_ENABLE_WGPU_SUPPORT}>:
             NRI_WGPU
         >
-        $<$<BOOL:${NRI_ENABLE_METAL_SUPPORT}>:
-            NRI_Metal
-        >
         $<$<BOOL:${NRI_ENABLE_VALIDATION_SUPPORT}>:
             NRI_Validation
         >
@@ -1383,26 +1121,6 @@ if(NRI_ENABLE_AGILITY_SDK_SUPPORT)
     )
 endif()
 
-# Metal Shader Converter: "@rpath/libmetalirconverter.dylib" is found next to "libNRI" or in the app "Frameworks" folder
-if(NRI_ENABLE_METAL_SHADER_CONVERTER AND NOT NRI_STATIC_LIBRARY)
-    if(IOS)
-        set(NRI_RPATH "@loader_path;@executable_path/Frameworks")
-    else()
-        set(NRI_RPATH "@loader_path;@executable_path/../Frameworks")
-    endif()
-
-    set_target_properties(NRI
-        PROPERTIES
-            BUILD_RPATH "${NRI_RPATH}"
-            INSTALL_RPATH "${NRI_RPATH}"
-    )
-    add_custom_command(TARGET NRI
-        POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${NRI_METAL_SHADER_CONVERTER_LIBRARY}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-        VERBATIM
-    )
-endif()
-
 if(NRI_ENABLE_WGPU_SUPPORT)
     add_custom_command(TARGET NRI
         POST_BUILD
@@ -1415,8 +1133,8 @@ if(NRI_ENABLE_NGX_SDK)
     set(NGX_LIB_DIR $<IF:$<CONFIG:Debug>,dev,rel>)
 
     if(WIN32)
-        set(DLSS_SR_DLL "${ngx_SOURCE_DIR}/lib/${NGX_WINDOWS_DIR}/${NGX_LIB_DIR}/nvngx_dlss.dll")
-        set(DLSS_RR_DLL "${ngx_SOURCE_DIR}/lib/${NGX_WINDOWS_DIR}/${NGX_LIB_DIR}/nvngx_dlssd.dll")
+        set(DLSS_SR_DLL "${ngx_SOURCE_DIR}/lib/Windows_x86_64/${NGX_LIB_DIR}/nvngx_dlss.dll")
+        set(DLSS_RR_DLL "${ngx_SOURCE_DIR}/lib/Windows_x86_64/${NGX_LIB_DIR}/nvngx_dlssd.dll")
     else()
         set(DLSS_SR_DLL "${ngx_SOURCE_DIR}/lib/Linux_x86_64/${NGX_LIB_DIR}/libnvidia-ngx-dlss.so.${NGX_VERSION}")
         set(DLSS_RR_DLL "${ngx_SOURCE_DIR}/lib/Linux_x86_64/${NGX_LIB_DIR}/libnvidia-ngx-dlssd.so.${NGX_VERSION}")
@@ -1432,27 +1150,15 @@ endif()
 
 if(NRI_ENABLE_FFX_SDK)
     if(NRI_ENABLE_D3D12_SUPPORT)
-        find_file(FSR_DX12_LOADER_DLL
+        find_file(FFX_DX12_DLL
             NAMES
-                amd_fidelityfx_loader_dx12.dll
+                amd_fidelityfx_dx12.dll
             PATHS
-                "${fsr_SOURCE_DIR}/Kits/FidelityFX/signedbin"
-            NO_DEFAULT_PATH
-            NO_CACHE
-            REQUIRED
-        )
-        find_file(FSR_DX12_UPSCALER_DLL
-            NAMES
-                amd_fidelityfx_upscaler_dx12.dll
-            PATHS
-                "${fsr_SOURCE_DIR}/Kits/FidelityFX/signedbin"
-            NO_DEFAULT_PATH
-            NO_CACHE
-            REQUIRED
+                "${ffx_SOURCE_DIR}/PrebuiltSignedDLL"
         )
         add_custom_command(TARGET NRI
             POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FSR_DX12_LOADER_DLL} ${FSR_DX12_UPSCALER_DLL} "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different ${FFX_DX12_DLL} "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
                 VERBATIM
         )
     endif()
@@ -1492,19 +1198,13 @@ endif()
 if(NRI_ENABLE_SHADERMAKE)
     set(SHADERS
         "Shaders/Imgui.fs.hlsl"
-        "Shaders/Imgui.metal"
         "Shaders/Imgui.vs.hlsl"
-        "Shaders/InternalMetal.metal"
         "Shaders/NIS.hlsl"
         "Shaders/NIS.cs.hlsl"
     )
     set_source_files_properties(${SHADERS}
         PROPERTIES
             VS_SETTINGS "ExcludedFromBuild=true" # do not compile HLSL
-    )
-    set_source_files_properties("Shaders/Imgui.metal" "Shaders/InternalMetal.metal"
-        PROPERTIES
-            HEADER_FILE_ONLY TRUE # precompiled by "nri_embed_metallib"
     )
 
     set(SHADERMAKE_GENERAL_ARGS
@@ -1527,7 +1227,7 @@ if(NRI_ENABLE_SHADERMAKE)
     if(NRI_ENABLE_D3D11_SUPPORT)
         list(APPEND SHADERMAKE_COMMANDS COMMAND ${SHADERMAKE_PATH} -p DXBC --compiler "${SHADERMAKE_FXC_PATH}" ${SHADERMAKE_GENERAL_ARGS})
     endif()
-    if(NRI_ENABLE_D3D12_SUPPORT OR (NRI_ENABLE_METAL_SUPPORT AND NRI_ENABLE_METAL_SHADER_CONVERTER))
+    if(NRI_ENABLE_D3D12_SUPPORT)
         list(APPEND SHADERMAKE_COMMANDS COMMAND ${SHADERMAKE_PATH} -p DXIL --compiler "${SHADERMAKE_DXC_PATH}" ${SHADERMAKE_GENERAL_ARGS})
     endif()
     if(NRI_ENABLE_VK_SUPPORT OR NRI_ENABLE_WGPU_SUPPORT)
@@ -1561,4 +1261,8 @@ if(NRI_ENABLE_SHADERMAKE)
     )
 
     message("NRI: shaders path '${NRI_SHADERS_PATH}'")
+endif()
+
+if(NRI_BUILD_TESTS)
+    add_subdirectory(Tests)
 endif()
