@@ -9,7 +9,7 @@ struct VideoSessionVK;
 struct VideoSessionParametersVK final : public DebugNameBase {
     inline VideoSessionParametersVK(DeviceVK& device)
         : m_Device(device)
-        , m_H264ReferenceIndexDefaults(device.GetStdAllocator()) {
+        , m_ReferenceIndexDefaults(device.GetStdAllocator()) {
     }
 
     inline DeviceVK& GetDevice() const {
