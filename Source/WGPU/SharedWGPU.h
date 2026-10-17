@@ -18,6 +18,16 @@ EM_JS(void, NriWgpuRenderPassSetImmediates, (WGPURenderPassEncoder pass, uint32_
 EM_JS(void, NriWgpuComputePassSetImmediates, (WGPUComputePassEncoder pass, uint32_t offset, const void* data, uint32_t size), {
     WebGPU.getJsObject(pass)['setImmediates'](offset, HEAPU8.slice(data, data + size));
 });
+// Emdawn's wgpuDeviceCreatePipelineLayout drops "immediateSize", so layouts reserving immediates are created through
+// the JS API and imported back as ordinary Emdawn handles.
+EM_JS(WGPUPipelineLayout, NriWgpuCreatePipelineLayoutWithImmediates, (WGPUDevice device, const WGPUBindGroupLayout* layouts, uint32_t layoutNum, uint32_t immediateSize), {
+    var bindGroupLayouts = [];
+    for (var i = 0; i < layoutNum; ++i) {
+        bindGroupLayouts.push(WebGPU.getJsObject(HEAPU32[(layouts >>> 2) + i]));
+    }
+    var layout = WebGPU.getJsObject(device)['createPipelineLayout']({ 'bindGroupLayouts': bindGroupLayouts, 'immediateSize': immediateSize });
+    return WebGPU.importJsPipelineLayout(layout);
+});
 #endif
 
 static inline void SetPassImmediates(WGPURenderPassEncoder pass, uint32_t offset, const void* data, uint32_t size) {

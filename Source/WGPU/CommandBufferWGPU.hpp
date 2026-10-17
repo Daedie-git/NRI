@@ -1598,8 +1598,12 @@ void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint
         return;
     }
 #endif
-    // Without multi-draw a count buffer cannot be honored, and the device does not advertise "drawIndirectCount".
-    MaybeUnused(countBuffer, countBufferOffset);
+    // The per-record loop cannot read a GPU count; drawing every record would render stale arguments.
+    if (countBuffer) {
+        NRI_REPORT_ERROR(&m_Device, "Indirect count draws require tightly packed records (stride %u) on WebGPU", (uint32_t)sizeof(DrawDesc));
+        return;
+    }
+    MaybeUnused(countBufferOffset);
     for (uint32_t i = 0; i < drawNum; i++)
         wgpuRenderPassEncoderDrawIndirect(m_RenderPass, bufferWGPU, offset + (uint64_t)i * stride);
 }
@@ -1620,8 +1624,12 @@ void CommandBufferWGPU::DrawIndexedIndirect(const Buffer& buffer, uint64_t offse
         return;
     }
 #endif
-    // Without multi-draw a count buffer cannot be honored, and the device does not advertise "drawIndirectCount".
-    MaybeUnused(countBuffer, countBufferOffset);
+    // The per-record loop cannot read a GPU count; drawing every record would render stale arguments.
+    if (countBuffer) {
+        NRI_REPORT_ERROR(&m_Device, "Indirect count draws require tightly packed records (stride %u) on WebGPU", (uint32_t)sizeof(DrawIndexedDesc));
+        return;
+    }
+    MaybeUnused(countBufferOffset);
     for (uint32_t i = 0; i < drawNum; i++)
         wgpuRenderPassEncoderDrawIndexedIndirect(m_RenderPass, bufferWGPU, offset + (uint64_t)i * stride);
 }
