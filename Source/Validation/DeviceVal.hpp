@@ -188,7 +188,10 @@ NRI_INLINE Result DeviceVal::CreateSwapChain(const SwapChainDesc& swapChainDesc,
     NRI_RETURN_ON_FAILURE(this, swapChainDesc.queue != nullptr, Result::INVALID_ARGUMENT, "'queue' is NULL");
 
     bool isWindowValid = false;
-#if defined(__ANDROID__)
+#if defined(__EMSCRIPTEN__)
+    // The WebGPU backend falls back to the "#canvas" selector when none is provided.
+    isWindowValid = true;
+#elif defined(__ANDROID__)
     isWindowValid = swapChainDesc.window.android.nativeWindow != nullptr;
 #elif defined(_WIN32)
     isWindowValid = swapChainDesc.window.windows.hwnd != nullptr;
