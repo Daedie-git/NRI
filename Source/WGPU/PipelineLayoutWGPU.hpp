@@ -1,15 +1,26 @@
 // © 2026 NVIDIA Corporation
 
-static inline void FillLayoutEntry(WGPUBindGroupLayoutEntry& entry, DescriptorType descriptorType, WGPUShaderStage visibility, WGPUTextureSampleType textureSampleType, WGPUTextureViewDimension textureViewDimension, WGPUBool textureMultisampled, WGPUTextureFormat storageTextureFormat, WGPUTextureViewDimension storageTextureViewDimension, WGPUStorageTextureAccess storageTextureAccess, uint32_t binding, WGPUBindGroupLayoutEntryExtras* extras = nullptr) {
+#if defined(__EMSCRIPTEN__)
+// Core WebGPU has no binding arrays; array ranges are rejected when the layout is created.
+struct BindGroupLayoutEntryExtrasWGPU {};
+#else
+using BindGroupLayoutEntryExtrasWGPU = WGPUBindGroupLayoutEntryExtras;
+#endif
+
+static inline void FillLayoutEntry(WGPUBindGroupLayoutEntry& entry, DescriptorType descriptorType, WGPUShaderStage visibility, WGPUTextureSampleType textureSampleType, WGPUTextureViewDimension textureViewDimension, WGPUBool textureMultisampled, WGPUTextureFormat storageTextureFormat, WGPUTextureViewDimension storageTextureViewDimension, WGPUStorageTextureAccess storageTextureAccess, uint32_t binding, BindGroupLayoutEntryExtrasWGPU* extras = nullptr) {
     entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     entry.binding = binding;
     entry.visibility = visibility;
 
+#if !defined(__EMSCRIPTEN__)
     if (extras) {
         *extras = {};
         extras->chain.sType = (WGPUSType)WGPUSType_BindGroupLayoutEntryExtras;
         entry.nextInChain = &extras->chain;
     }
+#else
+    MaybeUnused(extras);
+#endif
 
     switch (descriptorType) {
         case DescriptorType::SAMPLER:
@@ -40,11 +51,11 @@ static inline void FillLayoutEntry(WGPUBindGroupLayoutEntry& entry, DescriptorTy
     }
 }
 
-static inline void FillLayoutEntry(WGPUBindGroupLayoutEntry& entry, const DescriptorRangeMappingWGPU& range, uint32_t binding, WGPUBindGroupLayoutEntryExtras* extras = nullptr) {
+static inline void FillLayoutEntry(WGPUBindGroupLayoutEntry& entry, const DescriptorRangeMappingWGPU& range, uint32_t binding, BindGroupLayoutEntryExtrasWGPU* extras = nullptr) {
     FillLayoutEntry(entry, range.type, range.visibility, range.textureSampleType, range.textureViewDimension, range.textureMultisampled, range.storageTextureFormat, range.storageTextureViewDimension, range.storageTextureAccess, binding, extras);
 }
 
-static inline void FillLayoutEntry(WGPUBindGroupLayoutEntry& entry, const DescriptorRangeDesc& range, uint32_t binding, WGPUBindGroupLayoutEntryExtras* extras = nullptr) {
+static inline void FillLayoutEntry(WGPUBindGroupLayoutEntry& entry, const DescriptorRangeDesc& range, uint32_t binding, BindGroupLayoutEntryExtrasWGPU* extras = nullptr) {
     FillLayoutEntry(entry, range.descriptorType, GetShaderStageFlags(range.shaderStages), WGPUTextureSampleType_Float, WGPUTextureViewDimension_2D, WGPU_FALSE, WGPUTextureFormat_Undefined, WGPUTextureViewDimension_2D, WGPUStorageTextureAccess_WriteOnly, binding, extras);
 }
 
@@ -770,7 +781,7 @@ Result PipelineLayoutWGPU::Create(const PipelineLayoutDesc& pipelineLayoutDesc) 
         }
 
         Scratch<WGPUBindGroupLayoutEntry> entries = NRI_ALLOCATE_SCRATCH(m_Device, WGPUBindGroupLayoutEntry, entryNum);
-        Scratch<WGPUBindGroupLayoutEntryExtras> entryExtras = NRI_ALLOCATE_SCRATCH(m_Device, WGPUBindGroupLayoutEntryExtras, arrayNum);
+        Scratch<BindGroupLayoutEntryExtrasWGPU> entryExtras = NRI_ALLOCATE_SCRATCH(m_Device, BindGroupLayoutEntryExtrasWGPU, arrayNum);
         uint32_t entryOffset = 0;
         uint32_t entryExtraOffset = 0;
         uint32_t descriptorOffset = 0;
@@ -788,10 +799,15 @@ Result PipelineLayoutWGPU::Create(const PipelineLayoutDesc& pipelineLayoutDesc) 
             rangeMapping.isArray = isArray;
 
             if (isArray) {
+#if defined(__EMSCRIPTEN__)
+                NRI_REPORT_ERROR(&m_Device, "Binding arrays are not supported by core WebGPU");
+                return Result::UNSUPPORTED;
+#else
                 WGPUBindGroupLayoutEntryExtras& extras = entryExtras[entryExtraOffset++];
                 FillLayoutEntry(entries[entryOffset], rangeMapping, bindingBase, &extras);
                 extras.count = range.descriptorNum;
                 entryOffset++;
+#endif
             } else {
                 for (uint32_t k = 0; k < range.descriptorNum; k++)
                     FillLayoutEntry(entries[entryOffset++], rangeMapping, bindingBase + k);
@@ -998,15 +1014,20 @@ Result PipelineLayoutWGPU::CreatePipelineLayout(const ShaderDesc* shaderDescs, u
         }
 
         Scratch<WGPUBindGroupLayoutEntry> entries = NRI_ALLOCATE_SCRATCH(m_Device, WGPUBindGroupLayoutEntry, entryNum);
-        Scratch<WGPUBindGroupLayoutEntryExtras> entryExtras = NRI_ALLOCATE_SCRATCH(m_Device, WGPUBindGroupLayoutEntryExtras, arrayNum);
+        Scratch<BindGroupLayoutEntryExtrasWGPU> entryExtras = NRI_ALLOCATE_SCRATCH(m_Device, BindGroupLayoutEntryExtrasWGPU, arrayNum);
         uint32_t entryOffset = 0;
         uint32_t entryExtraOffset = 0;
         for (const DescriptorRangeMappingWGPU& range : mapping.ranges) {
             if (range.isArray) {
+#if defined(__EMSCRIPTEN__)
+                NRI_REPORT_ERROR(&m_Device, "Binding arrays are not supported by core WebGPU");
+                return Result::UNSUPPORTED;
+#else
                 WGPUBindGroupLayoutEntryExtras& extras = entryExtras[entryExtraOffset++];
                 FillLayoutEntry(entries[entryOffset], range, range.bindingBase, &extras);
                 extras.count = range.descriptorNum;
                 entryOffset++;
+#endif
             } else {
                 for (uint32_t i = 0; i < range.descriptorNum; i++)
                     FillLayoutEntry(entries[entryOffset++], range, range.bindingBase + i);
