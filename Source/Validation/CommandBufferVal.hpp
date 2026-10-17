@@ -106,6 +106,62 @@ static inline bool IsDrawParametersEmulationEnabled(const PipelineLayoutDesc& pi
     return (pipelineLayoutDesc.flags & PipelineLayoutBits::ENABLE_DRAW_PARAMETERS_EMULATION) != 0 && (pipelineLayoutDesc.shaderStages & StageBits::VERTEX_SHADER) != 0;
 }
 
+// Integer and stencil samples can't be averaged in any API
+static inline bool IsAverageResolvable(Format format, PlaneBits planes = PlaneBits::ALL) {
+    const FormatProps& formatProps = GetFormatProps(format);
+    const bool isIntegerColor = formatProps.isInteger && !formatProps.isDepth && !formatProps.isStencil;
+
+    return !isIntegerColor && (!formatProps.isStencil || (planes != PlaneBits::ALL && !(planes & PlaneBits::STENCIL)));
+}
+
+static_assert((uint32_t)ResolveOp::MAX_NUM == 4 && (uint32_t)ResolveOpBits::SAMPLE_ZERO == NriBit((uint32_t)ResolveOp::SAMPLE_ZERO), "'ResolveOpBits' must be 'NriBit(ResolveOp)'");
+
+constexpr std::array<const char*, (size_t)ResolveOp::MAX_NUM> g_ResolveOpNames = {
+    "AVERAGE",
+    "MIN",
+    "MAX",
+    "SAMPLE_ZERO",
+};
+NRI_VALIDATE_ARRAY_BY_PTR(g_ResolveOpNames);
+
+static inline bool IsResolveOpSupported(ResolveOpBits resolveOps, ResolveOp resolveOp) {
+    return (resolveOps & (ResolveOpBits)NriBit((uint32_t)resolveOp)) != 0;
+}
+
+static inline ResolveOpBits GetColorResolveOps(const ResolveOps& resolveOps, Format format) {
+    return GetFormatProps(format).isInteger ? resolveOps.colorInteger : resolveOps.color;
+}
+
+// All planes of a format
+static inline PlaneBits GetFormatPlanes(Format format) {
+    if (format == Format::NV12_UNORM || format == Format::P010_UNORM || format == Format::P016_UNORM)
+        return PlaneBits::PLANE_0 | PlaneBits::PLANE_1;
+
+    const FormatProps& formatProps = GetFormatProps(format);
+    if (!formatProps.isDepth && !formatProps.isStencil)
+        return PlaneBits::COLOR;
+
+    PlaneBits planes = PlaneBits::ALL; // 0
+    if (formatProps.isDepth)
+        planes |= PlaneBits::DEPTH;
+    if (formatProps.isStencil)
+        planes |= PlaneBits::STENCIL;
+
+    return planes;
+}
+
+// Planes of a copy or resolve region ("ALL" or no region means all planes of the format)
+static inline PlaneBits GetRegionPlanes(Format format, const TextureRegionDesc* region) {
+    return (region && region->planes != PlaneBits::ALL) ? region->planes : GetFormatPlanes(format);
+}
+
+// Explicit planes must exist in the format ("NONE" is not allowed)
+static inline bool AreRegionPlanesValid(Format format, PlaneBits planes) {
+    const PlaneBits formatPlanes = GetFormatPlanes(format);
+
+    return planes != PlaneBits::NONE && (planes & formatPlanes) == (uint8_t)planes;
+}
+
 static bool ValidateBufferBarrierDesc(const DeviceVal& device, uint32_t i, const BufferBarrierDesc& bufferBarrier) {
     NRI_RETURN_ON_FAILURE(&device, bufferBarrier.buffer, false, "'barrierDesc.buffers[%u].buffer' is NULL", i);
 
@@ -429,7 +485,6 @@ NRI_INLINE Result CommandBufferVal::Begin(const DescriptorPool* descriptorPool) 
     if (result == Result::SUCCESS)
         m_IsRecordingStarted = true;
 
-    m_Pipeline = nullptr;
     m_PipelineLayout = nullptr;
 
     ResetDescriptorSets();
@@ -616,8 +671,14 @@ NRI_INLINE void CommandBufferVal::BeginRendering(const RenderingDesc& renderingD
 
             NRI_RETURN_ON_FAILURE(&m_Device, resolveDstVal.IsColorAttachment(), ReturnVoid(), "'colors[%u].resolveDst' is not a 'COLOR_ATTACHMENT' descriptor", i);
             NRI_RETURN_ON_FAILURE(&m_Device, m_Device.GetFormatSupport(resolveDstVal.GetFormat()) & FormatSupportBits::MULTISAMPLE_RESOLVE, ReturnVoid(), "'colors[%u].resolveDst' format does not support 'FormatSupportBits::MULTISAMPLE_RESOLVE'", i);
-            if (!deviceDesc.features.resolveOpMinMax)
-                NRI_RETURN_ON_FAILURE(&m_Device, renderingDesc.colors[i].resolveOp == ResolveOp::AVERAGE, ReturnVoid(), "'features.resolveOpMinMax' is false");
+            NRI_RETURN_ON_FAILURE(&m_Device, resolveDstVal.GetFormat() == colorVal.GetFormat(), ReturnVoid(), "'colors[%u].resolveDst' format must match 'colors[%u].descriptor' format", i, i);
+
+            const ResolveOp resolveOp = renderingDesc.colors[i].resolveOp;
+            if (resolveOp == ResolveOp::AVERAGE)
+                NRI_RETURN_ON_FAILURE(&m_Device, IsAverageResolvable(colorVal.GetFormat()), ReturnVoid(), "'colors[%u].resolveOp': 'ResolveOp::AVERAGE' can't be used with integer formats", i);
+
+            NRI_RETURN_ON_FAILURE(&m_Device, IsResolveOpSupported(GetColorResolveOps(deviceDesc.resolve.attachment, colorVal.GetFormat()), resolveOp), ReturnVoid(),
+                "'colors[%u].resolveOp': 'ResolveOp::%s' is not supported for this format (see 'resolve.attachment')", i, g_ResolveOpNames[(size_t)resolveOp]);
         }
 
         colors[i] = renderingDesc.colors[i];
@@ -645,8 +706,19 @@ NRI_INLINE void CommandBufferVal::BeginRendering(const RenderingDesc& renderingD
         NRI_RETURN_ON_FAILURE(&m_Device, renderingDesc.depth.descriptor, ReturnVoid(), "'depth.resolveDst' is not NULL, but 'depth.descriptor' is NULL");
         NRI_RETURN_ON_FAILURE(&m_Device, resolveDstVal.IsDepthStencilAttachment(), ReturnVoid(), "'depth.resolveDst' is not a 'DEPTH_STENCIL_ATTACHMENT' descriptor");
         NRI_RETURN_ON_FAILURE(&m_Device, m_Device.GetFormatSupport(resolveDstVal.GetFormat()) & FormatSupportBits::MULTISAMPLE_RESOLVE, ReturnVoid(), "'depth.resolveDst' format does not support 'FormatSupportBits::MULTISAMPLE_RESOLVE'");
-        if (!deviceDesc.features.resolveOpMinMax)
-            NRI_RETURN_ON_FAILURE(&m_Device, renderingDesc.depth.resolveOp == ResolveOp::AVERAGE, ReturnVoid(), "'features.resolveOpMinMax' is false");
+        // Without a separate "stencil" attachment the stencil plane is resolved with "depth.resolveOp"
+        const ResolveOp resolveOp = renderingDesc.depth.resolveOp;
+        const DescriptorVal& depthVal = *(DescriptorVal*)renderingDesc.depth.descriptor;
+        const bool isStencilResolved = GetFormatProps(depthVal.GetFormat()).isStencil && !renderingDesc.stencil.descriptor;
+        if (resolveOp == ResolveOp::AVERAGE)
+            NRI_RETURN_ON_FAILURE(&m_Device, !isStencilResolved, ReturnVoid(), "'depth.resolveOp': 'ResolveOp::AVERAGE' can't be used with a depth-stencil format without a separate 'stencil' attachment");
+
+        NRI_RETURN_ON_FAILURE(&m_Device, IsResolveOpSupported(deviceDesc.resolve.attachment.depth, resolveOp), ReturnVoid(),
+            "'depth.resolveOp': 'ResolveOp::%s' is not supported for depth (see 'resolve.attachment')", g_ResolveOpNames[(size_t)resolveOp]);
+
+        if (isStencilResolved)
+            NRI_RETURN_ON_FAILURE(&m_Device, IsResolveOpSupported(deviceDesc.resolve.attachment.stencil, resolveOp), ReturnVoid(),
+                "'depth.resolveOp': 'ResolveOp::%s' is not supported for stencil, which is resolved with 'depth.resolveOp' (see 'resolve.attachment', or use a separate 'stencil' attachment)", g_ResolveOpNames[(size_t)resolveOp]);
     }
     if (renderingDesc.stencil.descriptor) {
         const DescriptorVal& stencilVal = *(DescriptorVal*)renderingDesc.stencil.descriptor;
@@ -657,8 +729,25 @@ NRI_INLINE void CommandBufferVal::BeginRendering(const RenderingDesc& renderingD
         NRI_RETURN_ON_FAILURE(&m_Device, renderingDesc.stencil.descriptor, ReturnVoid(), "'stencil.resolveDst' is not NULL, but 'stencil.descriptor' is NULL");
         NRI_RETURN_ON_FAILURE(&m_Device, resolveDstVal.IsDepthStencilAttachment(), ReturnVoid(), "'stencil.resolveDst' is not a 'DEPTH_STENCIL_ATTACHMENT' descriptor");
         NRI_RETURN_ON_FAILURE(&m_Device, m_Device.GetFormatSupport(resolveDstVal.GetFormat()) & FormatSupportBits::MULTISAMPLE_RESOLVE, ReturnVoid(), "'stencil.resolveDst' format does not support 'FormatSupportBits::MULTISAMPLE_RESOLVE'");
-        if (!deviceDesc.features.resolveOpMinMax)
-            NRI_RETURN_ON_FAILURE(&m_Device, renderingDesc.stencil.resolveOp == ResolveOp::AVERAGE, ReturnVoid(), "'features.resolveOpMinMax' is false");
+        NRI_RETURN_ON_FAILURE(&m_Device, renderingDesc.stencil.resolveOp != ResolveOp::AVERAGE, ReturnVoid(), "'stencil.resolveOp': 'ResolveOp::AVERAGE' can't be used with stencil");
+        NRI_RETURN_ON_FAILURE(&m_Device, IsResolveOpSupported(deviceDesc.resolve.attachment.stencil, renderingDesc.stencil.resolveOp), ReturnVoid(),
+            "'stencil.resolveOp': 'ResolveOp::%s' is not supported for stencil (see 'resolve.attachment')", g_ResolveOpNames[(size_t)renderingDesc.stencil.resolveOp]);
+    }
+
+    // Depth and stencil of a depth-stencil format resolved with different ops or only one of them
+    const Descriptor* depthStencilAttachment = renderingDesc.depth.descriptor ? renderingDesc.depth.descriptor : renderingDesc.stencil.descriptor;
+    if (depthStencilAttachment && (renderingDesc.depth.resolveDst || renderingDesc.stencil.resolveDst)) {
+        const FormatProps& formatProps = GetFormatProps(((const DescriptorVal*)depthStencilAttachment)->GetFormat());
+        if (formatProps.isDepth && formatProps.isStencil) {
+            const bool isDepthResolved = renderingDesc.depth.descriptor && renderingDesc.depth.resolveDst;
+            const bool isStencilResolved = renderingDesc.stencil.descriptor ? renderingDesc.stencil.resolveDst != nullptr : isDepthResolved;
+
+            if (isDepthResolved != isStencilResolved)
+                NRI_RETURN_ON_FAILURE(&m_Device, deviceDesc.resolve.independentDepthStencilNone, ReturnVoid(), "only one of depth and stencil is resolved, but 'resolve.independentDepthStencilNone' is false");
+
+            if (isDepthResolved && isStencilResolved && renderingDesc.stencil.descriptor && renderingDesc.depth.resolveOp != renderingDesc.stencil.resolveOp)
+                NRI_RETURN_ON_FAILURE(&m_Device, deviceDesc.resolve.independentDepthStencil, ReturnVoid(), "depth and stencil are resolved with different ops, but 'resolve.independentDepthStencil' is false");
+        }
     }
 
     Descriptor* depthStencil = renderingDesc.depth.descriptor ? renderingDesc.depth.descriptor : renderingDesc.stencil.descriptor;
@@ -666,8 +755,6 @@ NRI_INLINE void CommandBufferVal::BeginRendering(const RenderingDesc& renderingD
 
     m_RenderTargetNum = renderingDesc.colorNum;
     m_IsRenderPass = true;
-
-    ValidateReadonlyDepthStencil();
 
     GetCoreInterfaceImpl().CmdBeginRendering(*GetImpl(), attachmentsDescImpl);
 }
@@ -722,10 +809,6 @@ NRI_INLINE void CommandBufferVal::SetPipeline(const Pipeline& pipeline) {
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
 
     Pipeline* pipelineImpl = NRI_GET_IMPL(Pipeline, &pipeline);
-
-    m_Pipeline = (PipelineVal*)&pipeline;
-
-    ValidateReadonlyDepthStencil();
 
     GetCoreInterfaceImpl().CmdSetPipeline(*GetImpl(), *pipelineImpl);
 }
@@ -801,7 +884,6 @@ NRI_INLINE void CommandBufferVal::SetRootDescriptor(const SetRootDescriptorDesc&
     const DeviceDesc& deviceDesc = m_Device.GetDesc();
     const RootDescriptorDesc& rootDescriptorDesc = pipelineLayoutDesc.rootDescriptors[setRootDescriptorDesc.rootDescriptorIndex];
 
-    NRI_RETURN_ON_FAILURE(&m_Device, &descriptorVal.GetDevice() == &m_Device, ReturnVoid(), "'descriptor' belongs to another device");
     NRI_RETURN_ON_FAILURE(&m_Device, descriptorVal.CanBeRoot(), ReturnVoid(), "'descriptor' must be a non-typed buffer or an acceleration structure");
     NRI_RETURN_ON_FAILURE(&m_Device, descriptorVal.GetType() == rootDescriptorDesc.descriptorType, ReturnVoid(), "'descriptor' type doesn't match 'rootDescriptors[%u].descriptorType'", setRootDescriptorDesc.rootDescriptorIndex);
 
@@ -896,6 +978,13 @@ NRI_INLINE void CommandBufferVal::CopyTexture(Texture& dstTexture, const Texture
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
     NRI_RETURN_ON_FAILURE(&m_Device, !m_IsRenderPass, ReturnVoid(), "must be called outside of 'CmdBeginRendering/CmdEndRendering'");
 
+    const TextureDesc& dstDesc = ((TextureVal&)dstTexture).GetDesc();
+    const TextureDesc& srcDesc = ((TextureVal&)srcTexture).GetDesc();
+    const PlaneBits srcPlanes = GetRegionPlanes(srcDesc.format, srcRegion);
+    const PlaneBits dstPlanes = GetRegionPlanes(dstDesc.format, dstRegion);
+    NRI_RETURN_ON_FAILURE(&m_Device, AreRegionPlanesValid(srcDesc.format, srcPlanes), ReturnVoid(), "'srcRegion->planes' is empty or has planes missing in the source format");
+    NRI_RETURN_ON_FAILURE(&m_Device, AreRegionPlanesValid(dstDesc.format, dstPlanes), ReturnVoid(), "'dstRegion->planes' is empty or has planes missing in the destination format");
+
     Texture* dstTextureImpl = NRI_GET_IMPL(Texture, &dstTexture);
     Texture* srcTextureImpl = NRI_GET_IMPL(Texture, &srcTexture);
 
@@ -910,13 +999,41 @@ NRI_INLINE void CommandBufferVal::ResolveTexture(Texture& dstTexture, const Text
     const DeviceDesc& deviceDesc = m_Device.GetDesc();
     const TextureDesc& dstDesc = ((TextureVal&)dstTexture).GetDesc();
     const TextureDesc& srcDesc = ((TextureVal&)srcTexture).GetDesc();
+    NRI_RETURN_ON_FAILURE(&m_Device, srcDesc.sampleNum > 1 && dstDesc.sampleNum == 1, ReturnVoid(), "'srcTexture' must be multisampled and 'dstTexture' must be single-sampled");
+    NRI_RETURN_ON_FAILURE(&m_Device, srcDesc.format == dstDesc.format, ReturnVoid(), "'srcTexture' and 'dstTexture' formats must match");
+
+    if (!dstRegion && !srcRegion)
+        NRI_RETURN_ON_FAILURE(&m_Device, srcDesc.layerNum == dstDesc.layerNum, ReturnVoid(), "'layerNum' mismatch for a whole-texture resolve");
+
     NRI_RETURN_ON_FAILURE(&m_Device, m_Device.GetFormatSupport(dstDesc.format) & FormatSupportBits::MULTISAMPLE_RESOLVE, ReturnVoid(), "'dstTexture' format does not support 'FormatSupportBits::MULTISAMPLE_RESOLVE'");
     NRI_RETURN_ON_FAILURE(&m_Device, m_Device.GetFormatSupport(srcDesc.format) & FormatSupportBits::MULTISAMPLE_RESOLVE, ReturnVoid(), "'srcTexture' format does not support 'FormatSupportBits::MULTISAMPLE_RESOLVE'");
 
     if (!deviceDesc.features.regionResolve)
         NRI_RETURN_ON_FAILURE(&m_Device, !dstRegion && !srcRegion, ReturnVoid(), "region(s) are specified, but 'features.regionResolve' is false");
-    if (!deviceDesc.features.resolveOpMinMax)
-        NRI_RETURN_ON_FAILURE(&m_Device, resolveOp == ResolveOp::AVERAGE, ReturnVoid(), "'features.resolveOpMinMax' is false");
+    // A missing region covers all planes
+    const PlaneBits srcPlanes = GetRegionPlanes(srcDesc.format, srcRegion);
+    const PlaneBits dstPlanes = GetRegionPlanes(dstDesc.format, dstRegion);
+    NRI_RETURN_ON_FAILURE(&m_Device, AreRegionPlanesValid(srcDesc.format, srcPlanes), ReturnVoid(), "'srcRegion->planes' is empty or has planes missing in the source format");
+    NRI_RETURN_ON_FAILURE(&m_Device, AreRegionPlanesValid(dstDesc.format, dstPlanes), ReturnVoid(), "'dstRegion->planes' is empty or has planes missing in the destination format");
+    NRI_RETURN_ON_FAILURE(&m_Device, srcPlanes == dstPlanes, ReturnVoid(), "source and destination must resolve the same planes");
+
+    if (resolveOp == ResolveOp::AVERAGE)
+        NRI_RETURN_ON_FAILURE(&m_Device, IsAverageResolvable(srcDesc.format, srcRegion ? srcRegion->planes : PlaneBits::ALL), ReturnVoid(), "'ResolveOp::AVERAGE' can't be used with integer or stencil formats");
+
+    const FormatProps& formatProps = GetFormatProps(srcDesc.format);
+    const char* opName = g_ResolveOpNames[(size_t)resolveOp];
+    if (!formatProps.isDepth && !formatProps.isStencil)
+        NRI_RETURN_ON_FAILURE(&m_Device, IsResolveOpSupported(GetColorResolveOps(deviceDesc.resolve.command, srcDesc.format), resolveOp), ReturnVoid(), "'ResolveOp::%s' is not supported for this format (see 'resolve.command')", opName);
+
+    if (srcPlanes & PlaneBits::DEPTH)
+        NRI_RETURN_ON_FAILURE(&m_Device, IsResolveOpSupported(deviceDesc.resolve.command.depth, resolveOp), ReturnVoid(), "'ResolveOp::%s' is not supported for depth (see 'resolve.command')", opName);
+
+    if (srcPlanes & PlaneBits::STENCIL)
+        NRI_RETURN_ON_FAILURE(&m_Device, IsResolveOpSupported(deviceDesc.resolve.command.stencil, resolveOp), ReturnVoid(), "'ResolveOp::%s' is not supported for stencil (see 'resolve.command')", opName);
+
+    // Only one plane of a depth-stencil format
+    if (formatProps.isDepth && formatProps.isStencil && srcPlanes != (PlaneBits::DEPTH | PlaneBits::STENCIL))
+        NRI_RETURN_ON_FAILURE(&m_Device, deviceDesc.resolve.independentDepthStencilNone, ReturnVoid(), "only one of depth and stencil is resolved, but 'resolve.independentDepthStencilNone' is false");
 
     Texture* dstTextureImpl = NRI_GET_IMPL(Texture, &dstTexture);
     Texture* srcTextureImpl = NRI_GET_IMPL(Texture, &srcTexture);
@@ -980,6 +1097,17 @@ NRI_INLINE void CommandBufferVal::DispatchIndirect(const Buffer& buffer, uint64_
 
 NRI_INLINE void CommandBufferVal::Barrier(const BarrierDesc& barrierDesc) {
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
+
+    // Inside rendering only "Layout::INPUT_ATTACHMENT" access transitions are allowed
+    if (m_IsRenderPass) {
+        NRI_RETURN_ON_FAILURE(&m_Device, barrierDesc.globalNum == 0 && barrierDesc.bufferNum == 0, ReturnVoid(), "only texture barriers are allowed inside 'CmdBeginRendering/CmdEndRendering'");
+
+        for (uint32_t i = 0; i < barrierDesc.textureNum; i++) {
+            const TextureBarrierDesc& textureBarrier = barrierDesc.textures[i];
+            NRI_RETURN_ON_FAILURE(&m_Device, textureBarrier.before.layout == Layout::INPUT_ATTACHMENT && textureBarrier.after.layout == Layout::INPUT_ATTACHMENT, ReturnVoid(),
+                "'textures[%u]': only 'Layout::INPUT_ATTACHMENT' access transitions are allowed inside 'CmdBeginRendering/CmdEndRendering'", i);
+        }
+    }
 
     for (uint32_t i = 0; i < barrierDesc.bufferNum; i++) {
         if (!ValidateBufferBarrierDesc(m_Device, i, barrierDesc.buffers[i]))
@@ -1112,6 +1240,25 @@ NRI_INLINE void CommandBufferVal::BuildTopLevelAccelerationStructure(const Build
         NRI_RETURN_ON_FAILURE(&m_Device, in.instanceOffset <= instanceBufferVal->GetDesc().size, ReturnVoid(), "'[%u].instanceOffset=%" PRIu64 "' is out of bounds", i, in.instanceOffset);
         NRI_RETURN_ON_FAILURE(&m_Device, in.scratchOffset <= scratchBufferVal->GetDesc().size, ReturnVoid(), "'[%u].scratchOffset=%" PRIu64 "' is out of bounds", i, in.scratchOffset);
 
+        const AccelerationStructureVal& dstVal = *(AccelerationStructureVal*)in.dst;
+
+        if (dstVal.GetType() != AccelerationStructureType::MAX_NUM) {
+            NRI_RETURN_ON_FAILURE(&m_Device, dstVal.GetType() == AccelerationStructureType::TOP_LEVEL, ReturnVoid(), "'[%u].dst' is not a top level acceleration structure", i);
+            NRI_RETURN_ON_FAILURE(&m_Device, in.instanceNum <= dstVal.GetGeometryOrInstanceNum(), ReturnVoid(), "'[%u].instanceNum=%u' exceeds 'geometryOrInstanceNum=%u' used at creation", i, in.instanceNum, dstVal.GetGeometryOrInstanceNum());
+
+            if (in.src)
+                NRI_RETURN_ON_FAILURE(&m_Device, dstVal.GetFlags() & AccelerationStructureBits::ALLOW_UPDATE, ReturnVoid(), "'[%u].src' is provided (update), but 'dst' is not created with 'ALLOW_UPDATE'", i);
+        }
+
+        if (in.src) {
+            const AccelerationStructureVal& srcVal = *(AccelerationStructureVal*)in.src;
+
+            if (srcVal.GetType() != AccelerationStructureType::MAX_NUM) {
+                NRI_RETURN_ON_FAILURE(&m_Device, srcVal.GetType() == AccelerationStructureType::TOP_LEVEL, ReturnVoid(), "'[%u].src' is not a top level acceleration structure", i);
+                NRI_RETURN_ON_FAILURE(&m_Device, srcVal.GetFlags() & AccelerationStructureBits::ALLOW_UPDATE, ReturnVoid(), "'[%u].src' is not created with 'ALLOW_UPDATE'", i);
+            }
+        }
+
         auto& out = buildTopLevelAccelerationStructureDescsImpl[i];
         out = in;
         out.dst = NRI_GET_IMPL(AccelerationStructure, in.dst);
@@ -1141,8 +1288,11 @@ NRI_INLINE void CommandBufferVal::BuildBottomLevelAccelerationStructure(const Bu
             if (geometry.type == BottomLevelGeometryType::TRIANGLES) {
                 NRI_RETURN_ON_FAILURE(&m_Device, geometry.triangles.vertexFormat < Format::MAX_NUM, ReturnVoid(), "'[%u].geometries[%u].triangles.vertexFormat' is invalid", i, j);
                 NRI_RETURN_ON_FAILURE(&m_Device, geometry.triangles.indexType < IndexType::MAX_NUM, ReturnVoid(), "'[%u].geometries[%u].triangles.indexType' is invalid", i, j);
-                if (geometry.triangles.micromap)
+
+                if (geometry.triangles.micromap) {
+                    NRI_RETURN_ON_FAILURE(&m_Device, m_Device.GetDesc().tiers.rayTracing >= 3, ReturnVoid(), "'[%u].geometries[%u].triangles.micromap' requires 'tiers.rayTracing >= 3'", i, j);
                     NRI_RETURN_ON_FAILURE(&m_Device, geometry.triangles.micromap->indexType < IndexType::MAX_NUM, ReturnVoid(), "'[%u].geometries[%u].triangles.micromap->indexType' is invalid", i, j);
+                }
             }
 
             if (geometry.type == BottomLevelGeometryType::TRIANGLES && geometry.triangles.micromap)
@@ -1167,6 +1317,24 @@ NRI_INLINE void CommandBufferVal::BuildBottomLevelAccelerationStructure(const Bu
         NRI_RETURN_ON_FAILURE(&m_Device, in.scratchBuffer, ReturnVoid(), "'[%u].scratchBuffer' is NULL", i);
         NRI_RETURN_ON_FAILURE(&m_Device, in.geometries, ReturnVoid(), "'[%u].geometries' is NULL", i);
         NRI_RETURN_ON_FAILURE(&m_Device, in.scratchOffset <= scratchBufferVal->GetDesc().size, ReturnVoid(), "'[%u].scratchOffset=%" PRIu64 "' is out of bounds", i, in.scratchOffset);
+
+        const AccelerationStructureVal& dstVal = *(AccelerationStructureVal*)in.dst;
+
+        if (dstVal.GetType() != AccelerationStructureType::MAX_NUM) {
+            NRI_RETURN_ON_FAILURE(&m_Device, dstVal.GetType() == AccelerationStructureType::BOTTOM_LEVEL, ReturnVoid(), "'[%u].dst' is not a bottom level acceleration structure", i);
+
+            if (in.src)
+                NRI_RETURN_ON_FAILURE(&m_Device, dstVal.GetFlags() & AccelerationStructureBits::ALLOW_UPDATE, ReturnVoid(), "'[%u].src' is provided (update), but 'dst' is not created with 'ALLOW_UPDATE'", i);
+        }
+
+        if (in.src) {
+            const AccelerationStructureVal& srcVal = *(AccelerationStructureVal*)in.src;
+
+            if (srcVal.GetType() != AccelerationStructureType::MAX_NUM) {
+                NRI_RETURN_ON_FAILURE(&m_Device, srcVal.GetType() == AccelerationStructureType::BOTTOM_LEVEL, ReturnVoid(), "'[%u].src' is not a bottom level acceleration structure", i);
+                NRI_RETURN_ON_FAILURE(&m_Device, srcVal.GetFlags() & AccelerationStructureBits::ALLOW_UPDATE, ReturnVoid(), "'[%u].src' is not created with 'ALLOW_UPDATE'", i);
+            }
+        }
 
         auto& out = buildBottomLevelAccelerationStructureDescsImpl[i];
         out = in;
@@ -1357,14 +1525,13 @@ NRI_INLINE void CommandBufferVal::DecodeVideo(const VideoDecodeDesc& videoDecode
     const bool useBitstreamHost = videoDecodeDesc.bitstream.data && (capabilities.decodeBitstreamSourceMask & VideoDecodeBitstreamSourceBits::HOST);
 
     NRI_RETURN_ON_FAILURE(&m_Device, sessionVal.GetDesc().type == VideoSessionType::DECODE, ReturnVoid(), "'session' must be a decode session");
-    NRI_RETURN_ON_FAILURE(&m_Device, &sessionVal.GetDevice() == &m_Device && &parametersVal.GetDevice() == &m_Device && &dstPictureVal.GetDevice() == &m_Device, ReturnVoid(), "video objects must belong to the command buffer device");
     NRI_RETURN_ON_FAILURE(&m_Device, useBitstreamBuffer || useBitstreamHost, ReturnVoid(), "'bitstream' must provide a source supported by the video session");
     NRI_RETURN_ON_FAILURE(&m_Device, IsAligned(videoDecodeDesc.bitstream.size, capabilities.bitstreamSizeAlignment) && videoDecodeDesc.bitstream.size <= capabilities.bitstreamSizeMax, ReturnVoid(), "'bitstream.size' must satisfy the video session limits");
 
     if (useBitstreamBuffer) {
         BufferVal& bitstreamVal = *(BufferVal*)videoDecodeDesc.bitstream.buffer;
         const BufferDesc& bitstreamDesc = bitstreamVal.GetDesc();
-        NRI_RETURN_ON_FAILURE(&m_Device, &bitstreamVal.GetDevice() == &m_Device && (bitstreamDesc.usage & BufferUsageBits::VIDEO_DECODE) != 0 && videoDecodeDesc.bitstream.offset < bitstreamDesc.size && videoDecodeDesc.bitstream.size <= bitstreamDesc.size - videoDecodeDesc.bitstream.offset && IsAligned(videoDecodeDesc.bitstream.offset, capabilities.bitstreamOffsetAlignment), ReturnVoid(), "'bitstream.buffer' must be an aligned VIDEO_DECODE buffer range from the command buffer device");
+        NRI_RETURN_ON_FAILURE(&m_Device, (bitstreamDesc.usage & BufferUsageBits::VIDEO_DECODE) != 0 && videoDecodeDesc.bitstream.offset < bitstreamDesc.size && videoDecodeDesc.bitstream.size <= bitstreamDesc.size - videoDecodeDesc.bitstream.offset && IsAligned(videoDecodeDesc.bitstream.offset, capabilities.bitstreamOffsetAlignment), ReturnVoid(), "'bitstream.buffer' must be an aligned VIDEO_DECODE buffer range");
     }
 
     NRI_RETURN_ON_FAILURE(&m_Device, &parametersVal.GetSession() == &sessionVal, ReturnVoid(), "'parameters' must belong to 'session'");
@@ -1375,7 +1542,7 @@ NRI_INLINE void CommandBufferVal::DecodeVideo(const VideoDecodeDesc& videoDecode
     if (videoDecodeDesc.setupPicture) {
         VideoPictureVal& setupPictureVal = *(VideoPictureVal*)videoDecodeDesc.setupPicture;
 
-        NRI_RETURN_ON_FAILURE(&m_Device, &setupPictureVal.GetDevice() == &m_Device && IsVideoPictureValidForSession(setupPictureVal, VideoPictureUsage::DECODE_REFERENCE, sessionVal.GetDesc()), ReturnVoid(), "'setupPicture' must belong to the command buffer device, have decode reference usage, and match the session format, codec and coded extent");
+        NRI_RETURN_ON_FAILURE(&m_Device, IsVideoPictureValidForSession(setupPictureVal, VideoPictureUsage::DECODE_REFERENCE, sessionVal.GetDesc()), ReturnVoid(), "'setupPicture' must have decode reference usage and match the session format, codec and coded extent");
 
         isDpbAndOutputDistinct = !setupPictureVal.IsSameSubresource(dstPictureVal);
     }
@@ -1398,7 +1565,7 @@ NRI_INLINE void CommandBufferVal::DecodeVideo(const VideoDecodeDesc& videoDecode
         NRI_RETURN_ON_FAILURE(&m_Device, videoDecodeDesc.references[i].picture, ReturnVoid(), "'references[%u].picture' is NULL", i);
 
         VideoPictureVal& pictureVal = *(VideoPictureVal*)videoDecodeDesc.references[i].picture;
-        NRI_RETURN_ON_FAILURE(&m_Device, &pictureVal.GetDevice() == &m_Device && IsVideoPictureValidForSession(pictureVal, VideoPictureUsage::DECODE_REFERENCE, sessionVal.GetDesc()), ReturnVoid(), "'references[%u].picture' must belong to the command buffer device, have decode reference usage, and match the session format, codec and coded extent", i);
+        NRI_RETURN_ON_FAILURE(&m_Device, IsVideoPictureValidForSession(pictureVal, VideoPictureUsage::DECODE_REFERENCE, sessionVal.GetDesc()), ReturnVoid(), "'references[%u].picture' must have decode reference usage and match the session format, codec and coded extent", i);
     }
 
     const VideoPictureVal* effectiveSetupPictureVal = videoDecodeDesc.setupPicture ? (const VideoPictureVal*)videoDecodeDesc.setupPicture : &dstPictureVal;
@@ -1528,7 +1695,6 @@ NRI_INLINE void CommandBufferVal::EncodeVideo(const VideoEncodeDesc& videoEncode
     BufferVal* metadataVal = (BufferVal*)videoEncodeDesc.metadata;
 
     NRI_RETURN_ON_FAILURE(&m_Device, sessionVal.GetDesc().type == VideoSessionType::ENCODE, ReturnVoid(), "'session' must be an encode session");
-    NRI_RETURN_ON_FAILURE(&m_Device, &sessionVal.GetDevice() == &m_Device && &parametersVal.GetDevice() == &m_Device && &srcPictureVal.GetDevice() == &m_Device && &dstBitstreamVal.GetDevice() == &m_Device && (!metadataVal || &metadataVal->GetDevice() == &m_Device), ReturnVoid(), "video objects must belong to the command buffer device");
 
     const BufferDesc& dstBitstreamDesc = dstBitstreamVal.GetDesc();
     const VideoCapabilities& capabilities = sessionVal.GetCapabilities();
@@ -1560,13 +1726,13 @@ NRI_INLINE void CommandBufferVal::EncodeVideo(const VideoEncodeDesc& videoEncode
     if (videoEncodeDesc.reconstructedPicture) {
         VideoPictureVal& reconstructedPictureVal = *(VideoPictureVal*)videoEncodeDesc.reconstructedPicture;
 
-        NRI_RETURN_ON_FAILURE(&m_Device, &reconstructedPictureVal.GetDevice() == &m_Device && IsVideoPictureValidForSession(reconstructedPictureVal, VideoPictureUsage::ENCODE_REFERENCE, sessionVal.GetDesc()), ReturnVoid(), "'reconstructedPicture' must belong to the command buffer device, have ENCODE_REFERENCE usage, and match the session format, codec and coded extent");
+        NRI_RETURN_ON_FAILURE(&m_Device, IsVideoPictureValidForSession(reconstructedPictureVal, VideoPictureUsage::ENCODE_REFERENCE, sessionVal.GetDesc()), ReturnVoid(), "'reconstructedPicture' must have ENCODE_REFERENCE usage and match the session format, codec and coded extent");
     }
 
     if (videoEncodeDesc.resolvedMetadata) {
         BufferVal& resolvedMetadataVal = *(BufferVal*)videoEncodeDesc.resolvedMetadata;
 
-        NRI_RETURN_ON_FAILURE(&m_Device, capabilities.encodeFeedbackSupported && &resolvedMetadataVal.GetDevice() == &m_Device && (resolvedMetadataVal.GetDesc().usage & BufferUsageBits::VIDEO_ENCODE) != 0 && sessionVal.IsResolvedMetadataRangeValid(resolvedMetadataVal, videoEncodeDesc.resolvedMetadataOffset), ReturnVoid(), "encode feedback must be supported and 'resolvedMetadata' must be an aligned VIDEO_ENCODE buffer range from the command buffer device");
+        NRI_RETURN_ON_FAILURE(&m_Device, capabilities.encodeFeedbackSupported && (resolvedMetadataVal.GetDesc().usage & BufferUsageBits::VIDEO_ENCODE) != 0 && sessionVal.IsResolvedMetadataRangeValid(resolvedMetadataVal, videoEncodeDesc.resolvedMetadataOffset), ReturnVoid(), "encode feedback must be supported and 'resolvedMetadata' must be an aligned VIDEO_ENCODE buffer range");
     }
 
     if (videoEncodeDesc.bitstreamMetadataSize > UINT32_MAX) {
@@ -1585,7 +1751,7 @@ NRI_INLINE void CommandBufferVal::EncodeVideo(const VideoEncodeDesc& videoEncode
         NRI_RETURN_ON_FAILURE(&m_Device, videoEncodeDesc.references[i].picture, ReturnVoid(), "'references[%u].picture' is NULL", i);
 
         VideoPictureVal& pictureVal = *(VideoPictureVal*)videoEncodeDesc.references[i].picture;
-        NRI_RETURN_ON_FAILURE(&m_Device, &pictureVal.GetDevice() == &m_Device && IsVideoPictureValidForSession(pictureVal, VideoPictureUsage::ENCODE_REFERENCE, sessionVal.GetDesc()), ReturnVoid(), "'references[%u].picture' must belong to the command buffer device, have ENCODE_REFERENCE usage, and match the session format, codec and coded extent", i);
+        NRI_RETURN_ON_FAILURE(&m_Device, IsVideoPictureValidForSession(pictureVal, VideoPictureUsage::ENCODE_REFERENCE, sessionVal.GetDesc()), ReturnVoid(), "'references[%u].picture' must have ENCODE_REFERENCE usage and match the session format, codec and coded extent", i);
     }
 
     NRI_RETURN_ON_FAILURE(&m_Device, IsVideoDpbTextureArrayValid((const VideoPictureVal*)videoEncodeDesc.reconstructedPicture, videoEncodeDesc.references, videoEncodeDesc.referenceNum, capabilities), ReturnVoid(), "the session requires all encode DPB pictures to use a texture array with at least 'VideoCapabilities::dpbTextureArrayMinLayerNum' layers");
@@ -1670,21 +1836,10 @@ NRI_INLINE void CommandBufferVal::ResolveVideoEncodeFeedback(VideoSession& video
 
     NRI_RETURN_ON_FAILURE(&m_Device, m_IsRecordingStarted, ReturnVoid(), "the command buffer must be in the recording state");
     NRI_RETURN_ON_FAILURE(&m_Device, videoSessionVal.GetDesc().type == VideoSessionType::ENCODE, ReturnVoid(), "'videoSession' must be an encode session");
-    NRI_RETURN_ON_FAILURE(&m_Device, &videoSessionVal.GetDevice() == &m_Device && &resolvedMetadataVal.GetDevice() == &m_Device, ReturnVoid(), "video objects must belong to the command buffer device");
     NRI_RETURN_ON_FAILURE(&m_Device, videoSessionVal.GetCapabilities().encodeFeedbackSupported, ReturnVoid(), "encode feedback is unsupported by the video session");
     NRI_RETURN_ON_FAILURE(&m_Device, !videoSessionVal.GetCapabilities().encodeFeedbackResolveRequired || m_QueueType == videoSessionVal.GetCapabilities().resolvedMetadataQueueType, ReturnVoid(), "the command buffer queue does not match 'VideoCapabilities::resolvedMetadataQueueType'");
     NRI_RETURN_ON_FAILURE(&m_Device, (resolvedMetadataVal.GetDesc().usage & BufferUsageBits::VIDEO_ENCODE) != 0, ReturnVoid(), "'resolvedMetadata' must have VIDEO_ENCODE usage");
     NRI_RETURN_ON_FAILURE(&m_Device, videoSessionVal.IsResolvedMetadataRangeValid(resolvedMetadataVal, resolvedMetadataOffset), ReturnVoid(), "'resolvedMetadata' must be an aligned buffer range with the session-required size");
 
     GetVideoInterfaceImpl().CmdResolveVideoEncodeFeedback(*GetImpl(), *videoSessionVal.GetImpl(), *resolvedMetadataVal.GetImpl(), resolvedMetadataOffset);
-}
-
-NRI_INLINE void CommandBufferVal::ValidateReadonlyDepthStencil() {
-    if (m_Pipeline && m_DepthStencil) {
-        if (m_DepthStencil->IsDepthReadonly() && m_Pipeline->WritesToDepth())
-            NRI_REPORT_WARNING(&m_Device, "Depth is read-only, but the pipeline writes to depth. Writing happens only in VK!");
-
-        if (m_DepthStencil->IsStencilReadonly() && m_Pipeline->WritesToStencil())
-            NRI_REPORT_WARNING(&m_Device, "Stencil is read-only, but the pipeline writes to stencil. Writing happens only in VK!");
-    }
 }

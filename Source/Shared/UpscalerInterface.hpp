@@ -25,7 +25,7 @@
 #        include "NIS.cs.dxbc.h"
 #    endif
 
-#    if NRI_ENABLE_D3D12_SUPPORT
+#    if (NRI_ENABLE_D3D12_SUPPORT || (NRI_ENABLE_METAL_SUPPORT && NRI_ENABLE_METAL_SHADER_CONVERTER))
 #        include "NIS.cs.dxil.h"
 #    endif
 
@@ -80,93 +80,132 @@ static inline const char* GetNisOutputFormatShaderConstant(const DeviceDesc& dev
 #if NRI_ENABLE_FFX_SDK
 #    include "ffx_upscale.h"
 
+// Satisfy the SDK's malloc-equivalent alignment without depending on Windows headers
+constexpr size_t FFX_ALLOCATION_ALIGNMENT = 16;
+
 #    if NRI_ENABLE_D3D12_SUPPORT
-#        define FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12 0x0000002u
-
-struct ffxCreateBackendDX12Desc { // TODO: copied from "dx12" header (can't be used with "vk" in one file)
-    ffxCreateContextDescHeader header;
-    ID3D12Device* device;
-};
-
+#        include "dx12/ffx_api_dx12.h"
 #    endif
 
 #    if NRI_ENABLE_VK_SUPPORT
+
+// Legacy SDK 1.1.4 Vulkan ABI, retained alongside the newer D3D12 headers
 #        define FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK 0x0000003u
 
-struct ffxCreateBackendVKDesc { // TODO: copied from "vk" header (can't be used with "dx12" in one file)
+struct ffxCreateBackendVKDesc {
     ffxCreateContextDescHeader header;
     VkDevice vkDevice;
     VkPhysicalDevice vkPhysicalDevice;
     PFN_vkGetDeviceProcAddr vkDeviceProcAddr;
 };
 
-// Unfortunately, FFX devs don't understand how VK works. Some VK functions are retrieved with non-CORE names,
-// despite being in CORE for years. Manual patching needed, which is not as easy in case of multiple devices.
 struct FfxVkPair {
-    VkDevice device;
-    PFN_vkGetDeviceProcAddr getDeviceProcAddress;
+    VkDevice device = VK_NULL_HANDLE;
+    PFN_vkGetDeviceProcAddr getDeviceProcAddress = nullptr;
+    FfxVkPair* next = nullptr;
 };
 
+#    endif
+
 struct FfxGlobals {
-    ;
-    std::array<FfxVkPair, 32> vkPairs = {};
-    Lock lock = {};
+    // Each SDK DLL has mutable global setup and diagnostic state
+#    if NRI_ENABLE_D3D12_SUPPORT
+    Lock d3d12Lock = {};
+#    endif
+
+#    if NRI_ENABLE_VK_SUPPORT
+    Lock vkLock = {};
+    Lock vkRegistryLock = {};
+    FfxVkPair* vkPairs = nullptr;
+#    endif
 } g_ffx;
 
-static inline void FfxRegisterDevice(VkDevice device, PFN_vkGetDeviceProcAddr getDeviceProcAddress) {
-    ExclusiveScope lock(g_ffx.lock);
+struct Ffx {
+    PfnFfxCreateContext CreateContext = nullptr;
+    PfnFfxDestroyContext DestroyContext = nullptr;
+    PfnFfxDispatch Dispatch = nullptr;
+    PfnFfxQuery Query = nullptr;
+    Library* library = nullptr;
+    ffxContext context = nullptr;
+    ffxAllocationCallbacks allocationCallbacks = {};
+    ffxAllocationCallbacks* allocationCallbacksPtr = nullptr;
+    ffxCreateContextDescUpscale contextDesc = {};
+    Lock* sdkLock = nullptr;
 
-    size_t i = 0;
-    for (; i < g_ffx.vkPairs.size(); i++) {
-        if (g_ffx.vkPairs[i].device == device) {
-            // Already registered
-            NRI_CHECK(g_ffx.vkPairs[i].getDeviceProcAddress == getDeviceProcAddress, "Unexpected");
-            return;
-        }
+#    if NRI_ENABLE_D3D12_SUPPORT
+    ffxCreateBackendDX12Desc backendD3D12Desc = {};
+    ffxCreateContextDescUpscaleVersion versionDesc = {};
+#    endif
 
-        // Empty slot is found
-        if (!g_ffx.vkPairs[i].device)
-            break;
-    }
+#    if NRI_ENABLE_VK_SUPPORT
+    ffxCreateBackendVKDesc backendVKDesc = {};
+    FfxVkPair vkPair = {};
+#    endif
+};
 
-    NRI_CHECK(i < g_ffx.vkPairs.size(), "Too many devices?");
+static inline Lock& FfxGetSdkLock(GraphicsAPI graphicsAPI) {
+#    if (NRI_ENABLE_D3D12_SUPPORT && NRI_ENABLE_VK_SUPPORT)
+    return graphicsAPI == GraphicsAPI::D3D12 ? g_ffx.d3d12Lock : g_ffx.vkLock;
+#    elif NRI_ENABLE_D3D12_SUPPORT
+    MaybeUnused(graphicsAPI);
 
-    // Add new entry
-    g_ffx.vkPairs[i] = {device, getDeviceProcAddress};
+    return g_ffx.d3d12Lock;
+#    else
+    MaybeUnused(graphicsAPI);
+
+    return g_ffx.vkLock;
+#    endif
 }
 
-static PFN_vkVoidFunction VKAPI_PTR FfxVkGetDeviceProcAddr(VkDevice device, const char* pName) {
-    // TODO: patch FFX requests here
+#    if NRI_ENABLE_VK_SUPPORT
+static inline void FfxRegisterDevice(FfxVkPair& pair, VkDevice device, PFN_vkGetDeviceProcAddr getDeviceProcAddress) {
+    ExclusiveScope lock(g_ffx.vkRegistryLock);
+
+    pair = {device, getDeviceProcAddress, g_ffx.vkPairs};
+    g_ffx.vkPairs = &pair;
+}
+
+static inline void FfxUnregisterDevice(FfxVkPair& pair) {
+    ExclusiveScope lock(g_ffx.vkRegistryLock);
+
+    for (FfxVkPair** link = &g_ffx.vkPairs; *link; link = &(*link)->next) {
+        if (*link == &pair) {
+            *link = pair.next;
+
+            return;
+        }
+    }
+
+    NRI_CHECK(false, "Unregistered FFX device");
+}
+
+static inline PFN_vkVoidFunction VKAPI_PTR FfxVkGetDeviceProcAddr(VkDevice device, const char* pName) {
+    // The legacy FFX Vulkan backend requests extension names for some core functions
     if (!strcmp(pName, "vkGetBufferMemoryRequirements2KHR"))
         pName = "vkGetBufferMemoryRequirements2";
 
-    // Find entry
-    size_t i = 0;
-    for (; i < g_ffx.vkPairs.size(); i++) {
-        if (g_ffx.vkPairs[i].device == device)
-            break;
+    PFN_vkGetDeviceProcAddr getDeviceProcAddress = nullptr;
+    {
+        ExclusiveScope lock(g_ffx.vkRegistryLock);
+
+        for (const FfxVkPair* pair = g_ffx.vkPairs; pair; pair = pair->next) {
+            if (pair->device == device) {
+                getDeviceProcAddress = pair->getDeviceProcAddress;
+                break;
+            }
+        }
     }
 
-    NRI_CHECK(i < g_ffx.vkPairs.size(), "Unexpected");
+    NRI_CHECK(getDeviceProcAddress, "Unexpected");
 
     // Use corresponding "vkGetDeviceProcAddr"
-    PFN_vkVoidFunction func = g_ffx.vkPairs[i].getDeviceProcAddress(device, pName);
+    PFN_vkVoidFunction func = getDeviceProcAddress(device, pName);
     NRI_CHECK(func || strstr(pName, "AMD"), "Another non-CORE function name?");
 
     return func;
 }
 
 #    endif
-
-struct Ffx {
-    PfnFfxCreateContext CreateContext = nullptr;
-    PfnFfxDestroyContext DestroyContext = nullptr;
-    PfnFfxDispatch Dispatch = nullptr;
-    Library* library = nullptr;
-    ffxContext context = nullptr;
-    ffxAllocationCallbacks allocationCallbacks = {};
-    ffxAllocationCallbacks* allocationCallbacksPtr = nullptr;
-};
 
 static inline Result FfxConvertError(ffxReturnCode_t code) {
     switch (code) {
@@ -177,6 +216,8 @@ static inline Result FfxConvertError(ffxReturnCode_t code) {
             return Result::INVALID_ARGUMENT;
         case FFX_API_RETURN_ERROR_MEMORY:
             return Result::OUT_OF_MEMORY;
+        case FFX_API_RETURN_NO_PROVIDER:
+            return Result::UNSUPPORTED;
     }
 
     return Result::FAILURE;
@@ -287,14 +328,17 @@ static inline FfxApiResource FfxGetResource(const CoreInterface& NRI, const Upsc
     return res;
 }
 
-static void* FfxAlloc(void* pUserData, uint64_t size) {
+static inline void* FfxAlloc(void* pUserData, uint64_t size) {
     const auto& allocationCallbacks = *(AllocationCallbacks*)pUserData;
-    return allocationCallbacks.Allocate(allocationCallbacks.userArg, size, sizeof(size_t));
+
+    return allocationCallbacks.Allocate(allocationCallbacks.userArg, size, FFX_ALLOCATION_ALIGNMENT);
 }
 
-static void FfxDealloc(void* pUserData, void* pMem) {
+static inline void FfxDealloc(void* pUserData, void* pMem) {
     const auto& allocationCallbacks = *(AllocationCallbacks*)pUserData;
-    allocationCallbacks.Free(allocationCallbacks.userArg, pMem);
+
+    if (pMem)
+        allocationCallbacks.Free(allocationCallbacks.userArg, pMem);
 }
 
 #    ifndef NDEBUG
@@ -426,6 +470,18 @@ static inline int32_t NgxDecrRef(void* deviceNative) {
     return g_ngx.refCounters[i].refCounter;
 }
 
+static inline void NgxSetEvalParams(NVSDK_NGX_Parameter* params, const DispatchUpscaleDesc& dispatchUpscaleDesc, float preExposure) {
+    NVSDK_NGX_Parameter_SetF(params, NVSDK_NGX_Parameter_Jitter_Offset_X, dispatchUpscaleDesc.cameraJitter.x);
+    NVSDK_NGX_Parameter_SetF(params, NVSDK_NGX_Parameter_Jitter_Offset_Y, dispatchUpscaleDesc.cameraJitter.y);
+    NVSDK_NGX_Parameter_SetI(params, NVSDK_NGX_Parameter_Reset, (dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) ? 1 : 0);
+    NVSDK_NGX_Parameter_SetF(params, NVSDK_NGX_Parameter_MV_Scale_X, dispatchUpscaleDesc.mvScale.x == 0.0f ? 1.0f : dispatchUpscaleDesc.mvScale.x);
+    NVSDK_NGX_Parameter_SetF(params, NVSDK_NGX_Parameter_MV_Scale_Y, dispatchUpscaleDesc.mvScale.y == 0.0f ? 1.0f : dispatchUpscaleDesc.mvScale.y);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, dispatchUpscaleDesc.currentResolution.w);
+    NVSDK_NGX_Parameter_SetUI(params, NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, dispatchUpscaleDesc.currentResolution.h);
+    NVSDK_NGX_Parameter_SetF(params, NVSDK_NGX_Parameter_DLSS_Pre_Exposure, preExposure);
+    NVSDK_NGX_Parameter_SetF(params, NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.0f);
+}
+
 static void NVSDK_CONV NgxLogCallback(const char*, NVSDK_NGX_Logging_Level, NVSDK_NGX_Feature) {
 }
 
@@ -447,14 +503,170 @@ static inline NVSDK_NGX_Resource_VK NgxGetResource(const CoreInterface& NRI, con
 #endif
 
 //=====================================================================================================================================
+// MetalFX
+//=====================================================================================================================================
+#if NRI_ENABLE_METAL_SUPPORT
+
+// MetalFX encodes its own passes. "Dispatch" is ordered by app barriers with "COMPUTE_SHADER" stage, other stages are bridged
+constexpr MTL::Stages METALFX_EXTRA_STAGES = MTL::StageVertex | MTL::StageFragment | MTL::StageMachineLearning;
+
+struct MetalFx {
+    MTL4::Compiler* compiler = nullptr;
+    MTL4FX::SpatialScaler* spatial = nullptr;
+    MTL4FX::TemporalScaler* temporal = nullptr;
+    MTL4FX::TemporalDenoisedScaler* denoised = nullptr;
+};
+
+static inline bool IsMetalFx(UpscalerType type) {
+    return type == UpscalerType::METALFX_SPATIAL || type == UpscalerType::METALFX_TEMPORAL || type == UpscalerType::METALFX_DENOISED;
+}
+
+static inline MTL::Texture* MetalFxGetTexture(const CoreInterface& NRI, const UpscalerResource& resource) {
+    return (MTL::Texture*)NRI.GetDescriptorNativeObject(resource.descriptor);
+}
+
+static inline MTL::PixelFormat MetalFxGetFormat(const CoreInterface& NRI, const UpscalerResource& resource) {
+    MTL::Texture* texture = MetalFxGetTexture(NRI, resource);
+
+    return texture ? texture->pixelFormat() : MTL::PixelFormatInvalid;
+}
+
+// Metal 4 doesn't retain resources used by command buffers, so the "roughness" view (swizzled "normalRoughness") lives until the command allocator reset
+static MTL::Texture* MetalFxCreateRoughnessView(MTL4::CommandBuffer* commandBuffer, MTL::Texture* normalRoughness) {
+    MTL::TextureSwizzleChannels swizzle = MTL::TextureSwizzleChannels::Make(MTL::TextureSwizzleAlpha, MTL::TextureSwizzleAlpha, MTL::TextureSwizzleAlpha, MTL::TextureSwizzleAlpha);
+    NS::Range levels = NS::Range::Make(0, normalRoughness->mipmapLevelCount());
+    NS::Range slices = NS::Range::Make(0, normalRoughness->arrayLength());
+
+    MTL::Texture* view = normalRoughness->newTextureView(normalRoughness->pixelFormat(), normalRoughness->textureType(), levels, slices, swizzle);
+
+    if (view)
+        ReleaseOnResetMetal(commandBuffer, view);
+
+    return view;
+}
+
+static bool MetalFxCreateScaler(MetalFx& metalFx, MTL::Device* device, const CoreInterface& NRI, const UpscalerDesc& upscalerDesc, const DispatchUpscaleDesc& dispatchUpscaleDesc) {
+    MTL::Texture* input = MetalFxGetTexture(NRI, dispatchUpscaleDesc.input);
+    MTL::Texture* output = MetalFxGetTexture(NRI, dispatchUpscaleDesc.output);
+
+    if (upscalerDesc.type == UpscalerType::METALFX_SPATIAL) {
+        MTLFX::SpatialScalerColorProcessingMode colorProcessingMode = MTLFX::SpatialScalerColorProcessingModeLinear;
+
+        if (upscalerDesc.flags & UpscalerBits::HDR)
+            colorProcessingMode = MTLFX::SpatialScalerColorProcessingModeHDR;
+        else if (upscalerDesc.flags & UpscalerBits::SRGB)
+            colorProcessingMode = MTLFX::SpatialScalerColorProcessingModePerceptual;
+
+        MTLFX::SpatialScalerDescriptor* scalerDesc = MTLFX::SpatialScalerDescriptor::alloc()->init();
+        scalerDesc->setInputWidth(input->width());
+        scalerDesc->setInputHeight(input->height());
+        scalerDesc->setOutputWidth(upscalerDesc.upscaleResolution.w);
+        scalerDesc->setOutputHeight(upscalerDesc.upscaleResolution.h);
+        scalerDesc->setColorTextureFormat(input->pixelFormat());
+        scalerDesc->setOutputTextureFormat(output->pixelFormat());
+        scalerDesc->setColorProcessingMode(colorProcessingMode);
+
+        metalFx.spatial = scalerDesc->newSpatialScaler(device, metalFx.compiler);
+        scalerDesc->release();
+
+        return metalFx.spatial != nullptr;
+    }
+
+    if (upscalerDesc.type == UpscalerType::METALFX_TEMPORAL) {
+        const UpscalerGuides& guides = dispatchUpscaleDesc.guides.upscaler;
+
+        MTLFX::TemporalScalerDescriptor* scalerDesc = MTLFX::TemporalScalerDescriptor::alloc()->init();
+        scalerDesc->setInputWidth(input->width());
+        scalerDesc->setInputHeight(input->height());
+        scalerDesc->setOutputWidth(upscalerDesc.upscaleResolution.w);
+        scalerDesc->setOutputHeight(upscalerDesc.upscaleResolution.h);
+        scalerDesc->setColorTextureFormat(input->pixelFormat());
+        scalerDesc->setOutputTextureFormat(output->pixelFormat());
+        scalerDesc->setDepthTextureFormat(MetalFxGetFormat(NRI, guides.depth));
+        scalerDesc->setMotionTextureFormat(MetalFxGetFormat(NRI, guides.mv));
+        scalerDesc->setAutoExposureEnabled(!(upscalerDesc.flags & UpscalerBits::USE_EXPOSURE));
+        scalerDesc->setInputContentPropertiesEnabled(true);
+        scalerDesc->setInputContentMinScale(MTLFX::TemporalScalerDescriptor::supportedInputContentMinScale(device));
+        scalerDesc->setInputContentMaxScale(MTLFX::TemporalScalerDescriptor::supportedInputContentMaxScale(device));
+
+        if (upscalerDesc.flags & UpscalerBits::MV_UPSCALED)
+            scalerDesc->setOutputResolutionMotionVectorsEnabled(true); // macOS 27+ (checked in "Create")
+
+        if (upscalerDesc.flags & UpscalerBits::USE_REACTIVE) {
+            scalerDesc->setReactiveMaskTextureEnabled(true);
+            scalerDesc->setReactiveMaskTextureFormat(MetalFxGetFormat(NRI, guides.reactive));
+        }
+
+        metalFx.temporal = scalerDesc->newTemporalScaler(device, metalFx.compiler);
+        scalerDesc->release();
+
+        return metalFx.temporal != nullptr;
+    }
+
+    const DenoiserGuides& guides = dispatchUpscaleDesc.guides.denoiser;
+    MTL::PixelFormat normalRoughnessFormat = MetalFxGetFormat(NRI, guides.normalRoughness);
+
+    MTLFX::TemporalDenoisedScalerDescriptor* scalerDesc = MTLFX::TemporalDenoisedScalerDescriptor::alloc()->init();
+    scalerDesc->setInputWidth(input->width());
+    scalerDesc->setInputHeight(input->height());
+    scalerDesc->setOutputWidth(upscalerDesc.upscaleResolution.w);
+    scalerDesc->setOutputHeight(upscalerDesc.upscaleResolution.h);
+    scalerDesc->setColorTextureFormat(input->pixelFormat());
+    scalerDesc->setOutputTextureFormat(output->pixelFormat());
+    scalerDesc->setDepthTextureFormat(MetalFxGetFormat(NRI, guides.depth));
+    scalerDesc->setMotionTextureFormat(MetalFxGetFormat(NRI, guides.mv));
+    scalerDesc->setNormalTextureFormat(normalRoughnessFormat);
+    scalerDesc->setRoughnessTextureFormat(normalRoughnessFormat); // a swizzled view of "normalRoughness"
+    scalerDesc->setDiffuseAlbedoTextureFormat(MetalFxGetFormat(NRI, guides.diffuseAlbedo));
+    scalerDesc->setSpecularAlbedoTextureFormat(MetalFxGetFormat(NRI, guides.specularAlbedo));
+    scalerDesc->setSpecularHitDistanceTextureFormat(MetalFxGetFormat(NRI, guides.specularMvOrHitT));
+    scalerDesc->setSpecularHitDistanceTextureEnabled(true);
+    scalerDesc->setAutoExposureEnabled(!(upscalerDesc.flags & UpscalerBits::USE_EXPOSURE));
+
+    if (upscalerDesc.flags & UpscalerBits::USE_REACTIVE) {
+        scalerDesc->setReactiveMaskTextureEnabled(true);
+        scalerDesc->setReactiveMaskTextureFormat(MetalFxGetFormat(NRI, guides.reactive));
+    }
+
+    metalFx.denoised = scalerDesc->newTemporalDenoisedScaler(device, metalFx.compiler);
+    scalerDesc->release();
+
+    return metalFx.denoised != nullptr;
+}
+
+#endif
+
+//=====================================================================================================================================
 // Upscaler
 //=====================================================================================================================================
+#if NRI_ENABLE_METAL_SUPPORT
+bool nri::IsMetalFxSupportedMetal(NS::Object* device, UpscalerType type) {
+    MTL::Device* deviceNative = (MTL::Device*)device;
+
+    if (type == UpscalerType::METALFX_SPATIAL)
+        return MTLFX::SpatialScalerDescriptor::supportsMetal4FX(deviceNative);
+
+    if (type == UpscalerType::METALFX_TEMPORAL)
+        return MTLFX::TemporalScalerDescriptor::supportsMetal4FX(deviceNative);
+
+    if (type == UpscalerType::METALFX_DENOISED)
+        return MTLFX::TemporalDenoisedScalerDescriptor::supportsMetal4FX(deviceNative);
+
+    return true;
+}
+#endif
+
 bool nri::IsUpscalerSupported(const DeviceDesc& deviceDesc, UpscalerType type) {
     MaybeUnused(deviceDesc, type);
 
 #if NRI_ENABLE_NIS_SDK
-    if (type == UpscalerType::NIS)
+    if (type == UpscalerType::NIS) {
+#    if (NRI_ENABLE_METAL_SUPPORT && !NRI_ENABLE_METAL_SHADER_CONVERTER)
+        if (deviceDesc.graphicsAPI == GraphicsAPI::METAL)
+            return false;
+#    endif
         return true;
+    }
 #endif
 
 #if NRI_ENABLE_FFX_SDK
@@ -474,6 +686,13 @@ bool nri::IsUpscalerSupported(const DeviceDesc& deviceDesc, UpscalerType type) {
 #if NRI_ENABLE_NGX_SDK
     if (type == UpscalerType::DLSR || type == UpscalerType::DLRR) {
         if (deviceDesc.adapterDesc.vendor == Vendor::NVIDIA && deviceDesc.tiers.rayTracing) // an elegant way to detect an RTX GPU?
+            return true;
+    }
+#endif
+
+#if NRI_ENABLE_METAL_SUPPORT
+    if (IsMetalFx(type)) {
+        if (deviceDesc.graphicsAPI == GraphicsAPI::METAL) // the device check is "IsMetalFxSupportedMetal"
             return true;
     }
 #endif
@@ -513,11 +732,21 @@ UpscalerImpl::~UpscalerImpl() {
 
 #if NRI_ENABLE_FFX_SDK
     if (m_Desc.type == UpscalerType::FSR && m.ffx) {
-        ffxReturnCode_t result = m.ffx->DestroyContext(&m.ffx->context, m.ffx->allocationCallbacksPtr);
-        MaybeUnused(result);
-        NRI_CHECK(result == FFX_API_RETURN_OK, "ffxDestroyContext() failed!");
+        ExclusiveScope lock(*m.ffx->sdkLock);
 
-        UnloadSharedLibrary(*m.ffx->library);
+        if (m.ffx->context) {
+            ffxReturnCode_t result = m.ffx->DestroyContext(&m.ffx->context, m.ffx->allocationCallbacksPtr);
+            MaybeUnused(result);
+            NRI_CHECK(result == FFX_API_RETURN_OK, "ffxDestroyContext() failed!");
+        }
+
+#    if NRI_ENABLE_VK_SUPPORT
+        if (m.ffx->vkPair.device)
+            FfxUnregisterDevice(m.ffx->vkPair);
+#    endif
+
+        if (m.ffx->library)
+            UnloadSharedLibrary(*m.ffx->library);
 
         const auto& allocationCallbacks = ((DeviceBase&)m_Device).GetAllocationCallbacks();
         Destroy<Ffx>(allocationCallbacks, m.ffx);
@@ -579,6 +808,25 @@ UpscalerImpl::~UpscalerImpl() {
 
         const auto& allocationCallbacks = ((DeviceBase&)m_Device).GetAllocationCallbacks();
         Destroy<Ngx>(allocationCallbacks, m.ngx);
+    }
+#endif
+
+#if NRI_ENABLE_METAL_SUPPORT
+    if (IsMetalFx(m_Desc.type) && m.metalfx) {
+        if (m.metalfx->spatial)
+            m.metalfx->spatial->release();
+
+        if (m.metalfx->temporal)
+            m.metalfx->temporal->release();
+
+        if (m.metalfx->denoised)
+            m.metalfx->denoised->release();
+
+        if (m.metalfx->compiler)
+            m.metalfx->compiler->release();
+
+        const auto& allocationCallbacks = ((DeviceBase&)m_Device).GetAllocationCallbacks();
+        Destroy<MetalFx>(allocationCallbacks, m.metalfx);
     }
 #endif
 }
@@ -661,8 +909,8 @@ Result UpscalerImpl::Create(const UpscalerDesc& upscalerDesc) {
             if (deviceDesc.graphicsAPI == GraphicsAPI::D3D11)
                 shaderMakeResult = ShaderMake::FindPermutationInBlob(g_NIS_cs_dxbc, GetCountOf(g_NIS_cs_dxbc), defines.data(), (uint32_t)defines.size(), &bytecode, &size);
 #    endif
-#    if NRI_ENABLE_D3D12_SUPPORT
-            if (deviceDesc.graphicsAPI == GraphicsAPI::D3D12)
+#    if (NRI_ENABLE_D3D12_SUPPORT || (NRI_ENABLE_METAL_SUPPORT && NRI_ENABLE_METAL_SHADER_CONVERTER))
+            if (deviceDesc.graphicsAPI == GraphicsAPI::D3D12 || deviceDesc.graphicsAPI == GraphicsAPI::METAL)
                 shaderMakeResult = ShaderMake::FindPermutationInBlob(g_NIS_cs_dxil, GetCountOf(g_NIS_cs_dxil), defines.data(), (uint32_t)defines.size(), &bytecode, &size);
 #    endif
 #    if (NRI_ENABLE_VK_SUPPORT || NRI_ENABLE_WGPU_SUPPORT)
@@ -804,9 +1052,11 @@ Result UpscalerImpl::Create(const UpscalerDesc& upscalerDesc) {
     if (upscalerDesc.type == UpscalerType::FSR) {
         const auto& allocationCallbacks = ((DeviceBase&)m_Device).GetAllocationCallbacks();
         m.ffx = Allocate<Ffx>(allocationCallbacks);
+        m.ffx->sdkLock = &FfxGetSdkLock(deviceDesc.graphicsAPI);
+        ExclusiveScope lock(*m.ffx->sdkLock);
 
         // Load library
-        const char* libraryName = deviceDesc.graphicsAPI == GraphicsAPI::D3D12 ? "amd_fidelityfx_dx12.dll" : "amd_fidelityfx_vk.dll";
+        const char* libraryName = deviceDesc.graphicsAPI == GraphicsAPI::D3D12 ? "amd_fidelityfx_loader_dx12.dll" : "amd_fidelityfx_vk.dll";
         Library* ffxLibrary = LoadSharedLibrary(libraryName);
         if (!ffxLibrary)
             return Result::FAILURE;
@@ -816,15 +1066,9 @@ Result UpscalerImpl::Create(const UpscalerDesc& upscalerDesc) {
         m.ffx->CreateContext = (PfnFfxCreateContext)GetSharedLibraryFunction(*ffxLibrary, "ffxCreateContext");
         m.ffx->DestroyContext = (PfnFfxDestroyContext)GetSharedLibraryFunction(*ffxLibrary, "ffxDestroyContext");
         m.ffx->Dispatch = (PfnFfxDispatch)GetSharedLibraryFunction(*ffxLibrary, "ffxDispatch");
+        m.ffx->Query = (PfnFfxQuery)GetSharedLibraryFunction(*ffxLibrary, "ffxQuery");
 
-        // Verify
-        const void** functionArray = (const void**)&m.ffx->CreateContext;
-        const size_t functionArraySize = 3;
-        size_t i = 0;
-        for (; i < functionArraySize && functionArray[i] != nullptr; i++)
-            ;
-
-        if (i != functionArraySize)
+        if (!m.ffx->CreateContext || !m.ffx->DestroyContext || !m.ffx->Dispatch || !m.ffx->Query)
             return Result::FAILURE;
 
         // Allocation callbacks
@@ -852,7 +1096,7 @@ Result UpscalerImpl::Create(const UpscalerDesc& upscalerDesc) {
         if (upscalerDesc.flags & UpscalerBits::MV_JITTERED)
             flags |= FFX_UPSCALE_ENABLE_MOTION_VECTORS_JITTER_CANCELLATION;
 
-        ffxCreateContextDescUpscale contextDesc = {};
+        ffxCreateContextDescUpscale& contextDesc = m.ffx->contextDesc;
         contextDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
         contextDesc.maxRenderSize = {upscalerProps.renderResolution.w, upscalerProps.renderResolution.h};
         contextDesc.maxUpscaleSize = {upscalerProps.upscaleResolution.w, upscalerProps.upscaleResolution.h};
@@ -864,18 +1108,22 @@ Result UpscalerImpl::Create(const UpscalerDesc& upscalerDesc) {
 #    endif
 
 #    if NRI_ENABLE_D3D12_SUPPORT
-        ffxCreateBackendDX12Desc backendD3D12Desc = {};
+        ffxCreateBackendDX12Desc& backendD3D12Desc = m.ffx->backendD3D12Desc;
+        ffxCreateContextDescUpscaleVersion& versionDesc = m.ffx->versionDesc;
 
         if (deviceDesc.graphicsAPI == GraphicsAPI::D3D12) {
             backendD3D12Desc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12;
             backendD3D12Desc.device = (ID3D12Device*)m_iCore.GetDeviceNativeObject(&m_Device);
 
+            versionDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE_VERSION;
+            versionDesc.version = FFX_UPSCALER_VERSION;
+            backendD3D12Desc.header.pNext = &versionDesc.header;
             contextDesc.header.pNext = &backendD3D12Desc.header;
         }
 #    endif
 
 #    if NRI_ENABLE_VK_SUPPORT
-        ffxCreateBackendVKDesc backendVKDesc = {};
+        ffxCreateBackendVKDesc& backendVKDesc = m.ffx->backendVKDesc;
 
         if (deviceDesc.graphicsAPI == GraphicsAPI::VK) {
             WrapperVKInterface iWrapperVK = {};
@@ -885,7 +1133,7 @@ Result UpscalerImpl::Create(const UpscalerDesc& upscalerDesc) {
             VkDevice vkDevice = (VkDevice)m_iCore.GetDeviceNativeObject(&m_Device);
             VkPhysicalDevice vkPhysicalDevice = (VkPhysicalDevice)iWrapperVK.GetPhysicalDeviceVK(m_Device);
             PFN_vkGetDeviceProcAddr vkGetDeviceProcAddr = (PFN_vkGetDeviceProcAddr)iWrapperVK.GetDeviceProcAddrVK(m_Device);
-            FfxRegisterDevice(vkDevice, vkGetDeviceProcAddr);
+            FfxRegisterDevice(m.ffx->vkPair, vkDevice, vkGetDeviceProcAddr);
 
             backendVKDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
             backendVKDesc.vkDevice = vkDevice;
@@ -899,6 +1147,13 @@ Result UpscalerImpl::Create(const UpscalerDesc& upscalerDesc) {
         ffxReturnCode_t result = m.ffx->CreateContext(&m.ffx->context, &contextDesc.header, m.ffx->allocationCallbacksPtr);
         if (result != FFX_API_RETURN_OK)
             return FfxConvertError(result);
+
+        ffxQueryGetProviderVersion providerVersion = {};
+        providerVersion.header.type = FFX_API_QUERY_DESC_TYPE_GET_PROVIDER_VERSION;
+        result = m.ffx->Query(&m.ffx->context, &providerVersion.header);
+
+        if (result == FFX_API_RETURN_OK)
+            NRI_REPORT_INFO((DeviceBase*)&m_Device, "FSR provider: %s", providerVersion.versionName);
     }
 #endif
 
@@ -1186,6 +1441,51 @@ Result UpscalerImpl::Create(const UpscalerDesc& upscalerDesc) {
     }
 #endif
 
+#if NRI_ENABLE_METAL_SUPPORT
+    if (IsMetalFx(upscalerDesc.type)) {
+        MTL::Device* deviceNative = (MTL::Device*)m_iCore.GetDeviceNativeObject(&m_Device);
+
+        bool isSupported = IsMetalFxSupportedMetal(deviceNative, upscalerDesc.type);
+        float scaleMin = 1.0f;
+        float scaleMax = upscalerProps.scalingFactor;
+
+        if (upscalerDesc.type == UpscalerType::METALFX_TEMPORAL) {
+            // "MV_UPSCALED" requires macOS 27
+            if (upscalerDesc.flags & UpscalerBits::MV_UPSCALED)
+                isSupported = isSupported && class_respondsToSelector((Class)_MTLFX_PRIVATE_CLS(MTLFXTemporalScalerDescriptor), _MTLFX_PRIVATE_SEL(setOutputResolutionMotionVectorsEnabled_));
+
+            scaleMin = MTLFX::TemporalScalerDescriptor::supportedInputContentMinScale(deviceNative);
+            scaleMax = MTLFX::TemporalScalerDescriptor::supportedInputContentMaxScale(deviceNative);
+        } else if (upscalerDesc.type == UpscalerType::METALFX_DENOISED) {
+            scaleMin = MTLFX::TemporalDenoisedScalerDescriptor::supportedInputContentMinScale(deviceNative);
+            scaleMax = MTLFX::TemporalDenoisedScalerDescriptor::supportedInputContentMaxScale(deviceNative);
+        }
+
+        if (!isSupported)
+            return Result::UNSUPPORTED;
+
+        // Scaling factors, including dynamic resolution, must be in the supported range
+        if (upscalerDesc.type != UpscalerType::METALFX_SPATIAL) {
+            float scaleW = (float)upscalerProps.upscaleResolution.w / (float)upscalerProps.renderResolutionMin.w;
+            float scaleH = (float)upscalerProps.upscaleResolution.h / (float)upscalerProps.renderResolutionMin.h;
+
+            if (upscalerProps.scalingFactor < scaleMin || scaleW > scaleMax || scaleH > scaleMax)
+                return Result::UNSUPPORTED;
+        }
+
+        const auto& allocationCallbacks = ((DeviceBase&)m_Device).GetAllocationCallbacks();
+        m.metalfx = Allocate<MetalFx>(allocationCallbacks);
+
+        // Scalers are created on the first dispatch, because resource formats are unknown here
+        MTL4::CompilerDescriptor* compilerDesc = MTL4::CompilerDescriptor::alloc()->init();
+        m.metalfx->compiler = deviceNative->newCompiler(compilerDesc, nullptr);
+        compilerDesc->release();
+
+        if (!m.metalfx->compiler)
+            return Result::FAILURE;
+    }
+#endif
+
     return Result::SUCCESS;
 }
 
@@ -1210,10 +1510,10 @@ void UpscalerImpl::GetUpscalerProps(UpscalerProps& upscalerProps) const {
     upscalerProps.renderResolution.h = (Dim_t)(m_Desc.upscaleResolution.h / scalingFactor + 0.5f);
     upscalerProps.jitterPhaseNum = (uint8_t)std::ceil(8.0f * scalingFactor * scalingFactor);
 
-    if (m_Desc.type == UpscalerType::NIS) {
+    if (m_Desc.type == UpscalerType::NIS || m_Desc.type == UpscalerType::METALFX_SPATIAL) {
         upscalerProps.renderResolutionMin.w = 0;
         upscalerProps.renderResolutionMin.h = 0;
-    } else if (m_Desc.mode == UpscalerMode::ULTRA_QUALITY || m_Desc.mode == UpscalerMode::QUALITY || m_Desc.mode == UpscalerMode::BALANCED) {
+    } else if (m_Desc.type != UpscalerType::METALFX_DENOISED && (m_Desc.mode == UpscalerMode::ULTRA_QUALITY || m_Desc.mode == UpscalerMode::QUALITY || m_Desc.mode == UpscalerMode::BALANCED)) {
         upscalerProps.renderResolutionMin.w = m_Desc.upscaleResolution.w / 2;
         upscalerProps.renderResolutionMin.h = m_Desc.upscaleResolution.h / 2;
     } else
@@ -1224,7 +1524,9 @@ void UpscalerImpl::CmdDispatchUpscale(CommandBuffer& commandBuffer, const Dispat
     const UpscalerResource& output = dispatchUpscaleDesc.output;
     const UpscalerResource& input = dispatchUpscaleDesc.input;
 
-    MaybeUnused(commandBuffer, output, input);
+    const float preExposure = dispatchUpscaleDesc.preExposure == 0.0f ? 1.0f : dispatchUpscaleDesc.preExposure;
+
+    MaybeUnused(commandBuffer, output, input, preExposure);
 
 #if NRI_ENABLE_NIS_SDK
     if (m_Desc.type == UpscalerType::NIS) {
@@ -1283,6 +1585,8 @@ void UpscalerImpl::CmdDispatchUpscale(CommandBuffer& commandBuffer, const Dispat
 
 #if NRI_ENABLE_FFX_SDK
     if (m_Desc.type == UpscalerType::FSR) {
+        ExclusiveScope lock(*m.ffx->sdkLock);
+
         const UpscalerGuides& guides = dispatchUpscaleDesc.guides.upscaler;
 
         ffxDispatchDescUpscale dispatchDesc = {};
@@ -1300,7 +1604,7 @@ void UpscalerImpl::CmdDispatchUpscale(CommandBuffer& commandBuffer, const Dispat
         dispatchDesc.enableSharpening = dispatchUpscaleDesc.settings.fsr.sharpness != 0.0f;
         dispatchDesc.sharpness = dispatchUpscaleDesc.settings.fsr.sharpness;
         dispatchDesc.frameTimeDelta = dispatchUpscaleDesc.settings.fsr.frameTime;
-        dispatchDesc.preExposure = 1.0f;
+        dispatchDesc.preExposure = preExposure;
         dispatchDesc.reset = (dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) != 0;
         const float zNear = dispatchUpscaleDesc.settings.fsr.zNear;
         const float zFar = (m_Desc.flags & UpscalerBits::DEPTH_INFINITE) ? FLT_MAX : dispatchUpscaleDesc.settings.fsr.zFar;
@@ -1338,7 +1642,10 @@ void UpscalerImpl::CmdDispatchUpscale(CommandBuffer& commandBuffer, const Dispat
 
         ID3D12GraphicsCommandList* commandList = (ID3D12GraphicsCommandList*)m_iCore.GetCommandBufferNativeObject(&commandBuffer);
 
-        xess_result_t result = xessD3D12Execute(m.xess->context, commandList, &executeParams);
+        xess_result_t result = xessSetExposureMultiplier(m.xess->context, 1.0f / preExposure);
+        NRI_CHECK(result == XESS_RESULT_SUCCESS, "xessSetExposureMultiplier() failed!");
+
+        result = xessD3D12Execute(m.xess->context, commandList, &executeParams);
         MaybeUnused(result);
         NRI_CHECK(result == XESS_RESULT_SUCCESS, "xessD3D12Execute() failed!");
     }
@@ -1360,45 +1667,34 @@ void UpscalerImpl::CmdDispatchUpscale(CommandBuffer& commandBuffer, const Dispat
 
         void* commandBufferNative = m_iCore.GetCommandBufferNativeObject(&commandBuffer);
 
+        NgxSetEvalParams(m.ngx->params, dispatchUpscaleDesc, preExposure);
+        NVSDK_NGX_Parameter_SetF(m.ngx->params, NVSDK_NGX_Parameter_Sharpness, 0.0f);
+
         NVSDK_NGX_Result result = NVSDK_NGX_Result_Fail;
 
 #    if NRI_ENABLE_D3D11_SUPPORT
         if (deviceDesc.graphicsAPI == GraphicsAPI::D3D11) {
-            NVSDK_NGX_D3D11_DLSS_Eval_Params srEvalParams = {};
-            srEvalParams.Feature.pInColor = (ID3D11Resource*)inputNative;
-            srEvalParams.Feature.pInOutput = (ID3D11Resource*)outputNative;
-            srEvalParams.pInMotionVectors = (ID3D11Resource*)mvNative;
-            srEvalParams.pInDepth = (ID3D11Resource*)depthNative;
-            srEvalParams.pInExposureTexture = (ID3D11Resource*)exposureNative;
-            srEvalParams.pInBiasCurrentColorMask = (ID3D11Resource*)reactiveNative;
-            srEvalParams.InJitterOffsetX = dispatchUpscaleDesc.cameraJitter.x;
-            srEvalParams.InJitterOffsetY = dispatchUpscaleDesc.cameraJitter.y;
-            srEvalParams.InRenderSubrectDimensions = {dispatchUpscaleDesc.currentResolution.w, dispatchUpscaleDesc.currentResolution.h};
-            srEvalParams.InReset = (dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) ? true : false;
-            srEvalParams.InMVScaleX = dispatchUpscaleDesc.mvScale.x;
-            srEvalParams.InMVScaleY = dispatchUpscaleDesc.mvScale.y;
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_Color, (ID3D11Resource*)inputNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_Output, (ID3D11Resource*)outputNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_MotionVectors, (ID3D11Resource*)mvNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_Depth, (ID3D11Resource*)depthNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_ExposureTexture, (ID3D11Resource*)exposureNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, (ID3D11Resource*)reactiveNative);
 
-            result = NGX_D3D11_EVALUATE_DLSS_EXT((ID3D11DeviceContext*)commandBufferNative, m.ngx->handle, m.ngx->params, &srEvalParams);
+            result = NVSDK_NGX_D3D11_EvaluateFeature_C((ID3D11DeviceContext*)commandBufferNative, m.ngx->handle, m.ngx->params, nullptr);
         }
 #    endif
 
 #    if NRI_ENABLE_D3D12_SUPPORT
         if (deviceDesc.graphicsAPI == GraphicsAPI::D3D12) {
-            NVSDK_NGX_D3D12_DLSS_Eval_Params srEvalParams = {};
-            srEvalParams.Feature.pInColor = (ID3D12Resource*)inputNative;
-            srEvalParams.Feature.pInOutput = (ID3D12Resource*)outputNative;
-            srEvalParams.pInMotionVectors = (ID3D12Resource*)mvNative;
-            srEvalParams.pInDepth = (ID3D12Resource*)depthNative;
-            srEvalParams.pInExposureTexture = (ID3D12Resource*)exposureNative;
-            srEvalParams.pInBiasCurrentColorMask = (ID3D12Resource*)reactiveNative;
-            srEvalParams.InJitterOffsetX = dispatchUpscaleDesc.cameraJitter.x;
-            srEvalParams.InJitterOffsetY = dispatchUpscaleDesc.cameraJitter.y;
-            srEvalParams.InRenderSubrectDimensions = {dispatchUpscaleDesc.currentResolution.w, dispatchUpscaleDesc.currentResolution.h};
-            srEvalParams.InReset = (dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) ? true : false;
-            srEvalParams.InMVScaleX = dispatchUpscaleDesc.mvScale.x;
-            srEvalParams.InMVScaleY = dispatchUpscaleDesc.mvScale.y;
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_Color, (ID3D12Resource*)inputNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_Output, (ID3D12Resource*)outputNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_MotionVectors, (ID3D12Resource*)mvNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_Depth, (ID3D12Resource*)depthNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_ExposureTexture, (ID3D12Resource*)exposureNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, (ID3D12Resource*)reactiveNative);
 
-            result = NGX_D3D12_EVALUATE_DLSS_EXT((ID3D12GraphicsCommandList*)commandBufferNative, m.ngx->handle, m.ngx->params, &srEvalParams);
+            result = NVSDK_NGX_D3D12_EvaluateFeature_C((ID3D12GraphicsCommandList*)commandBufferNative, m.ngx->handle, m.ngx->params, nullptr);
         }
 #    endif
 
@@ -1411,21 +1707,14 @@ void UpscalerImpl::CmdDispatchUpscale(CommandBuffer& commandBuffer, const Dispat
             NVSDK_NGX_Resource_VK exposureVk = NgxGetResource(m_iCore, guides.exposure, exposureNative);
             NVSDK_NGX_Resource_VK reactiveVk = NgxGetResource(m_iCore, guides.reactive, reactiveNative);
 
-            NVSDK_NGX_VK_DLSS_Eval_Params srEvalParams = {};
-            srEvalParams.Feature.pInColor = &inputVk;
-            srEvalParams.Feature.pInOutput = &outputVk;
-            srEvalParams.pInMotionVectors = &mvVk;
-            srEvalParams.pInDepth = &depthVk;
-            srEvalParams.pInExposureTexture = guides.exposure.texture ? &exposureVk : nullptr;
-            srEvalParams.pInBiasCurrentColorMask = guides.reactive.texture ? &reactiveVk : nullptr;
-            srEvalParams.InJitterOffsetX = dispatchUpscaleDesc.cameraJitter.x;
-            srEvalParams.InJitterOffsetY = dispatchUpscaleDesc.cameraJitter.y;
-            srEvalParams.InRenderSubrectDimensions = {dispatchUpscaleDesc.currentResolution.w, dispatchUpscaleDesc.currentResolution.h};
-            srEvalParams.InReset = (dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) ? true : false;
-            srEvalParams.InMVScaleX = dispatchUpscaleDesc.mvScale.x;
-            srEvalParams.InMVScaleY = dispatchUpscaleDesc.mvScale.y;
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_Color, &inputVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_Output, &outputVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_MotionVectors, &mvVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_Depth, &depthVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_ExposureTexture, guides.exposure.texture ? &exposureVk : nullptr);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_DLSS_Input_Bias_Current_Color_Mask, guides.reactive.texture ? &reactiveVk : nullptr);
 
-            result = NGX_VULKAN_EVALUATE_DLSS_EXT((VkCommandBuffer)commandBufferNative, m.ngx->handle, m.ngx->params, &srEvalParams);
+            result = NVSDK_NGX_VULKAN_EvaluateFeature_C((VkCommandBuffer)commandBufferNative, m.ngx->handle, m.ngx->params, nullptr);
         }
 #    endif
 
@@ -1449,72 +1738,55 @@ void UpscalerImpl::CmdDispatchUpscale(CommandBuffer& commandBuffer, const Dispat
         uint64_t exposureNative = m_iCore.GetTextureNativeObject(guides.exposure.texture);
         uint64_t reactiveNative = m_iCore.GetTextureNativeObject(guides.reactive.texture);
         uint64_t sssNative = m_iCore.GetTextureNativeObject(guides.sss.texture);
+        uint64_t preTransparencyNative = m_iCore.GetTextureNativeObject(guides.preTransparency.texture);
 
         void* commandBufferNative = m_iCore.GetCommandBufferNativeObject(&commandBuffer);
+
+        NgxSetEvalParams(m.ngx->params, dispatchUpscaleDesc, preExposure);
+
+        const bool useSpecularMotion = (dispatchUpscaleDesc.flags & DispatchUpscaleBits::USE_SPECULAR_MOTION) != 0;
+        NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_DLSS_WORLD_TO_VIEW_MATRIX, useSpecularMotion ? nullptr : (float*)dispatchUpscaleDesc.settings.dlrr.worldToViewMatrix);
+        NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_DLSS_VIEW_TO_CLIP_MATRIX, useSpecularMotion ? nullptr : (float*)dispatchUpscaleDesc.settings.dlrr.viewToClipMatrix);
 
         NVSDK_NGX_Result result = NVSDK_NGX_Result_Fail;
 
 #    if NRI_ENABLE_D3D11_SUPPORT
         if (deviceDesc.graphicsAPI == GraphicsAPI::D3D11) {
-            NVSDK_NGX_D3D11_DLSSD_Eval_Params rrEvalParams = {};
-            rrEvalParams.pInColor = (ID3D11Resource*)inputNative;
-            rrEvalParams.pInOutput = (ID3D11Resource*)outputNative;
-            rrEvalParams.pInMotionVectors = (ID3D11Resource*)mvNative;
-            rrEvalParams.pInDepth = (ID3D11Resource*)depthNative;
-            rrEvalParams.pInNormals = (ID3D11Resource*)normalRoughnessNative;
-            rrEvalParams.pInDiffuseAlbedo = (ID3D11Resource*)diffuseAlbedoNative;
-            rrEvalParams.pInSpecularAlbedo = (ID3D11Resource*)specularAlbedoNative;
-            rrEvalParams.pInExposureTexture = (ID3D11Resource*)exposureNative;
-            rrEvalParams.pInBiasCurrentColorMask = (ID3D11Resource*)reactiveNative;
-            rrEvalParams.pInScreenSpaceSubsurfaceScatteringGuide = (ID3D11Resource*)sssNative;
-            rrEvalParams.InJitterOffsetX = dispatchUpscaleDesc.cameraJitter.x;
-            rrEvalParams.InJitterOffsetY = dispatchUpscaleDesc.cameraJitter.y;
-            rrEvalParams.InRenderSubrectDimensions = {dispatchUpscaleDesc.currentResolution.w, dispatchUpscaleDesc.currentResolution.h};
-            rrEvalParams.InReset = (dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) ? true : false;
-            rrEvalParams.InMVScaleX = dispatchUpscaleDesc.mvScale.x;
-            rrEvalParams.InMVScaleY = dispatchUpscaleDesc.mvScale.y;
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_Color, (ID3D11Resource*)inputNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_Output, (ID3D11Resource*)outputNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_MotionVectors, (ID3D11Resource*)mvNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_Depth, (ID3D11Resource*)depthNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_DiffuseAlbedo, (ID3D11Resource*)diffuseAlbedoNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_SpecularAlbedo, (ID3D11Resource*)specularAlbedoNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_ExposureTexture, (ID3D11Resource*)exposureNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_GBuffer_Normals, (ID3D11Resource*)normalRoughnessNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_GBuffer_SpecularMvec, (ID3D11Resource*)(useSpecularMotion ? specularMvOrHitTNative : 0));
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_ResponsivityMask, (ID3D11Resource*)reactiveNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance, (ID3D11Resource*)(useSpecularMotion ? 0 : specularMvOrHitTNative));
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide, (ID3D11Resource*)sssNative);
+            NVSDK_NGX_Parameter_SetD3d11Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency, (ID3D11Resource*)preTransparencyNative);
 
-            if (dispatchUpscaleDesc.flags & DispatchUpscaleBits::USE_SPECULAR_MOTION)
-                rrEvalParams.pInMotionVectorsReflections = (ID3D11Resource*)specularMvOrHitTNative;
-            else {
-                rrEvalParams.pInSpecularHitDistance = (ID3D11Resource*)specularMvOrHitTNative;
-                rrEvalParams.pInWorldToViewMatrix = (float*)dispatchUpscaleDesc.settings.dlrr.worldToViewMatrix;
-                rrEvalParams.pInViewToClipMatrix = (float*)dispatchUpscaleDesc.settings.dlrr.viewToClipMatrix;
-            }
-
-            result = NGX_D3D11_EVALUATE_DLSSD_EXT((ID3D11DeviceContext*)commandBufferNative, m.ngx->handle, m.ngx->params, &rrEvalParams);
+            result = NVSDK_NGX_D3D11_EvaluateFeature_C((ID3D11DeviceContext*)commandBufferNative, m.ngx->handle, m.ngx->params, nullptr);
         }
 #    endif
 
 #    if NRI_ENABLE_D3D12_SUPPORT
         if (deviceDesc.graphicsAPI == GraphicsAPI::D3D12) {
-            NVSDK_NGX_D3D12_DLSSD_Eval_Params rrEvalParams = {};
-            rrEvalParams.pInColor = (ID3D12Resource*)inputNative;
-            rrEvalParams.pInOutput = (ID3D12Resource*)outputNative;
-            rrEvalParams.pInMotionVectors = (ID3D12Resource*)mvNative;
-            rrEvalParams.pInDepth = (ID3D12Resource*)depthNative;
-            rrEvalParams.pInNormals = (ID3D12Resource*)normalRoughnessNative;
-            rrEvalParams.pInDiffuseAlbedo = (ID3D12Resource*)diffuseAlbedoNative;
-            rrEvalParams.pInSpecularAlbedo = (ID3D12Resource*)specularAlbedoNative;
-            rrEvalParams.pInExposureTexture = (ID3D12Resource*)exposureNative;
-            rrEvalParams.pInBiasCurrentColorMask = (ID3D12Resource*)reactiveNative;
-            rrEvalParams.pInScreenSpaceSubsurfaceScatteringGuide = (ID3D12Resource*)sssNative;
-            rrEvalParams.InJitterOffsetX = dispatchUpscaleDesc.cameraJitter.x;
-            rrEvalParams.InJitterOffsetY = dispatchUpscaleDesc.cameraJitter.y;
-            rrEvalParams.InRenderSubrectDimensions = {dispatchUpscaleDesc.currentResolution.w, dispatchUpscaleDesc.currentResolution.h};
-            rrEvalParams.InReset = (dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) ? true : false;
-            rrEvalParams.InMVScaleX = dispatchUpscaleDesc.mvScale.x;
-            rrEvalParams.InMVScaleY = dispatchUpscaleDesc.mvScale.y;
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_Color, (ID3D12Resource*)inputNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_Output, (ID3D12Resource*)outputNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_MotionVectors, (ID3D12Resource*)mvNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_Depth, (ID3D12Resource*)depthNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_DiffuseAlbedo, (ID3D12Resource*)diffuseAlbedoNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_SpecularAlbedo, (ID3D12Resource*)specularAlbedoNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_ExposureTexture, (ID3D12Resource*)exposureNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_GBuffer_Normals, (ID3D12Resource*)normalRoughnessNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_GBuffer_SpecularMvec, (ID3D12Resource*)(useSpecularMotion ? specularMvOrHitTNative : 0));
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_ResponsivityMask, (ID3D12Resource*)reactiveNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance, (ID3D12Resource*)(useSpecularMotion ? 0 : specularMvOrHitTNative));
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide, (ID3D12Resource*)sssNative);
+            NVSDK_NGX_Parameter_SetD3d12Resource(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency, (ID3D12Resource*)preTransparencyNative);
 
-            if (dispatchUpscaleDesc.flags & DispatchUpscaleBits::USE_SPECULAR_MOTION)
-                rrEvalParams.pInMotionVectorsReflections = (ID3D12Resource*)specularMvOrHitTNative;
-            else {
-                rrEvalParams.pInSpecularHitDistance = (ID3D12Resource*)specularMvOrHitTNative;
-                rrEvalParams.pInWorldToViewMatrix = (float*)dispatchUpscaleDesc.settings.dlrr.worldToViewMatrix;
-                rrEvalParams.pInViewToClipMatrix = (float*)dispatchUpscaleDesc.settings.dlrr.viewToClipMatrix;
-            }
-
-            result = NGX_D3D12_EVALUATE_DLSSD_EXT((ID3D12GraphicsCommandList*)commandBufferNative, m.ngx->handle, m.ngx->params, &rrEvalParams);
+            result = NVSDK_NGX_D3D12_EvaluateFeature_C((ID3D12GraphicsCommandList*)commandBufferNative, m.ngx->handle, m.ngx->params, nullptr);
         }
 #    endif
 
@@ -1531,38 +1803,138 @@ void UpscalerImpl::CmdDispatchUpscale(CommandBuffer& commandBuffer, const Dispat
             NVSDK_NGX_Resource_VK exposureVk = NgxGetResource(m_iCore, guides.exposure, exposureNative);
             NVSDK_NGX_Resource_VK reactiveVk = NgxGetResource(m_iCore, guides.reactive, reactiveNative);
             NVSDK_NGX_Resource_VK sssVk = NgxGetResource(m_iCore, guides.sss, sssNative);
+            NVSDK_NGX_Resource_VK preTransparencyVk = NgxGetResource(m_iCore, guides.preTransparency, preTransparencyNative);
 
-            NVSDK_NGX_VK_DLSSD_Eval_Params rrEvalParams = {};
-            rrEvalParams.pInColor = &inputVk;
-            rrEvalParams.pInOutput = &outputVk;
-            rrEvalParams.pInMotionVectors = &mvVk;
-            rrEvalParams.pInDepth = &depthVk;
-            rrEvalParams.pInNormals = &normalRoughnessVk;
-            rrEvalParams.pInDiffuseAlbedo = &diffuseAlbedoVk;
-            rrEvalParams.pInSpecularAlbedo = &specularAlbedoVk;
-            rrEvalParams.pInExposureTexture = guides.exposure.texture ? &exposureVk : nullptr;
-            rrEvalParams.pInBiasCurrentColorMask = guides.reactive.texture ? &reactiveVk : nullptr;
-            rrEvalParams.pInScreenSpaceSubsurfaceScatteringGuide = guides.sss.texture ? &sssVk : nullptr;
-            rrEvalParams.InJitterOffsetX = dispatchUpscaleDesc.cameraJitter.x;
-            rrEvalParams.InJitterOffsetY = dispatchUpscaleDesc.cameraJitter.y;
-            rrEvalParams.InRenderSubrectDimensions = {dispatchUpscaleDesc.currentResolution.w, dispatchUpscaleDesc.currentResolution.h};
-            rrEvalParams.InReset = (dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) ? true : false;
-            rrEvalParams.InMVScaleX = dispatchUpscaleDesc.mvScale.x;
-            rrEvalParams.InMVScaleY = dispatchUpscaleDesc.mvScale.y;
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_Color, &inputVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_Output, &outputVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_MotionVectors, &mvVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_Depth, &depthVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_DiffuseAlbedo, &diffuseAlbedoVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_SpecularAlbedo, &specularAlbedoVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_ExposureTexture, guides.exposure.texture ? &exposureVk : nullptr);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_GBuffer_Normals, &normalRoughnessVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_GBuffer_SpecularMvec, useSpecularMotion ? &specularMvOrHitTVk : nullptr);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_ResponsivityMask, guides.reactive.texture ? &reactiveVk : nullptr);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance, useSpecularMotion ? nullptr : &specularMvOrHitTVk);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_ScreenSpaceSubsurfaceScatteringGuide, guides.sss.texture ? &sssVk : nullptr);
+            NVSDK_NGX_Parameter_SetVoidPointer(m.ngx->params, NVSDK_NGX_Parameter_DLSSD_ColorBeforeTransparency, guides.preTransparency.texture ? &preTransparencyVk : nullptr);
 
-            if (dispatchUpscaleDesc.flags & DispatchUpscaleBits::USE_SPECULAR_MOTION)
-                rrEvalParams.pInMotionVectorsReflections = &specularMvOrHitTVk;
-            else {
-                rrEvalParams.pInSpecularHitDistance = &specularMvOrHitTVk;
-                rrEvalParams.pInWorldToViewMatrix = (float*)dispatchUpscaleDesc.settings.dlrr.worldToViewMatrix;
-                rrEvalParams.pInViewToClipMatrix = (float*)dispatchUpscaleDesc.settings.dlrr.viewToClipMatrix;
-            }
-
-            result = NGX_VULKAN_EVALUATE_DLSSD_EXT((VkCommandBuffer)commandBufferNative, m.ngx->handle, m.ngx->params, &rrEvalParams);
+            result = NVSDK_NGX_VULKAN_EvaluateFeature_C((VkCommandBuffer)commandBufferNative, m.ngx->handle, m.ngx->params, nullptr);
         }
 #    endif
 
         NRI_CHECK(result == NVSDK_NGX_Result_Success, "DLRR evaluation failed!");
+    }
+#endif
+
+#if NRI_ENABLE_METAL_SUPPORT
+    if (IsMetalFx(m_Desc.type)) {
+        NS::AutoreleasePool* autoreleasePool = NS::AutoreleasePool::alloc()->init();
+        MetalFx& metalFx = *m.metalfx;
+
+        MTL::Texture* inputNative = MetalFxGetTexture(m_iCore, input);
+        MTL::Texture* outputNative = MetalFxGetTexture(m_iCore, output);
+        NRI_CHECK(inputNative && outputNative, "'input' and 'output' must be valid textures");
+
+        // Lazy creation: needs formats (can compile shaders)
+        bool isCreated = metalFx.spatial || metalFx.temporal || metalFx.denoised;
+
+        if (!isCreated && inputNative && outputNative) {
+            MTL::Device* deviceNative = (MTL::Device*)m_iCore.GetDeviceNativeObject(&m_Device);
+            isCreated = MetalFxCreateScaler(metalFx, deviceNative, m_iCore, m_Desc, dispatchUpscaleDesc);
+
+            if (!isCreated)
+                NRI_REPORT_ERROR(&(DeviceBase&)m_Device, "MetalFX scaler creation failed");
+        }
+
+        // The scaler is created for the "input" size of the first dispatch
+        bool isInputValid = false;
+
+        if (isCreated && inputNative && outputNative) {
+            NS::UInteger inputWidth = metalFx.spatial ? metalFx.spatial->inputWidth() : (metalFx.temporal ? metalFx.temporal->inputWidth() : metalFx.denoised->inputWidth());
+            NS::UInteger inputHeight = metalFx.spatial ? metalFx.spatial->inputHeight() : (metalFx.temporal ? metalFx.temporal->inputHeight() : metalFx.denoised->inputHeight());
+
+            isInputValid = inputNative->width() == inputWidth && inputNative->height() == inputHeight;
+            NRI_CHECK(isInputValid, "'input' size must not change");
+        }
+
+        if (isInputValid) {
+            // MetalFX encodes directly into the native command buffer, which allows only one open encoder
+            MTL4::CommandBuffer* commandBufferNative = (MTL4::CommandBuffer*)m_iCore.GetCommandBufferNativeObject(&commandBuffer);
+            BeginNativeEncodingMetal(commandBufferNative);
+
+            { // Order "METALFX_EXTRA_STAGES" after all previous work ("dispatch" is ordered by app barriers)
+                MTL4::ComputeCommandEncoder* encoder = commandBufferNative->computeCommandEncoder();
+                encoder->barrierAfterStages(MTL::StageAll, METALFX_EXTRA_STAGES, MTL4::VisibilityOptionDevice);
+                encoder->endEncoding();
+            }
+
+            if (metalFx.spatial) {
+                metalFx.spatial->setColorTexture(inputNative);
+                metalFx.spatial->setOutputTexture(outputNative);
+                metalFx.spatial->setInputContentWidth(dispatchUpscaleDesc.currentResolution.w);
+                metalFx.spatial->setInputContentHeight(dispatchUpscaleDesc.currentResolution.h);
+                metalFx.spatial->encodeToCommandBuffer(commandBufferNative);
+            } else if (metalFx.temporal) {
+                const UpscalerGuides& guides = dispatchUpscaleDesc.guides.upscaler;
+
+                metalFx.temporal->setColorTexture(inputNative);
+                metalFx.temporal->setOutputTexture(outputNative);
+                metalFx.temporal->setDepthTexture(MetalFxGetTexture(m_iCore, guides.depth));
+                metalFx.temporal->setMotionTexture(MetalFxGetTexture(m_iCore, guides.mv));
+                metalFx.temporal->setExposureTexture(MetalFxGetTexture(m_iCore, guides.exposure));
+                metalFx.temporal->setReactiveMaskTexture(MetalFxGetTexture(m_iCore, guides.reactive));
+                metalFx.temporal->setInputContentWidth(dispatchUpscaleDesc.currentResolution.w);
+                metalFx.temporal->setInputContentHeight(dispatchUpscaleDesc.currentResolution.h);
+                metalFx.temporal->setJitterOffsetX(dispatchUpscaleDesc.cameraJitter.x);
+                metalFx.temporal->setJitterOffsetY(dispatchUpscaleDesc.cameraJitter.y);
+                metalFx.temporal->setMotionVectorScaleX(dispatchUpscaleDesc.mvScale.x);
+                metalFx.temporal->setMotionVectorScaleY(dispatchUpscaleDesc.mvScale.y);
+                metalFx.temporal->setDepthReversed((m_Desc.flags & UpscalerBits::DEPTH_INVERTED) != 0);
+                metalFx.temporal->setReset((dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) != 0);
+                metalFx.temporal->setPreExposure(preExposure);
+                metalFx.temporal->encodeToCommandBuffer(commandBufferNative);
+            } else {
+                const DenoiserGuides& guides = dispatchUpscaleDesc.guides.denoiser;
+                MTL::Texture* normalRoughnessNative = MetalFxGetTexture(m_iCore, guides.normalRoughness);
+
+                simd::float4x4 worldToViewMatrix = {};
+                memcpy(&worldToViewMatrix, dispatchUpscaleDesc.settings.dlrr.worldToViewMatrix, sizeof(worldToViewMatrix));
+
+                simd::float4x4 viewToClipMatrix = {};
+                memcpy(&viewToClipMatrix, dispatchUpscaleDesc.settings.dlrr.viewToClipMatrix, sizeof(viewToClipMatrix));
+
+                metalFx.denoised->setColorTexture(inputNative);
+                metalFx.denoised->setOutputTexture(outputNative);
+                metalFx.denoised->setDepthTexture(MetalFxGetTexture(m_iCore, guides.depth));
+                metalFx.denoised->setMotionTexture(MetalFxGetTexture(m_iCore, guides.mv));
+                metalFx.denoised->setNormalTexture(normalRoughnessNative);
+                metalFx.denoised->setRoughnessTexture(normalRoughnessNative ? MetalFxCreateRoughnessView(commandBufferNative, normalRoughnessNative) : nullptr);
+                metalFx.denoised->setDiffuseAlbedoTexture(MetalFxGetTexture(m_iCore, guides.diffuseAlbedo));
+                metalFx.denoised->setSpecularAlbedoTexture(MetalFxGetTexture(m_iCore, guides.specularAlbedo));
+                metalFx.denoised->setSpecularHitDistanceTexture(MetalFxGetTexture(m_iCore, guides.specularMvOrHitT));
+                metalFx.denoised->setExposureTexture(MetalFxGetTexture(m_iCore, guides.exposure));
+                metalFx.denoised->setReactiveMaskTexture(MetalFxGetTexture(m_iCore, guides.reactive));
+                metalFx.denoised->setJitterOffsetX(dispatchUpscaleDesc.cameraJitter.x);
+                metalFx.denoised->setJitterOffsetY(dispatchUpscaleDesc.cameraJitter.y);
+                metalFx.denoised->setMotionVectorScaleX(dispatchUpscaleDesc.mvScale.x);
+                metalFx.denoised->setMotionVectorScaleY(dispatchUpscaleDesc.mvScale.y);
+                metalFx.denoised->setDepthReversed((m_Desc.flags & UpscalerBits::DEPTH_INVERTED) != 0);
+                metalFx.denoised->setShouldResetHistory((dispatchUpscaleDesc.flags & DispatchUpscaleBits::RESET_HISTORY) != 0);
+                metalFx.denoised->setPreExposure(preExposure);
+                metalFx.denoised->setWorldToViewMatrix(worldToViewMatrix);
+                metalFx.denoised->setViewToClipMatrix(viewToClipMatrix);
+                metalFx.denoised->encodeToCommandBuffer(commandBufferNative);
+            }
+
+            { // Order all subsequent work after "METALFX_EXTRA_STAGES" ("dispatch" is ordered by app barriers)
+                MTL4::ComputeCommandEncoder* encoder = commandBufferNative->computeCommandEncoder();
+                encoder->barrierAfterStages(METALFX_EXTRA_STAGES, MTL::StageAll, MTL4::VisibilityOptionDevice);
+                encoder->endEncoding();
+            }
+        }
+
+        autoreleasePool->release();
     }
 #endif
 }

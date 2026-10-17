@@ -845,7 +845,6 @@ static bool ValidateHostTextureCopyDesc(DeviceVal& device, uint32_t i, const Tex
     const TextureDesc& textureDesc = texture.GetDesc();
     const FormatProps& formatProps = GetFormatProps(textureDesc.format);
 
-    NRI_RETURN_ON_FAILURE(&device, &texture.GetDevice() == &device, false, "'%s[%u].texture' belongs to another device", name, i);
     NRI_RETURN_ON_FAILURE(&device, texture.IsBoundToMemory(), false, "'%s[%u].texture' is not bound to memory", name, i);
     NRI_RETURN_ON_FAILURE(&device, textureDesc.usage & TextureUsageBits::HOST_TRANSFER, false, "'%s[%u].texture' was not created with 'TextureUsageBits::HOST_TRANSFER'", name, i);
     NRI_RETURN_ON_FAILURE(&device, device.GetFormatSupport(textureDesc.format) & FormatSupportBits::HOST_COPY, false, "'%s[%u].texture' format does not support 'FormatSupportBits::HOST_COPY'", name, i);
@@ -1157,9 +1156,6 @@ static Result NRI_CALL WriteSamplerDescriptors(DescriptorHeap& descriptorHeap, c
 static void NRI_CALL CmdSetDescriptorHeap(CommandBuffer& commandBuffer, const DescriptorHeap& descriptorHeap) {
     CommandBufferVal& commandBufferVal = (CommandBufferVal&)commandBuffer;
     const DescriptorHeapVal& descriptorHeapVal = (const DescriptorHeapVal&)descriptorHeap;
-    DeviceVal& deviceVal = commandBufferVal.GetDevice();
-
-    NRI_RETURN_ON_FAILURE(&deviceVal, &descriptorHeapVal.GetDevice() == &deviceVal, ReturnVoid(), "'descriptorHeap' belongs to another device");
 
     commandBufferVal.SetDescriptorHeap(*descriptorHeapVal.GetImpl());
 }
@@ -1370,9 +1366,6 @@ static void NRI_CALL CmdCopyImguiData(CommandBuffer& commandBuffer, Streamer& st
     ImguiVal& imguiVal = (ImguiVal&)imgui;
     ImguiImpl* imguiImpl = imguiVal.GetImpl();
 
-    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(commandBuffer) == &deviceVal, ReturnVoid(), "'commandBuffer' belongs to a different device");
-    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(streamer) == &deviceVal, ReturnVoid(), "'streamer' belongs to a different device");
-
     if (!ValidateCopyImguiDataDesc(deviceVal, copyImguiDataDesc))
         return;
 
@@ -1386,13 +1379,11 @@ static void NRI_CALL CmdDrawImgui(CommandBuffer& commandBuffer, const ImguiRende
     NRI_RETURN_ON_FAILURE(&deviceVal, imguiRenderData.imgui, ReturnVoid(), "'imguiRenderData.imgui' is NULL");
 
     ImguiVal& imguiVal = (ImguiVal&)*imguiRenderData.imgui;
-    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(imguiVal) == &deviceVal, ReturnVoid(), "'imguiRenderData.imgui' belongs to a different device");
     NRI_RETURN_ON_FAILURE(&deviceVal, !imguiRenderData.drawCmdNum || imguiRenderData.drawCommands, ReturnVoid(), "'imguiRenderData.drawCommands' is NULL");
     NRI_RETURN_ON_FAILURE(&deviceVal, !imguiRenderData.drawCmdNum || imguiRenderData.vertices.buffer, ReturnVoid(), "'imguiRenderData.vertices.buffer' is NULL");
 
     if (imguiRenderData.vertices.buffer) {
         BufferVal& bufferVal = (BufferVal&)*imguiRenderData.vertices.buffer;
-        NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(bufferVal) == &deviceVal, ReturnVoid(), "'imguiRenderData.vertices.buffer' belongs to a different device");
 
         const BufferDesc& bufferDesc = bufferVal.GetDesc();
         NRI_RETURN_ON_FAILURE(&deviceVal, imguiRenderData.vertices.offset <= imguiRenderData.indexBufferOffset, ReturnVoid(), "'imguiRenderData.vertices.offset' is invalid");
@@ -1803,7 +1794,6 @@ static Result NRI_CALL CreateVideoSessionParameters(Device& device, const VideoS
     NRI_RETURN_ON_FAILURE(&deviceVal, videoSessionParametersDesc.session, Result::INVALID_ARGUMENT, "'session' is NULL");
 
     VideoSessionVal& sessionVal = *(VideoSessionVal*)videoSessionParametersDesc.session;
-    NRI_RETURN_ON_FAILURE(&deviceVal, &sessionVal.GetDevice() == &deviceVal, Result::INVALID_ARGUMENT, "'session' belongs to another device");
 
     NRI_RETURN_ON_FAILURE(&deviceVal, IsVideoSessionParametersDescValid(sessionVal.GetDesc(), sessionVal.GetCapabilities(), videoSessionParametersDesc), Result::INVALID_ARGUMENT, "'videoSessionParametersDesc' is invalid for the fixed session profile, format or picture layout");
 
@@ -1841,7 +1831,7 @@ static Result NRI_CALL CreateVideoPicture(Device& device, const VideoPictureDesc
     NRI_RETURN_ON_FAILURE(&deviceVal, videoPictureDesc.texture, Result::INVALID_ARGUMENT, "'texture' is NULL");
 
     TextureVal& textureVal = *(TextureVal*)videoPictureDesc.texture;
-    NRI_RETURN_ON_FAILURE(&deviceVal, &textureVal.GetDevice() == &deviceVal && IsVideoPictureDescValid(videoPictureDesc, textureVal.GetDesc()), Result::INVALID_ARGUMENT, "'videoPictureDesc' is invalid or uses a texture from another device");
+    NRI_RETURN_ON_FAILURE(&deviceVal, IsVideoPictureDescValid(videoPictureDesc, textureVal.GetDesc()), Result::INVALID_ARGUMENT, "'videoPictureDesc' is invalid");
 
     VideoPictureDesc descImpl = videoPictureDesc;
     descImpl.texture = textureVal.GetImpl();
@@ -1916,7 +1906,7 @@ static void NRI_CALL CmdResolveVideoEncodeFeedback(CommandBuffer& commandBuffer,
 static Result NRI_CALL GetVideoEncodeFeedback(VideoSession& videoSession, Buffer& resolvedMetadataReadback, uint64_t resolvedMetadataOffset, VideoEncodeFeedback& feedback) {
     VideoSessionVal& videoSessionVal = (VideoSessionVal&)videoSession;
     BufferVal& resolvedMetadataReadbackVal = (BufferVal&)resolvedMetadataReadback;
-    NRI_RETURN_ON_FAILURE(&videoSessionVal.GetDevice(), videoSessionVal.GetDesc().type == VideoSessionType::ENCODE && videoSessionVal.GetCapabilities().encodeFeedbackSupported && &videoSessionVal.GetDevice() == &resolvedMetadataReadbackVal.GetDevice() && videoSessionVal.IsResolvedMetadataRangeValid(resolvedMetadataReadbackVal, resolvedMetadataOffset), Result::INVALID_ARGUMENT, "encode feedback must be supported and 'resolvedMetadataReadback' must be a valid range from the encode session device");
+    NRI_RETURN_ON_FAILURE(&videoSessionVal.GetDevice(), videoSessionVal.GetDesc().type == VideoSessionType::ENCODE && videoSessionVal.GetCapabilities().encodeFeedbackSupported && videoSessionVal.IsResolvedMetadataRangeValid(resolvedMetadataReadbackVal, resolvedMetadataOffset), Result::INVALID_ARGUMENT, "encode feedback must be supported and 'resolvedMetadataReadback' must be a valid buffer range");
 
     return videoSessionVal.GetDevice().GetVideoInterfaceImpl().GetVideoEncodeFeedback(*videoSessionVal.GetImpl(), *resolvedMetadataReadbackVal.GetImpl(), resolvedMetadataOffset, feedback);
 }
@@ -1928,7 +1918,7 @@ static Result NRI_CALL GetVideoAV1EncodeDecodeInfo(VideoSession& videoSession, B
     NRI_RETURN_ON_FAILURE(&videoSessionVal.GetDevice(), desc.feedback && desc.sequence, Result::INVALID_ARGUMENT, "'feedback' and 'sequence' must be valid");
     NRI_RETURN_ON_FAILURE(&videoSessionVal.GetDevice(), (desc.references == nullptr) == (desc.referenceNum == 0) && desc.referenceNum <= 8, Result::INVALID_ARGUMENT, "'references' and 'referenceNum' are inconsistent");
     NRI_RETURN_ON_FAILURE(&videoSessionVal.GetDevice(), !desc.references || HasValidVideoAV1ReferenceKeys(desc.references, desc.referenceNum), Result::INVALID_ARGUMENT, "'references' contain inconsistent AV1 identities");
-    NRI_RETURN_ON_FAILURE(&videoSessionVal.GetDevice(), videoSessionVal.GetDesc().type == VideoSessionType::ENCODE && videoSessionVal.GetDesc().codec == VideoCodec::AV1 && videoSessionVal.GetCapabilities().encodeFeedbackSupported && &videoSessionVal.GetDevice() == &resolvedMetadataReadbackVal.GetDevice() && videoSessionVal.IsResolvedMetadataRangeValid(resolvedMetadataReadbackVal, resolvedMetadataOffset), Result::INVALID_ARGUMENT, "encode feedback must be supported and 'resolvedMetadataReadback' must be a valid range from the AV1 encode session device");
+    NRI_RETURN_ON_FAILURE(&videoSessionVal.GetDevice(), videoSessionVal.GetDesc().type == VideoSessionType::ENCODE && videoSessionVal.GetDesc().codec == VideoCodec::AV1 && videoSessionVal.GetCapabilities().encodeFeedbackSupported && videoSessionVal.IsResolvedMetadataRangeValid(resolvedMetadataReadbackVal, resolvedMetadataOffset), Result::INVALID_ARGUMENT, "encode feedback must be supported and 'resolvedMetadataReadback' must be a valid buffer range");
 
     return videoSessionVal.GetDevice().GetVideoInterfaceImpl().GetVideoAV1EncodeDecodeInfo(*videoSessionVal.GetImpl(), *resolvedMetadataReadbackVal.GetImpl(), resolvedMetadataOffset, desc, info);
 }
@@ -2078,9 +2068,6 @@ static BufferOffset NRI_CALL StreamBufferData(Streamer& streamer, const StreamBu
     NRI_RETURN_ON_FAILURE(&deviceVal, streamBufferDataDesc.dataChunkNum, {}, "'streamBufferDataDesc.dataChunkNum' must be > 0");
     NRI_RETURN_ON_FAILURE(&deviceVal, streamBufferDataDesc.dataChunks, {}, "'streamBufferDataDesc.dataChunks' is NULL");
 
-    if (streamBufferDataDesc.dstBuffer)
-        NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(*streamBufferDataDesc.dstBuffer) == &deviceVal, {}, "'streamBufferDataDesc.dstBuffer' belongs to a different device");
-
     ExclusiveScope lock(streamerVal.m_Lock);
 
     if (streamBufferDataDesc.copyBatch || streamBufferDataDesc.dstBuffer)
@@ -2098,7 +2085,6 @@ static BufferOffset NRI_CALL StreamTextureData(Streamer& streamer, const StreamT
     NRI_RETURN_ON_FAILURE(&deviceVal, streamTextureDataDesc.dataRowPitch, {}, "'streamTextureDataDesc.dataRowPitch' must be > 0");
     NRI_RETURN_ON_FAILURE(&deviceVal, streamTextureDataDesc.dataSlicePitch, {}, "'streamTextureDataDesc.dataSlicePitch' must be > 0");
     NRI_RETURN_ON_FAILURE(&deviceVal, streamTextureDataDesc.data, {}, "'streamTextureDataDesc.data' is NULL");
-    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(*streamTextureDataDesc.dstTexture) == &deviceVal, {}, "'streamTextureDataDesc.dstTexture' belongs to a different device");
 
     ExclusiveScope lock(streamerVal.m_Lock);
 
@@ -2126,8 +2112,6 @@ static void NRI_CALL CmdCopyStreamedData(CommandBuffer& commandBuffer, Streamer&
     StreamerVal& streamerVal = (StreamerVal&)streamer;
     StreamerImpl* streamerImpl = streamerVal.GetImpl();
     ExclusiveScope lock(streamerVal.m_Lock);
-
-    NRI_RETURN_ON_FAILURE(&deviceVal, &GetDeviceVal(commandBuffer) == &deviceVal, ReturnVoid(), "'commandBuffer' belongs to a different device");
 
     size_t copyBatchIndex = FindStreamerCopyBatch(streamerVal.m_CopyBatches, copyBatch);
     NRI_RETURN_ON_FAILURE(&deviceVal, copyBatchIndex != SIZE_MAX, ReturnVoid(), "'copyBatch' is invalid or inactive");
@@ -2216,10 +2200,21 @@ struct UpscalerVal final : public ObjectVal {
         return (UpscalerImpl*)m_Impl;
     }
 
+    inline const Dim2_t& GetMetalFxInputSize() const {
+        return m_MetalFxInputSize;
+    }
+
+    inline void SetMetalFxInputSize(const Dim2_t& size) {
+        m_MetalFxInputSize = size;
+    }
+
     UpscalerDesc m_Desc = {}; // only for .natvis
+
+private:
+    Dim2_t m_MetalFxInputSize = {}; // MetalFX scalers are created for the "input" size of the first dispatch
 };
 
-static bool ValidateUpscalerResource(DeviceVal& deviceVal, const UpscalerResource& resource, const char* name, DescriptorType descriptorType) {
+static inline bool ValidateUpscalerResource(DeviceVal& deviceVal, const UpscalerResource& resource, const char* name, DescriptorType descriptorType) {
     NRI_RETURN_ON_FAILURE(&deviceVal, resource.texture != nullptr, false, "'%s.texture' is NULL", name);
     NRI_RETURN_ON_FAILURE(&deviceVal, resource.descriptor != nullptr, false, "'%s.descriptor' is NULL", name);
 
@@ -2243,8 +2238,15 @@ static Result NRI_CALL CreateUpscaler(Device& device, const UpscalerDesc& upscal
     NRI_RETURN_ON_FAILURE(&deviceVal, upscalerDesc.mode < UpscalerMode::MAX_NUM, Result::INVALID_ARGUMENT, "'mode' is invalid");
     NRI_RETURN_ON_FAILURE(&deviceVal, upscalerDesc.upscaleResolution.w != 0 && upscalerDesc.upscaleResolution.h != 0, Result::INVALID_ARGUMENT, "'upscaleResolution' is invalid");
     NRI_RETURN_ON_FAILURE(&deviceVal, IsUpscalerSupported(deviceVal.GetDesc(), upscalerDesc.type), Result::UNSUPPORTED, "'type' is not supported");
+
     if (upscalerDesc.type == UpscalerType::NIS && !deviceVal.GetDesc().shaderFeatures.storageWriteWithoutFormat)
         NRI_RETURN_ON_FAILURE(&deviceVal, upscalerDesc.outputFormat > Format::UNKNOWN && upscalerDesc.outputFormat < Format::MAX_NUM, Result::INVALID_ARGUMENT, "'outputFormat' is invalid");
+
+    if (upscalerDesc.type == UpscalerType::METALFX_TEMPORAL || upscalerDesc.type == UpscalerType::METALFX_DENOISED)
+        NRI_RETURN_ON_FAILURE(&deviceVal, !(upscalerDesc.flags & (UpscalerBits::DEPTH_LINEAR | UpscalerBits::MV_JITTERED)), Result::UNSUPPORTED, "'DEPTH_LINEAR' and 'MV_JITTERED' are unsupported by MetalFX");
+
+    if (upscalerDesc.type == UpscalerType::METALFX_DENOISED)
+        NRI_RETURN_ON_FAILURE(&deviceVal, !(upscalerDesc.flags & UpscalerBits::MV_UPSCALED), Result::UNSUPPORTED, "'MV_UPSCALED' is unsupported by 'METALFX_DENOISED'");
 
     UpscalerImpl* impl = Allocate<UpscalerImpl>(deviceVal.GetAllocationCallbacks(), device, deviceVal.GetCoreInterface());
     Result result = impl->Create(upscalerDesc);
@@ -2295,16 +2297,30 @@ static void NRI_CALL CmdDispatchUpscale(CommandBuffer& commandBuffer, Upscaler& 
     NRI_RETURN_ON_FAILURE(&deviceVal, dispatchUpscaleDesc.currentResolution.w <= upscalerProps.renderResolution.w && dispatchUpscaleDesc.currentResolution.h <= upscalerProps.renderResolution.h, ReturnVoid(), "'currentResolution' is above the maximum render resolution");
     NRI_RETURN_ON_FAILURE(&deviceVal, dispatchUpscaleDesc.cameraJitter.x >= -0.5f && dispatchUpscaleDesc.cameraJitter.x <= 0.5f, ReturnVoid(), "'cameraJitter.x' is out of range");
     NRI_RETURN_ON_FAILURE(&deviceVal, dispatchUpscaleDesc.cameraJitter.y >= -0.5f && dispatchUpscaleDesc.cameraJitter.y <= 0.5f, ReturnVoid(), "'cameraJitter.y' is out of range");
+    NRI_RETURN_ON_FAILURE(&deviceVal, dispatchUpscaleDesc.preExposure >= 0.0f, ReturnVoid(), "'preExposure' must be >= 0");
     if (!ValidateUpscalerResource(deviceVal, dispatchUpscaleDesc.output, "output", DescriptorType::STORAGE_TEXTURE))
         return;
     if (!ValidateUpscalerResource(deviceVal, dispatchUpscaleDesc.input, "input", DescriptorType::TEXTURE))
         return;
 
+    // MetalFX encodes directly into the native command buffer, bypassing command validation
+    const bool isMetalFx = upscalerVal.m_Desc.type == UpscalerType::METALFX_SPATIAL || upscalerVal.m_Desc.type == UpscalerType::METALFX_TEMPORAL || upscalerVal.m_Desc.type == UpscalerType::METALFX_DENOISED;
+
+    if (isMetalFx) {
+        const TextureDesc& outputDesc = ((TextureVal*)dispatchUpscaleDesc.output.texture)->GetDesc();
+        const TextureDesc& inputDesc = ((TextureVal*)dispatchUpscaleDesc.input.texture)->GetDesc();
+        const Dim2_t& inputSize = upscalerVal.GetMetalFxInputSize();
+
+        NRI_RETURN_ON_FAILURE(&deviceVal, ((CommandBufferVal&)commandBuffer).CanDispatch(), ReturnVoid(), "MetalFX requires an open graphics or compute command buffer outside of rendering");
+        NRI_RETURN_ON_FAILURE(&deviceVal, outputDesc.usage & TextureUsageBits::COLOR_ATTACHMENT, ReturnVoid(), "'output.texture' requires 'COLOR_ATTACHMENT' usage for MetalFX");
+        NRI_RETURN_ON_FAILURE(&deviceVal, inputSize.w == 0 || (inputDesc.width == inputSize.w && inputDesc.height == inputSize.h), ReturnVoid(), "'input.texture' size must not change for MetalFX");
+    }
+
     if (upscalerVal.m_Desc.type == UpscalerType::NIS) {
         const DescriptorVal& outputDescriptorVal = *(DescriptorVal*)dispatchUpscaleDesc.output.descriptor;
         NRI_RETURN_ON_FAILURE(&deviceVal, deviceVal.GetDesc().shaderFeatures.storageWriteWithoutFormat || outputDescriptorVal.GetFormat() == upscalerVal.m_Desc.outputFormat, ReturnVoid(), "'output.descriptor' format does not match 'UpscalerDesc::outputFormat'");
         NRI_RETURN_ON_FAILURE(&deviceVal, dispatchUpscaleDesc.settings.nis.sharpness >= 0.0f && dispatchUpscaleDesc.settings.nis.sharpness <= 1.0f, ReturnVoid(), "'settings.nis.sharpness' is out of range");
-    } else if (upscalerVal.m_Desc.type == UpscalerType::DLRR) {
+    } else if (upscalerVal.m_Desc.type == UpscalerType::DLRR || upscalerVal.m_Desc.type == UpscalerType::METALFX_DENOISED) {
         const DenoiserGuides& guides = dispatchUpscaleDesc.guides.denoiser;
 
         if (!ValidateUpscalerResource(deviceVal, guides.mv, "guides.denoiser.mv", DescriptorType::TEXTURE))
@@ -2325,7 +2341,15 @@ static void NRI_CALL CmdDispatchUpscale(CommandBuffer& commandBuffer, Upscaler& 
             return;
         if (!ValidateOptionalUpscalerResource(deviceVal, guides.sss, "guides.denoiser.sss", false))
             return;
-    } else {
+        if (!ValidateOptionalUpscalerResource(deviceVal, guides.preTransparency, "guides.denoiser.preTransparency", false))
+            return;
+
+        if (upscalerVal.m_Desc.type == UpscalerType::METALFX_DENOISED) {
+            NRI_RETURN_ON_FAILURE(&deviceVal, !guides.sss.texture, ReturnVoid(), "'guides.denoiser.sss' is unsupported by 'METALFX_DENOISED'");
+            NRI_RETURN_ON_FAILURE(&deviceVal, !guides.preTransparency.texture, ReturnVoid(), "'guides.denoiser.preTransparency' is unsupported by 'METALFX_DENOISED'");
+            NRI_RETURN_ON_FAILURE(&deviceVal, !(dispatchUpscaleDesc.flags & DispatchUpscaleBits::USE_SPECULAR_MOTION), ReturnVoid(), "'USE_SPECULAR_MOTION' is unsupported by 'METALFX_DENOISED'");
+        }
+    } else if (upscalerVal.m_Desc.type != UpscalerType::METALFX_SPATIAL) {
         const UpscalerGuides& guides = dispatchUpscaleDesc.guides.upscaler;
 
         if (!ValidateUpscalerResource(deviceVal, guides.mv, "guides.upscaler.mv", DescriptorType::TEXTURE))
@@ -2345,6 +2369,11 @@ static void NRI_CALL CmdDispatchUpscale(CommandBuffer& commandBuffer, Upscaler& 
             NRI_RETURN_ON_FAILURE(&deviceVal, dispatchUpscaleDesc.settings.fsr.viewSpaceToMetersFactor > 0.0f, ReturnVoid(), "'settings.fsr.viewSpaceToMetersFactor' must be > 0");
             NRI_RETURN_ON_FAILURE(&deviceVal, dispatchUpscaleDesc.settings.fsr.sharpness >= 0.0f && dispatchUpscaleDesc.settings.fsr.sharpness <= 1.0f, ReturnVoid(), "'settings.fsr.sharpness' is out of range");
         }
+    }
+
+    if (isMetalFx && upscalerVal.GetMetalFxInputSize().w == 0) {
+        const TextureDesc& inputDesc = ((TextureVal*)dispatchUpscaleDesc.input.texture)->GetDesc();
+        upscalerVal.SetMetalFxInputSize({inputDesc.width, inputDesc.height});
     }
 
     upscalerImpl->CmdDispatchUpscale(commandBuffer, dispatchUpscaleDesc);
@@ -2447,6 +2476,49 @@ Result DeviceVal::FillFunctionTable(WrapperD3D12Interface& table) const {
     table.CreateMemoryD3D12 = ::CreateMemoryD3D12;
     table.CreateFenceD3D12 = ::CreateFenceD3D12;
     table.CreateAccelerationStructureD3D12 = ::CreateAccelerationStructureD3D12;
+
+    return Result::SUCCESS;
+#else
+    MaybeUnused(table);
+
+    return Result::UNSUPPORTED;
+#endif
+}
+
+#pragma endregion
+
+//============================================================================================================================================================================================
+#pragma region[  WrapperMetal  ]
+
+#if NRI_ENABLE_METAL_SUPPORT
+
+static Result NRI_CALL CreateBufferMetal(Device& device, const BufferMetalDesc& desc, Buffer*& buffer) {
+    return ((DeviceVal&)device).CreateBuffer(desc, buffer);
+}
+
+static Result NRI_CALL CreateTextureMetal(Device& device, const TextureMetalDesc& desc, Texture*& texture) {
+    return ((DeviceVal&)device).CreateTexture(desc, texture);
+}
+
+static Result NRI_CALL CreateFenceMetal(Device& device, const FenceMetalDesc& desc, Fence*& fence) {
+    return ((DeviceVal&)device).CreateFence(desc, fence);
+}
+
+static Result NRI_CALL GetRootSignatureMetal(const PipelineLayout& pipelineLayout, char* json, uint64_t& size) {
+    return GetDeviceVal(pipelineLayout).GetRootSignature(pipelineLayout, json, size);
+}
+
+#endif
+
+Result DeviceVal::FillFunctionTable(WrapperMetalInterface& table) const {
+#if NRI_ENABLE_METAL_SUPPORT
+    if (!m_IsExtSupported.wrapperMetal)
+        return Result::UNSUPPORTED;
+
+    table.CreateBufferMetal = ::CreateBufferMetal;
+    table.CreateTextureMetal = ::CreateTextureMetal;
+    table.CreateFenceMetal = ::CreateFenceMetal;
+    table.GetRootSignatureMetal = ::GetRootSignatureMetal;
 
     return Result::SUCCESS;
 #else

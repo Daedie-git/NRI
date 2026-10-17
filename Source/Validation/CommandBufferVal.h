@@ -21,6 +21,10 @@ struct CommandBufferVal final : public ObjectVal {
         return GetCoreInterfaceImpl().GetCommandBufferNativeObject(GetImpl());
     }
 
+    inline bool CanDispatch() const {
+        return m_IsRecordingStarted && !m_IsRenderPass && (m_QueueType == QueueType::GRAPHICS || m_QueueType == QueueType::COMPUTE);
+    }
+
     inline void ResetAttachments() {
         m_RenderTargetNum = 0;
         for (auto& renderTarget : m_RenderTargets)
@@ -97,13 +101,10 @@ struct CommandBufferVal final : public ObjectVal {
     void ResolveVideoEncodeFeedback(VideoSession& videoSession, Buffer& resolvedMetadata, uint64_t resolvedMetadataOffset);
 
 private:
-    void ValidateReadonlyDepthStencil();
-
     std::array<DescriptorVal*, 16> m_RenderTargets = {};
     Vector<DescriptorSetVal*> m_DescriptorSets;
     DescriptorVal* m_DepthStencil = nullptr;
     PipelineLayoutVal* m_PipelineLayout = nullptr;
-    PipelineVal* m_Pipeline = nullptr;
     uint32_t m_RenderTargetNum = 0;
     int32_t m_AnnotationStack = 0;
     QueueType m_QueueType = QueueType::MAX_NUM;

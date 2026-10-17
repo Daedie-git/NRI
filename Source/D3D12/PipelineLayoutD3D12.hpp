@@ -298,17 +298,11 @@ Result PipelineLayoutD3D12::Create(const PipelineLayoutDesc& pipelineLayoutDesc)
 
     NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "SerializeVersionedRootSignature");
 
-    // Stable across runs: the serialized root signature names this layout in persistent pipeline caches.
-    {
-        uint64_t hash = 0xCBF29CE484222325ULL;
-        const uint8_t* bytes = (const uint8_t*)rootSignatureBlob->GetBufferPointer();
-        for (size_t i = 0; i < rootSignatureBlob->GetBufferSize(); i++)
-            hash = (hash ^ bytes[i]) * 0x100000001B3ULL;
-        m_Hash = hash;
-    }
-
     hr = m_Device->CreateRootSignature(NODE_MASK, rootSignatureBlob->GetBufferPointer(), rootSignatureBlob->GetBufferSize(), IID_PPV_ARGS(&m_RootSignature));
     NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12Device::CreateRootSignature");
+
+    if (m_Device.GetDesc().features.pipelineCache)
+        m_RootSignatureHash = Fnv1a64(FNV_INIT, rootSignatureBlob->GetBufferPointer(), rootSignatureBlob->GetBufferSize());
 
     // Draw signature (uses emulation state)
     if (pipelineLayoutDesc.shaderStages & StageBits::VERTEX_SHADER) {
