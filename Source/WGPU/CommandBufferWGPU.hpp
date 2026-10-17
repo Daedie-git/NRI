@@ -851,6 +851,7 @@ Result CommandBufferWGPU::Begin(const DescriptorPool* descriptorPool) {
     m_CommandEncoder = wgpuDeviceCreateCommandEncoder(m_Device, &desc);
     m_PipelineLayout = nullptr;
     m_RenderPipeline = nullptr;
+    m_PendingRenderPipeline = nullptr;
     m_ComputePipeline = nullptr;
     m_BoundComputePipeline = nullptr;
     m_BindPoint = BindPoint::GRAPHICS;
@@ -907,6 +908,7 @@ void CommandBufferWGPU::EndPass() {
         wgpuRenderPassEncoderRelease(m_RenderPass);
         m_RenderPass = nullptr;
         m_RenderPipeline = nullptr;
+        m_PendingRenderPipeline = nullptr;
         ReleaseRenderPassTransientObjects();
     }
 
@@ -998,6 +1000,10 @@ void CommandBufferWGPU::SetPipeline(const Pipeline& pipeline) {
         wgpuRenderPassEncoderSetPipeline(m_RenderPass, renderPipeline);
         m_RenderPipeline = renderPipeline;
     }
+
+    // WebGPU encodes pipelines into render passes only, while NRI allows binding one before "BeginRendering".
+    if (!m_RenderPass && renderPipeline)
+        m_PendingRenderPipeline = renderPipeline;
 
     if (m_RenderPass && renderPipeline)
         RestoreRootConstants(BindPoint::GRAPHICS);
@@ -1457,6 +1463,13 @@ void CommandBufferWGPU::BeginRendering(const RenderingDesc& renderingDesc) {
     m_StencilReference = 0;
     MarkDescriptorSetsDirty(BindPoint::GRAPHICS);
     m_GraphicsRootGroupDirty = true;
+
+    if (m_RenderPass && m_PendingRenderPipeline) {
+        wgpuRenderPassEncoderSetPipeline(m_RenderPass, m_PendingRenderPipeline);
+        m_RenderPipeline = m_PendingRenderPipeline;
+        RestoreRootConstants(BindPoint::GRAPHICS);
+    }
+    m_PendingRenderPipeline = nullptr;
 }
 
 void CommandBufferWGPU::EndRendering() {
