@@ -60,6 +60,10 @@ struct DeviceWGPU final : public DeviceBase {
         return m_IsTimestampQueryInsidePassesSupported;
     }
 
+    inline bool IsMultiDrawIndirectSupported() const {
+        return m_IsMultiDrawIndirectSupported;
+    }
+
     void Destruct() override;
     Result Create(const DeviceCreationDesc& deviceCreationDesc);
     FormatSupportBits GetFormatSupport(Format format) const;
@@ -122,6 +126,7 @@ private:
     mutable Lock m_QueueLock;
     bool m_IsTimestampQueryInsidePassesSupported = false;
     bool m_IsSubgroupsSupported = false;
+    bool m_IsMultiDrawIndirectSupported = false;
     Lock m_HostCopyContextLock;
 };
 

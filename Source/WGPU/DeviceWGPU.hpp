@@ -350,7 +350,16 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
         requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_PrimitiveIndex;
     if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_TextureComponentSwizzle))
         requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_TextureComponentSwizzle;
-#if !defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__)
+    if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_MultiDrawIndirect))
+        requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_MultiDrawIndirect;
+
+    // Browser devices default to the core minimum limits; request what the adapter offers, including immediates.
+    WGPULimits requiredLimits = WGPU_LIMITS_INIT;
+    if (wgpuAdapterGetLimits(m_Adapter, &requiredLimits) != WGPUStatus_Success)
+        return Result::FAILURE;
+    requiredLimits.nextInChain = nullptr;
+#else
     if (wgpuAdapterHasFeature(m_Adapter, (WGPUFeatureName)WGPUNativeFeature_TextureBindingArray))
         requiredFeatures[requiredFeatureNum++] = (WGPUFeatureName)WGPUNativeFeature_TextureBindingArray;
     if (wgpuAdapterHasFeature(m_Adapter, (WGPUFeatureName)WGPUNativeFeature_SampledTextureAndStorageBufferArrayNonUniformIndexing))
@@ -401,9 +410,7 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
 #endif
     deviceDesc.requiredFeatureCount = requiredFeatureNum;
     deviceDesc.requiredFeatures = requiredFeatures.data();
-#if !defined(__EMSCRIPTEN__)
     deviceDesc.requiredLimits = &requiredLimits;
-#endif
 
     RequestDeviceContext deviceContext = {};
     WGPURequestDeviceCallbackInfo deviceCallbackInfo = WGPU_REQUEST_DEVICE_CALLBACK_INFO_INIT;
@@ -425,6 +432,7 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
     m_Queue = wgpuDeviceGetQueue(m_Device);
     m_IsSubgroupsSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_Subgroups) == WGPU_TRUE;
 #if defined(__EMSCRIPTEN__)
+    m_IsMultiDrawIndirectSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_MultiDrawIndirect) == WGPU_TRUE;
     m_IsTimestampQueryInsidePassesSupported = false;
 #else
     m_IsTimestampQueryInsidePassesSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TimestampQuery) == WGPU_TRUE
@@ -485,11 +493,7 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.memoryAlignment.micromapOffset = 1;
 
     m_Desc.pipelineLayout.descriptorSetMaxNum = limits.maxBindGroups;
-#if defined(__EMSCRIPTEN__)
-    m_Desc.pipelineLayout.rootConstantMaxSize = 0;
-#else
-    m_Desc.pipelineLayout.rootConstantMaxSize = 256;
-#endif
+    m_Desc.pipelineLayout.rootConstantMaxSize = limits.maxImmediateSize;
     m_Desc.pipelineLayout.rootDescriptorMaxNum = 8;
     m_Desc.pipelineLayout.rootSamplerMaxNum = limits.maxSamplersPerShaderStage;
 
@@ -543,7 +547,7 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     } else
         m_Desc.other.timestampFrequencyHz = 1;
 
-    m_Desc.other.drawIndirectMaxNum = 1;
+    m_Desc.other.drawIndirectMaxNum = m_IsMultiDrawIndirectSupported ? uint32_t(-1) : 1;
     m_Desc.other.samplerLodBiasMax = 16.0f;
     m_Desc.other.samplerAnisotropyMax = 16;
     m_Desc.other.texelOffsetMin = -8;
@@ -579,12 +583,8 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.features.rectDepthStencilClears = true;
     m_Desc.features.getMemoryDesc2 = true;
     m_Desc.features.componentSwizzle = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TextureComponentSwizzle) == WGPU_TRUE;
-    m_Desc.features.rootConstantsOffset =
-#if defined(__EMSCRIPTEN__)
-        false;
-#else
-        true;
-#endif
+    m_Desc.features.rootConstantsOffset = true;
+    m_Desc.features.drawIndirectCount = m_IsMultiDrawIndirectSupported;
     m_Desc.shaderFeatures.nativeF16 = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_ShaderF16) == WGPU_TRUE;
     m_Desc.shaderFeatures.drawParameters = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_IndirectFirstInstance) == WGPU_TRUE;
 }

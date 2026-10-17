@@ -1229,9 +1229,6 @@ RootConstantStateWGPU& CommandBufferWGPU::GetRootConstantState(BindPoint bindPoi
 }
 
 void CommandBufferWGPU::RestoreRootConstants(BindPoint bindPoint) {
-#if defined(__EMSCRIPTEN__)
-    MaybeUnused(bindPoint);
-#else
     RootConstantStateWGPU& state = GetRootConstantState(bindPoint);
     if (state.mask.empty())
         return;
@@ -1255,20 +1252,15 @@ void CommandBufferWGPU::RestoreRootConstants(BindPoint bindPoint) {
             continue;
 
         if (bindPoint == BindPoint::COMPUTE)
-            wgpuComputePassEncoderSetImmediates(m_ComputePass, begin, state.data.data() + begin, end - begin);
+            SetPassImmediates(m_ComputePass, begin, state.data.data() + begin, end - begin);
         else
-            wgpuRenderPassEncoderSetImmediates(m_RenderPass, begin, state.data.data() + begin, end - begin);
+            SetPassImmediates(m_RenderPass, begin, state.data.data() + begin, end - begin);
 
         begin = end;
     }
-#endif
 }
 
 void CommandBufferWGPU::SetRootConstants(const SetRootConstantsDesc& setRootConstantsDesc) {
-#if defined(__EMSCRIPTEN__)
-    MaybeUnused(setRootConstantsDesc);
-    NRI_REPORT_ERROR(&m_Device, "Root constants are not supported by core WebGPU");
-#else
     BindPoint bindPoint = setRootConstantsDesc.bindPoint == BindPoint::INHERIT ? m_BindPoint : setRootConstantsDesc.bindPoint;
     RootConstantStateWGPU& state = GetRootConstantState(bindPoint);
     uint32_t offset = (m_PipelineLayout ? m_PipelineLayout->GetRootConstantOffset(setRootConstantsDesc.rootConstantIndex) : 0) + setRootConstantsDesc.offset;
@@ -1284,11 +1276,10 @@ void CommandBufferWGPU::SetRootConstants(const SetRootConstantsDesc& setRootCons
     }
 
     if (m_RenderPass && m_RenderPipeline && bindPoint == BindPoint::GRAPHICS)
-        wgpuRenderPassEncoderSetImmediates(m_RenderPass, offset, setRootConstantsDesc.data, setRootConstantsDesc.size);
+        SetPassImmediates(m_RenderPass, offset, setRootConstantsDesc.data, setRootConstantsDesc.size);
 
     if (m_ComputePass && m_BoundComputePipeline && bindPoint == BindPoint::COMPUTE)
-        wgpuComputePassEncoderSetImmediates(m_ComputePass, offset, setRootConstantsDesc.data, setRootConstantsDesc.size);
-#endif
+        SetPassImmediates(m_ComputePass, offset, setRootConstantsDesc.data, setRootConstantsDesc.size);
 }
 
 void CommandBufferWGPU::SetRootDescriptor(const SetRootDescriptorDesc& setRootDescriptorDesc) {
@@ -1592,9 +1583,6 @@ void CommandBufferWGPU::DrawIndexed(const DrawIndexedDesc& drawIndexedDesc) {
 }
 
 void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset) {
-    // TODO: WGPU indirect-count draws are not advertised because native count APIs do not support NRI's stride.
-    MaybeUnused(countBuffer, countBufferOffset);
-
     if (!m_RenderPass)
         return;
 
@@ -1602,14 +1590,21 @@ void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint
     BindDescriptorSets(BindPoint::GRAPHICS);
 
     const BufferWGPU& bufferWGPU = (BufferWGPU&)buffer;
+#if defined(__EMSCRIPTEN__)
+    // Multi-draw reads tightly packed arguments; other strides fall back to one draw per record.
+    if (m_Device.IsMultiDrawIndirectSupported() && (drawNum <= 1 || stride == sizeof(DrawDesc))) {
+        WGPUBuffer count = countBuffer ? (WGPUBuffer)*(const BufferWGPU*)countBuffer : nullptr;
+        wgpuRenderPassEncoderMultiDrawIndirect(m_RenderPass, bufferWGPU, offset, drawNum, count, countBufferOffset);
+        return;
+    }
+#endif
+    // Without multi-draw a count buffer cannot be honored, and the device does not advertise "drawIndirectCount".
+    MaybeUnused(countBuffer, countBufferOffset);
     for (uint32_t i = 0; i < drawNum; i++)
         wgpuRenderPassEncoderDrawIndirect(m_RenderPass, bufferWGPU, offset + (uint64_t)i * stride);
 }
 
 void CommandBufferWGPU::DrawIndexedIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset) {
-    // TODO: WGPU indirect-count draws are not advertised because native count APIs do not support NRI's stride.
-    MaybeUnused(countBuffer, countBufferOffset);
-
     if (!m_RenderPass)
         return;
 
@@ -1617,6 +1612,16 @@ void CommandBufferWGPU::DrawIndexedIndirect(const Buffer& buffer, uint64_t offse
     BindDescriptorSets(BindPoint::GRAPHICS);
 
     const BufferWGPU& bufferWGPU = (BufferWGPU&)buffer;
+#if defined(__EMSCRIPTEN__)
+    // Multi-draw reads tightly packed arguments; other strides fall back to one draw per record.
+    if (m_Device.IsMultiDrawIndirectSupported() && (drawNum <= 1 || stride == sizeof(DrawIndexedDesc))) {
+        WGPUBuffer count = countBuffer ? (WGPUBuffer)*(const BufferWGPU*)countBuffer : nullptr;
+        wgpuRenderPassEncoderMultiDrawIndexedIndirect(m_RenderPass, bufferWGPU, offset, drawNum, count, countBufferOffset);
+        return;
+    }
+#endif
+    // Without multi-draw a count buffer cannot be honored, and the device does not advertise "drawIndirectCount".
+    MaybeUnused(countBuffer, countBufferOffset);
     for (uint32_t i = 0; i < drawNum; i++)
         wgpuRenderPassEncoderDrawIndexedIndirect(m_RenderPass, bufferWGPU, offset + (uint64_t)i * stride);
 }
