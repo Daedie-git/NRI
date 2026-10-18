@@ -489,7 +489,13 @@ NRI_INLINE Result SwapChainVK::WaitForPresent(uint64_t presentId) {
 }
 
 NRI_INLINE Result SwapChainVK::Present(FenceVK& releaseSemaphore, uint64_t presentIdValue) {
+#ifdef FURY_NRI_TRACY
+    TracyCZoneN(queueLock, "NRI.Vulkan.present.queueLock", 1);
+#endif
     ExclusiveScope lock(m_Queue->GetLock());
+#ifdef FURY_NRI_TRACY
+    TracyCZoneEnd(queueLock);
+#endif
 
     // Present (wait)
     VkSemaphore vkReleaseSemaphore = releaseSemaphore;
@@ -512,7 +518,14 @@ NRI_INLINE Result SwapChainVK::Present(FenceVK& releaseSemaphore, uint64_t prese
         SetLatencyMarker(presentIdValue, (LatencyMarker)VK_LATENCY_MARKER_PRESENT_START_NV);
 
     const auto& vk = m_Device.GetDispatchTable();
+#ifdef FURY_NRI_TRACY
+    TracyCZoneN(driverPresent, "NRI.Vulkan.present.driver", 1);
+    TracyCZoneValue(driverPresent, presentIdValue);
+#endif
     VkResult vkResult = vk.QueuePresentKHR(*m_Queue, &presentInfo);
+#ifdef FURY_NRI_TRACY
+    TracyCZoneEnd(driverPresent);
+#endif
 
     if ((m_Flags & SwapChainBits::ALLOW_LOW_LATENCY) && presentIdValue != 0)
         SetLatencyMarker(presentIdValue, (LatencyMarker)VK_LATENCY_MARKER_PRESENT_END_NV);

@@ -80,7 +80,14 @@ NRI_INLINE void QueueVK::GetCalibratedTimestamps(uint64_t& timestampGPU, uint64_
 }
 
 NRI_INLINE Result QueueVK::Submit(const QueueSubmitDesc& queueSubmitDesc) {
+#ifdef FURY_NRI_TRACY
+    TracyCZoneN(queueLock, "NRI.Vulkan.submit.queueLock", 1);
+    TracyCZoneValue(queueLock, static_cast<uint64_t>(m_Type));
+#endif
     ExclusiveScope lock(*m_Lock);
+#ifdef FURY_NRI_TRACY
+    TracyCZoneEnd(queueLock);
+#endif
 
     Scratch<VkSemaphoreSubmitInfo> waitSemaphores = NRI_ALLOCATE_SCRATCH(m_Device, VkSemaphoreSubmitInfo, queueSubmitDesc.waitFenceNum);
     for (uint32_t i = 0; i < queueSubmitDesc.waitFenceNum; i++) {
@@ -119,17 +126,33 @@ NRI_INLINE Result QueueVK::Submit(const QueueSubmitDesc& queueSubmitDesc) {
     }
 
     const auto& vk = m_Device.GetDispatchTable();
+#ifdef FURY_NRI_TRACY
+    TracyCZoneN(driverSubmit, "NRI.Vulkan.submit.driver", 1);
+    TracyCZoneValue(driverSubmit, static_cast<uint64_t>(m_Type));
+#endif
     VkResult vkResult = vk.QueueSubmit2(m_Handle, 1, &submitInfo, VK_NULL_HANDLE);
+#ifdef FURY_NRI_TRACY
+    TracyCZoneEnd(driverSubmit);
+#endif
     NRI_RETURN_ON_BAD_VKRESULT(&m_Device, vkResult, "QueueSubmit2");
 
     return Result::SUCCESS;
 }
 
 NRI_INLINE Result QueueVK::WaitIdle() {
+#ifdef FURY_NRI_TRACY
+    TracyCZoneN(queueLock, "NRI.Vulkan.waitIdle.queueLock", 1);
+#endif
     ExclusiveScope lock(*m_Lock);
-
+#ifdef FURY_NRI_TRACY
+    TracyCZoneEnd(queueLock);
+    TracyCZoneN(driverWait, "NRI.Vulkan.waitIdle.driver", 1);
+#endif
     const auto& vk = m_Device.GetDispatchTable();
     VkResult vkResult = vk.QueueWaitIdle(m_Handle);
+#ifdef FURY_NRI_TRACY
+    TracyCZoneEnd(driverWait);
+#endif
     NRI_RETURN_ON_BAD_VKRESULT(&m_Device, vkResult, "QueueWaitIdle");
 
     return Result::SUCCESS;

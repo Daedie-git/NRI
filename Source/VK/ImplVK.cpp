@@ -4,6 +4,10 @@
 
 #include "SharedVK.h"
 
+#ifdef FURY_NRI_TRACY
+#    include <tracy/TracyC.h>
+#endif
+
 #include "AccelerationStructureVK.h"
 #include "BufferVK.h"
 #include "CommandAllocatorVK.h"

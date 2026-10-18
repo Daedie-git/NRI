@@ -49,7 +49,14 @@ NRI_INLINE Result FenceVK::Wait(uint64_t value) {
     semaphoreWaitInfo.pValues = &value;
 
     const auto& vk = m_Device.GetDispatchTable();
+#ifdef FURY_NRI_TRACY
+    TracyCZoneN(driverWait, "NRI.Vulkan.fence.waitSemaphores", 1);
+    TracyCZoneValue(driverWait, value);
+#endif
     VkResult vkResult = vk.WaitSemaphores((VkDevice)m_Device, &semaphoreWaitInfo, MsToUs(NRI_TIMEOUT_FENCE));
+#ifdef FURY_NRI_TRACY
+    TracyCZoneEnd(driverWait);
+#endif
     NRI_RETURN_ON_BAD_VKRESULT(&m_Device, vkResult, "WaitSemaphores");
     NRI_RETURN_ON_FAILURE(&m_Device, vkResult == VK_SUCCESS, Result::FAILURE, "WaitSemaphores() timed out!");
 
