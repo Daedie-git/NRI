@@ -234,6 +234,11 @@ static Result NRI_CALL CreateCommittedBuffer(Device& device, MemoryLocation memo
     if (result == Result::SUCCESS)
         result = ((BufferD3D11*)buffer)->Allocate(memoryLocation, priority);
 
+    if (result != Result::SUCCESS) {
+        Destroy((BufferD3D11*)buffer);
+        buffer = nullptr;
+    }
+
     return result;
 }
 
@@ -241,6 +246,11 @@ static Result NRI_CALL CreateCommittedTexture(Device& device, MemoryLocation mem
     Result result = ((DeviceD3D11&)device).CreateImplementation<TextureD3D11>(texture, textureDesc);
     if (result == Result::SUCCESS)
         result = ((TextureD3D11*)texture)->Allocate(memoryLocation, priority);
+
+    if (result != Result::SUCCESS) {
+        Destroy((TextureD3D11*)texture);
+        texture = nullptr;
+    }
 
     return result;
 }
