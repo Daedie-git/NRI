@@ -2,13 +2,11 @@
 
 #include "NRI.h"
 
-#include <limits>
-
 namespace nri {
 
 constexpr float GetRenderPassDepthClearValue(const AttachmentDesc* depth, bool readOnly) noexcept {
     if (!depth || readOnly)
-        return std::numeric_limits<float>::quiet_NaN();
+        return 0.0f;
     return depth->loadOp == LoadOp::CLEAR ? depth->clearValue.depthStencil.depth : 0.0f;
 }
 

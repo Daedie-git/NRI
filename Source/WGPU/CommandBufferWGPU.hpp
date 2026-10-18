@@ -1354,6 +1354,7 @@ void CommandBufferWGPU::BeginRendering(const RenderingDesc& renderingDesc) {
 
     Scratch<WGPURenderPassColorAttachment> colorAttachments = NRI_ALLOCATE_SCRATCH(m_Device, WGPURenderPassColorAttachment, renderingDesc.colorNum);
     WGPURenderPassDepthStencilAttachment depthStencilAttachment = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
+    depthStencilAttachment.depthClearValue = GetRenderPassDepthClearValue(nullptr, true); // INIT's NaN is rejected by WebIDL even when unused
     const WGPURenderPassDepthStencilAttachment* depthStencilAttachmentPtr = nullptr;
     for (Format& format : m_RenderColorFormats)
         format = Format::UNKNOWN;
@@ -1419,10 +1420,10 @@ void CommandBufferWGPU::BeginRendering(const RenderingDesc& renderingDesc) {
             const AttachmentDesc& depth = renderingDesc.depth.descriptor ? renderingDesc.depth : *depthOrStencil;
             bool isReadOnly = IsDepthStencilPlaneReadOnly(*(DescriptorWGPU*)depth.descriptor, PlaneBits::DEPTH);
             depthStencilAttachment.depthReadOnly = isReadOnly ? WGPU_TRUE : WGPU_FALSE;
+            depthStencilAttachment.depthClearValue = GetRenderPassDepthClearValue(&depth, isReadOnly);
             if (!isReadOnly) {
                 depthStencilAttachment.depthLoadOp = GetLoadOp(depth.loadOp);
                 depthStencilAttachment.depthStoreOp = GetStoreOp(depth.storeOp);
-                depthStencilAttachment.depthClearValue = depth.loadOp == LoadOp::CLEAR ? depth.clearValue.depthStencil.depth : 0.0f;
             }
         }
 
