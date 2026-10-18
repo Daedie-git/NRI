@@ -153,7 +153,10 @@ static bool Is16BitNormFormat(Format format) {
 }
 
 #if defined(__EMSCRIPTEN__)
-static void OnDeviceLost(WGPUDevice const*, WGPUDeviceLostReason, WGPUStringView message, void* userdata1, void*) {
+static void OnDeviceLost(WGPUDevice const*, WGPUDeviceLostReason reason, WGPUStringView message, void* userdata1, void*) {
+    // Expected destruction/cancellation can outlive DeviceWGPU; do not dereference its callback data.
+    if (reason == WGPUDeviceLostReason_Destroyed || reason == WGPUDeviceLostReason_CallbackCancelled)
+        return;
     DeviceWGPU* device = (DeviceWGPU*)userdata1;
     NRI_REPORT_ERROR(device, "WebGPU device lost: %.*s", (int)message.length, message.data ? message.data : "");
 }
