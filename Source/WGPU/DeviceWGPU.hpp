@@ -500,18 +500,23 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.pipelineLayout.rootDescriptorMaxNum = 8;
     m_Desc.pipelineLayout.rootSamplerMaxNum = limits.maxSamplersPerShaderStage;
 
-    m_Desc.descriptorSet.samplerMaxNum = limits.maxSamplersPerShaderStage;
-    m_Desc.descriptorSet.constantBufferMaxNum = limits.maxUniformBuffersPerShaderStage;
-    m_Desc.descriptorSet.storageBufferMaxNum = limits.maxStorageBuffersPerShaderStage;
-    m_Desc.descriptorSet.textureMaxNum = limits.maxSampledTexturesPerShaderStage;
-    m_Desc.descriptorSet.storageTextureMaxNum = limits.maxStorageTexturesPerShaderStage;
+    // WebGPU has no independent per-group type caps: each entry consumes one granted binding.
+    // Per-stage type limits are reported separately below and must not constrain cross-stage groups.
+    m_Desc.descriptorSet.samplerMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.constantBufferMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.storageBufferMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.textureMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.storageTextureMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.bindingMaxNum = limits.maxBindingsPerBindGroup;
 
     m_Desc.shaderStage.descriptorSamplerMaxNum = limits.maxSamplersPerShaderStage;
     m_Desc.shaderStage.descriptorConstantBufferMaxNum = limits.maxUniformBuffersPerShaderStage;
     m_Desc.shaderStage.descriptorStorageBufferMaxNum = limits.maxStorageBuffersPerShaderStage;
     m_Desc.shaderStage.descriptorTextureMaxNum = limits.maxSampledTexturesPerShaderStage;
     m_Desc.shaderStage.descriptorStorageTextureMaxNum = limits.maxStorageTexturesPerShaderStage;
-    m_Desc.shaderStage.resourceMaxNum = limits.maxBindingsPerBindGroup;
+    // WebGPU has independent per-stage resource limits, not a separate aggregate limit.
+    m_Desc.shaderStage.resourceMaxNum = (uint32_t)std::min<uint64_t>((uint64_t)limits.maxSamplersPerShaderStage + limits.maxUniformBuffersPerShaderStage
+        + limits.maxStorageBuffersPerShaderStage + limits.maxSampledTexturesPerShaderStage + limits.maxStorageTexturesPerShaderStage, UINT32_MAX);
 
     m_Desc.shaderStage.vertex.attributeMaxNum = limits.maxVertexAttributes;
     m_Desc.shaderStage.vertex.streamMaxNum = limits.maxVertexBuffers;
