@@ -1679,6 +1679,7 @@ void CommandBufferWGPU::CopyBuffer(Buffer& dstBuffer, uint64_t dstOffset, const 
     const BufferWGPU& srcBufferWGPU = (const BufferWGPU&)srcBuffer;
     uint64_t copySize = size == WHOLE_SIZE ? srcBufferWGPU.GetSize() : size;
 
+    const_cast<BufferWGPU&>(srcBufferWGPU).FlushHostWrites(srcOffset, copySize);
     wgpuCommandEncoderCopyBufferToBuffer(m_CommandEncoder, srcBufferWGPU, srcOffset, (BufferWGPU&)dstBuffer, dstOffset, copySize);
 }
 
@@ -1729,6 +1730,17 @@ void CommandBufferWGPU::UploadBufferToTexture(Texture& dstTexture, const Texture
     FillTexelCopyTexture(dst, textureWGPU, dstRegion);
 
     WGPUExtent3D size = GetCopySize(textureDesc, dstRegion);
+    {
+        // Upper bound of the source bytes the copy reads: every row of every slice at the layout's pitch.
+        const FormatProps& formatProps = GetFormatProps(textureDesc.format);
+        const uint64_t rows = (size.height + formatProps.blockHeight - 1) / formatProps.blockHeight;
+        const uint64_t rowBytes = (uint64_t)((size.width + formatProps.blockWidth - 1) / formatProps.blockWidth) * formatProps.stride;
+        const uint64_t slices = std::max<uint64_t>(size.depthOrArrayLayers, 1);
+        const uint64_t rowPitch = std::max<uint64_t>(srcDataLayout.rowPitch, rowBytes);
+        const uint64_t imageRows = srcDataLayout.slicePitch && srcDataLayout.rowPitch ? srcDataLayout.slicePitch / srcDataLayout.rowPitch : rows;
+        const uint64_t span = ((slices - 1) * imageRows + rows) * rowPitch;
+        ((BufferWGPU&)srcBuffer).FlushHostWrites(srcDataLayout.offset, span);
+    }
     wgpuCommandEncoderCopyBufferToTexture(m_CommandEncoder, &src, &dst, &size);
 }
 

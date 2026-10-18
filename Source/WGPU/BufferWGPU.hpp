@@ -192,6 +192,16 @@ void* BufferWGPU::Map(uint64_t offset, uint64_t size) {
     return m_CpuMemory.data() + offset;
 }
 
+void BufferWGPU::FlushHostWrites(uint64_t offset, uint64_t size) {
+    if (m_CpuMemory.empty() || m_MemoryLocation == MemoryLocation::DEVICE || m_MemoryLocation == MemoryLocation::HOST_READBACK || offset >= m_CpuMemory.size())
+        return;
+
+    uint64_t begin = offset & ~3ull;
+    uint64_t end = std::min<uint64_t>(Align(offset + size, 4), m_CpuMemory.size());
+    if (end > begin)
+        m_Device.WriteBuffer(m_Buffer, begin, m_CpuMemory.data() + begin, (size_t)(end - begin));
+}
+
 void BufferWGPU::Unmap() {
     if (m_MemoryLocation == MemoryLocation::HOST_READBACK) {
         if (m_MappedReadback) {

@@ -35,6 +35,8 @@ struct BufferWGPU final : public DebugNameBase {
     Result Create(const BufferDesc& bufferDesc);
     Result Create(const BufferDesc& bufferDesc, MemoryLocation memoryLocation);
     void* Map(uint64_t offset, uint64_t size);
+    // Host-visible upload buffers are CPU shadows; GPU reads of a range need its latest bytes queued first.
+    void FlushHostWrites(uint64_t offset, uint64_t size);
     void Unmap();
 
     Result SetHostVisible(MemoryLocation memoryLocation);
