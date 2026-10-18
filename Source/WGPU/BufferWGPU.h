@@ -56,6 +56,12 @@ private:
     WGPUBuffer m_Buffer = nullptr;
     BufferDesc m_Desc = {};
     const void* m_MappedReadback = nullptr;
+#if defined(__EMSCRIPTEN__)
+    // The browser cannot block a frame on a map. The first Map starts it and reports not-ready (nullptr);
+    // a later call after the event loop delivered the callback returns the range.
+    struct PendingMap;
+    PendingMap* m_PendingMap = nullptr;
+#endif
     uint64_t m_MapOffset = 0;
     uint64_t m_MapSize = 0;
     MemoryLocation m_MemoryLocation = MemoryLocation::DEVICE;
