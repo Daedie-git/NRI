@@ -900,6 +900,19 @@ Result CommandBufferWGPU::End() {
     return m_CommandBuffer ? Result::SUCCESS : Result::FAILURE;
 }
 
+bool CommandBufferWGPU::TakePassTimestampWrites(WGPUPassTimestampWrites& writes) {
+    if (!m_PendingTimestampSet)
+        return false;
+    writes = WGPU_PASS_TIMESTAMP_WRITES_INIT;
+    writes.querySet = m_PendingTimestampSet;
+    writes.beginningOfPassWriteIndex = m_PendingTimestampIndex;
+    writes.endOfPassWriteIndex = m_PendingTimestampIndex + 1;
+    m_CoveredEndSet = m_PendingTimestampSet;
+    m_CoveredEndIndex = m_PendingTimestampIndex + 1;
+    m_PendingTimestampSet = nullptr;
+    return true;
+}
+
 void CommandBufferWGPU::EndPass() {
     if (m_RenderPass) {
         PopPassAnnotations(AnnotationScopeWGPU::RENDER_PASS);
@@ -1445,6 +1458,9 @@ void CommandBufferWGPU::BeginRendering(const RenderingDesc& renderingDesc) {
     desc.colorAttachmentCount = renderingDesc.colorNum;
     desc.colorAttachments = colorAttachments;
     desc.depthStencilAttachment = depthStencilAttachmentPtr;
+    WGPUPassTimestampWrites passTimestamps;
+    if (TakePassTimestampWrites(passTimestamps))
+        desc.timestampWrites = &passTimestamps;
 
     m_RenderPass = wgpuCommandEncoderBeginRenderPass(m_CommandEncoder, &desc);
     if (!m_RenderPass)
@@ -1584,11 +1600,8 @@ void CommandBufferWGPU::DrawIndexed(const DrawIndexedDesc& drawIndexedDesc) {
 }
 
 void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset) {
-    if (g_DebugSkipMask & 1u)
-        return;
     if (!m_RenderPass)
         return;
-
     BindRootGroup(BindPoint::GRAPHICS);
     BindDescriptorSets(BindPoint::GRAPHICS);
 
@@ -1638,15 +1651,11 @@ void CommandBufferWGPU::DrawIndexedIndirect(const Buffer& buffer, uint64_t offse
 }
 
 void CommandBufferWGPU::Dispatch(const DispatchDesc& dispatchDesc) {
-    if (g_DebugSkipMask & 2u)
-        return;
-    {
-        const uint64_t groups = (uint64_t)dispatchDesc.workGroupNumX * dispatchDesc.workGroupNumY * dispatchDesc.workGroupNumZ;
-        if (((g_DebugSkipMask & 4u) && groups >= 1000) || ((g_DebugSkipMask & 8u) && groups < 1000))
-            return;
-    }
     if (!m_ComputePass) {
         WGPUComputePassDescriptor desc = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
+        WGPUPassTimestampWrites passTimestamps;
+        if (TakePassTimestampWrites(passTimestamps))
+            desc.timestampWrites = &passTimestamps;
         m_ComputePass = wgpuCommandEncoderBeginComputePass(m_CommandEncoder, &desc);
         MarkDescriptorSetsDirty(BindPoint::COMPUTE);
         m_ComputeRootGroupDirty = true;
@@ -1666,6 +1675,9 @@ void CommandBufferWGPU::Dispatch(const DispatchDesc& dispatchDesc) {
 void CommandBufferWGPU::DispatchIndirect(const Buffer& buffer, uint64_t offset) {
     if (!m_ComputePass) {
         WGPUComputePassDescriptor desc = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
+        WGPUPassTimestampWrites passTimestamps;
+        if (TakePassTimestampWrites(passTimestamps))
+            desc.timestampWrites = &passTimestamps;
         m_ComputePass = wgpuCommandEncoderBeginComputePass(m_CommandEncoder, &desc);
         MarkDescriptorSetsDirty(BindPoint::COMPUTE);
         m_ComputeRootGroupDirty = true;
@@ -1987,6 +1999,22 @@ void CommandBufferWGPU::EndQuery(QueryPool& queryPool, uint32_t offset) {
     QueryPoolWGPU& queryPoolWGPU = (QueryPoolWGPU&)queryPool;
 
     if (queryPoolWGPU.GetType() == QueryType::TIMESTAMP) {
+#if defined(__EMSCRIPTEN__)
+        // Dawn offers pass-boundary timestamps only. An end index the previous pass already carries is complete.
+        if (m_CoveredEndSet == (WGPUQuerySet)queryPoolWGPU && m_CoveredEndIndex == offset) {
+            m_CoveredEndSet = nullptr;
+            m_CoveredEndIndex = ~0u;
+            return;
+        }
+        // A new begin request closes an open compute pass so the next one starts with its own timestamps.
+        if (m_ComputePass)
+            EndPass();
+        if (!m_RenderPass) {
+            m_PendingTimestampSet = queryPoolWGPU;
+            m_PendingTimestampIndex = offset;
+        }
+        return;
+#else
         if (m_RenderPass)
             wgpuRenderPassEncoderWriteTimestamp(m_RenderPass, queryPoolWGPU, offset);
         else if (m_ComputePass)
@@ -1994,6 +2022,7 @@ void CommandBufferWGPU::EndQuery(QueryPool& queryPool, uint32_t offset) {
         else
             wgpuCommandEncoderWriteTimestamp(m_CommandEncoder, queryPoolWGPU, offset);
         return;
+#endif
     }
 
     if (queryPoolWGPU.GetType() == QueryType::OCCLUSION && m_RenderPass)

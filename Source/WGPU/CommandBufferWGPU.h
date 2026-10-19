@@ -169,6 +169,13 @@ private:
     WGPUCommandBuffer m_CommandBuffer = nullptr;
     WGPURenderPassEncoder m_RenderPass = nullptr;
     WGPUComputePassEncoder m_ComputePass = nullptr;
+    // Browser (Dawn) timestamps are pass boundaries: a begin write requested between passes becomes the next pass's
+    // timestampWrites, with the end index (begin + 1, the FrameGraph pair convention) written at pass end.
+    WGPUQuerySet m_PendingTimestampSet = nullptr;
+    uint32_t m_PendingTimestampIndex = 0;
+    WGPUQuerySet m_CoveredEndSet = nullptr;
+    uint32_t m_CoveredEndIndex = ~0u;
+    bool TakePassTimestampWrites(WGPUPassTimestampWrites& writes);
     WGPUTextureView m_RenderDepthStencilView = nullptr;
     WGPUBindGroup m_GraphicsRootBindGroup = nullptr;
     WGPUBindGroup m_ComputeRootBindGroup = nullptr;

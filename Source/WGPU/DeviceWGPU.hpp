@@ -356,6 +356,9 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
 #if defined(__EMSCRIPTEN__)
     if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_MultiDrawIndirect))
         requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_MultiDrawIndirect;
+    // Pass-boundary timestamps (WGPUPassTimestampWrites); timestamp writes inside passes/encoders are not exposed by Dawn.
+    if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_TimestampQuery))
+        requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_TimestampQuery;
 
     // Browser devices default to the core minimum limits; request what the adapter offers, including immediates.
     WGPULimits requiredLimits = WGPU_LIMITS_INIT;
@@ -436,7 +439,7 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
     m_IsSubgroupsSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_Subgroups) == WGPU_TRUE;
 #if defined(__EMSCRIPTEN__)
     m_IsMultiDrawIndirectSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_MultiDrawIndirect) == WGPU_TRUE;
-    m_IsTimestampQueryInsidePassesSupported = false;
+    m_IsTimestampQueryInsidePassesSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TimestampQuery) == WGPU_TRUE;
 #else
     m_IsTimestampQueryInsidePassesSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TimestampQuery) == WGPU_TRUE
         && wgpuDeviceHasFeature(m_Device, (WGPUFeatureName)WGPUNativeFeature_TimestampQueryInsideEncoders) == WGPU_TRUE
@@ -551,6 +554,8 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
 #if !defined(__EMSCRIPTEN__)
         float timestampPeriod = wgpuQueueGetTimestampPeriod(m_Queue);
         m_Desc.other.timestampFrequencyHz = timestampPeriod > 0.0f ? uint64_t(1e9 / double(timestampPeriod) + 0.5) : 1;
+#else
+        m_Desc.other.timestampFrequencyHz = 1000000000ull; // WebGPU timestamps are nanoseconds
 #endif
     } else
         m_Desc.other.timestampFrequencyHz = 1;
