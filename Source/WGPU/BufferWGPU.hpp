@@ -1,5 +1,11 @@
 // © 2026 NVIDIA Corporation
 
+// Profiling aid (browser `?skip=N`): bit 0 drops indirect draws, bit 1 all compute dispatches, bit 2 dispatches of >= 1000 groups, bit 3 smaller ones.
+static uint32_t g_DebugSkipMask = 0;
+extern "C" void nriWGPUSetDebugSkipMask(uint32_t mask) {
+    g_DebugSkipMask = mask;
+}
+
 #if defined(__EMSCRIPTEN__)
 // Applications that map from a frame callback (which cannot suspend) opt in to deferred readback maps.
 static bool g_NonBlockingReadbackMaps = false;

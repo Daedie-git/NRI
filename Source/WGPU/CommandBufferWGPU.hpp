@@ -1584,6 +1584,8 @@ void CommandBufferWGPU::DrawIndexed(const DrawIndexedDesc& drawIndexedDesc) {
 }
 
 void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset) {
+    if (g_DebugSkipMask & 1u)
+        return;
     if (!m_RenderPass)
         return;
 
@@ -1636,6 +1638,13 @@ void CommandBufferWGPU::DrawIndexedIndirect(const Buffer& buffer, uint64_t offse
 }
 
 void CommandBufferWGPU::Dispatch(const DispatchDesc& dispatchDesc) {
+    if (g_DebugSkipMask & 2u)
+        return;
+    {
+        const uint64_t groups = (uint64_t)dispatchDesc.workGroupNumX * dispatchDesc.workGroupNumY * dispatchDesc.workGroupNumZ;
+        if (((g_DebugSkipMask & 4u) && groups >= 1000) || ((g_DebugSkipMask & 8u) && groups < 1000))
+            return;
+    }
     if (!m_ComputePass) {
         WGPUComputePassDescriptor desc = WGPU_COMPUTE_PASS_DESCRIPTOR_INIT;
         m_ComputePass = wgpuCommandEncoderBeginComputePass(m_CommandEncoder, &desc);
