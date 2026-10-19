@@ -1602,6 +1602,7 @@ void CommandBufferWGPU::DrawIndexed(const DrawIndexedDesc& drawIndexedDesc) {
 void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset) {
     if (!m_RenderPass)
         return;
+    g_IndirectDrawCommands += drawNum != 0;
     BindRootGroup(BindPoint::GRAPHICS);
     BindDescriptorSets(BindPoint::GRAPHICS);
 
@@ -1614,12 +1615,8 @@ void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint
         return;
     }
 #endif
-    // The per-record loop cannot read a GPU count; drawing every record would render stale arguments.
-    if (countBuffer) {
-        NRI_REPORT_ERROR(&m_Device, "Indirect count draws require tightly packed records (stride %u) on WebGPU", (uint32_t)sizeof(DrawDesc));
-        return;
-    }
-    MaybeUnused(countBufferOffset);
+    // Without multi-draw-indirect the GPU count cannot cap the loop: every record is drawn, so the producer must have
+    // zeroed the records it did not write (an empty record draws nothing).
     for (uint32_t i = 0; i < drawNum; i++)
         wgpuRenderPassEncoderDrawIndirect(m_RenderPass, bufferWGPU, offset + (uint64_t)i * stride);
 }
@@ -1627,6 +1624,7 @@ void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint
 void CommandBufferWGPU::DrawIndexedIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset) {
     if (!m_RenderPass)
         return;
+    g_IndirectDrawCommands += drawNum != 0;
 
     BindRootGroup(BindPoint::GRAPHICS);
     BindDescriptorSets(BindPoint::GRAPHICS);
@@ -1641,10 +1639,7 @@ void CommandBufferWGPU::DrawIndexedIndirect(const Buffer& buffer, uint64_t offse
     }
 #endif
     // The per-record loop cannot read a GPU count; drawing every record would render stale arguments.
-    if (countBuffer) {
-        NRI_REPORT_ERROR(&m_Device, "Indirect count draws require tightly packed records (stride %u) on WebGPU", (uint32_t)sizeof(DrawIndexedDesc));
-        return;
-    }
+    // See DrawIndirect: records beyond the GPU count must have been zeroed by the producer.
     MaybeUnused(countBufferOffset);
     for (uint32_t i = 0; i < drawNum; i++)
         wgpuRenderPassEncoderDrawIndexedIndirect(m_RenderPass, bufferWGPU, offset + (uint64_t)i * stride);

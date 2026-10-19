@@ -438,7 +438,7 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
     m_Queue = wgpuDeviceGetQueue(m_Device);
     m_IsSubgroupsSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_Subgroups) == WGPU_TRUE;
 #if defined(__EMSCRIPTEN__)
-    m_IsMultiDrawIndirectSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_MultiDrawIndirect) == WGPU_TRUE;
+    m_IsMultiDrawIndirectSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_MultiDrawIndirect) == WGPU_TRUE && !g_DisableMultiDrawIndirect;
     m_IsTimestampQueryInsidePassesSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TimestampQuery) == WGPU_TRUE;
 #else
     m_IsTimestampQueryInsidePassesSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TimestampQuery) == WGPU_TRUE
@@ -597,7 +597,8 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.features.getMemoryDesc2 = true;
     m_Desc.features.componentSwizzle = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TextureComponentSwizzle) == WGPU_TRUE;
     m_Desc.features.rootConstantsOffset = true;
-    m_Desc.features.drawIndirectCount = m_IsMultiDrawIndirectSupported;
+    // Without multi-draw-indirect, count draws loop over every record (the producer zeroes the unused ones).
+    m_Desc.features.drawIndirectCount = true;
     m_Desc.shaderFeatures.nativeF16 = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_ShaderF16) == WGPU_TRUE;
     m_Desc.shaderFeatures.drawParameters = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_IndirectFirstInstance) == WGPU_TRUE;
 }

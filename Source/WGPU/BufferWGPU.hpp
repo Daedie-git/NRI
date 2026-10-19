@@ -3,6 +3,16 @@
 #if defined(__EMSCRIPTEN__)
 // Applications that map from a frame callback (which cannot suspend) opt in to deferred readback maps.
 static bool g_NonBlockingReadbackMaps = false;
+// Test hook (`?nomultidraw`): behave as a browser without multi-draw-indirect, as a stock Chrome does.
+static bool g_DisableMultiDrawIndirect = false;
+// Indirect draw commands recorded (page telemetry: a scene that never draws a mesh is not ready).
+static uint64_t g_IndirectDrawCommands = 0;
+extern "C" uint64_t nriWGPUIndirectDrawCommands() {
+    return g_IndirectDrawCommands;
+}
+extern "C" void nriWGPUSetMultiDrawIndirectDisabled(bool disabled) {
+    g_DisableMultiDrawIndirect = disabled;
+}
 extern "C" void nriWGPUSetNonBlockingReadbackMaps(bool enabled) {
     g_NonBlockingReadbackMaps = enabled;
 }
