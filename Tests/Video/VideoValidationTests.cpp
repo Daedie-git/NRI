@@ -510,8 +510,10 @@ TEST_CASE("VID-VAL-002 session parameters enforce codec and pointer-count contra
         REQUIRE(h265Session);
         nri::VideoH265VideoParameterSetDesc h265Vps = {};
         h265Vps.profileTierLevel.generalProfileIdc = 1;
+        h265Vps.profileTierLevel.generalLevelIdc = 120;
         nri::VideoH265SequenceParameterSetDesc h265Sps = {};
         h265Sps.profileTierLevel.generalProfileIdc = 1;
+        h265Sps.profileTierLevel.generalLevelIdc = 120;
         h265Sps.chromaFormatIdc = 1;
         h265Sps.numShortTermRefPicSets = 1;
         nri::VideoH265SessionParametersDesc h265 = {};
@@ -1101,6 +1103,45 @@ TEST_CASE("VID-REG-021 H.264 parameters may be omitted only for native decode", 
 
     nri::VideoSessionParametersDesc parametersDesc = {};
     REQUIRE(bool(harness.CreateParameters(*session, parametersDesc)) == (nativeDecode && type == nri::VideoSessionType::DECODE));
+}
+
+TEST_CASE("VID-REG-032 H.265 parameters require a Table A.8 level", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    const auto type = GENERATE(nri::VideoSessionType::DECODE, nri::VideoSessionType::ENCODE);
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(type, nri::VideoCodec::H265));
+    REQUIRE(session);
+
+    nri::VideoH265VideoParameterSetDesc vps = {};
+    vps.profileTierLevel.generalProfileIdc = 1;
+    vps.profileTierLevel.generalLevelIdc = 120;
+    nri::VideoH265SequenceParameterSetDesc sps = {};
+    sps.profileTierLevel = vps.profileTierLevel;
+    sps.chromaFormatIdc = 1;
+    nri::VideoH265PictureParameterSetDesc pps = {};
+    nri::VideoH265SessionParametersDesc h265 = {};
+    h265.videoParameterSets = &vps;
+    h265.videoParameterSetNum = 1;
+    h265.sequenceParameterSets = &sps;
+    h265.sequenceParameterSetNum = 1;
+    h265.pictureParameterSets = &pps;
+    h265.pictureParameterSetNum = 1;
+    nri::VideoSessionParametersDesc desc = {};
+    desc.h265Parameters = &h265;
+    REQUIRE(harness.CreateParameters(*session, desc));
+
+    SECTION("VPS level 0") {
+        vps.profileTierLevel.generalLevelIdc = 0;
+    }
+    SECTION("SPS level 0") {
+        sps.profileTierLevel.generalLevelIdc = 0;
+    }
+    SECTION("SPS level not in Table A.8") {
+        sps.profileTierLevel.generalLevelIdc = 121;
+    }
+
+    REQUIRE_FALSE(harness.CreateParameters(*session, desc));
 }
 
 TEST_CASE("VID-REG-022 resolved metadata requires VIDEO_ENCODE usage", "[video][validation][regression][short]") {

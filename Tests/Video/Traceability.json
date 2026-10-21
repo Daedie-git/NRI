@@ -41,6 +41,7 @@
         {"id": "VID-REG-027", "surface": "av1-inferred-color-config-syntax", "tests": ["VID-REG-027"]},
         {"id": "VID-REG-030", "surface": "av1-cdef-secondary-strength-coded-value", "tests": ["VID-REG-030"]},
         {"id": "VID-REG-031", "surface": "encode-reconstructed-picture-required-with-dpb", "tests": ["VID-REG-031"]},
+        {"id": "VID-REG-032", "surface": "h265-level-idc-table-a8-required", "tests": ["VID-REG-032"]},
         {"id": "VID-HW-001", "surface": "hardware-device-video-queue-interface-lifecycle", "tests": ["VID-HW-001"]},
         {"id": "VID-HW-002", "surface": "hardware-codec-capability-matrix", "tests": ["VID-HW-002"]},
         {"id": "VID-INT-001", "surface": "exported-video-interface-name-size-and-zeroing-contract", "tests": ["VID-INT-001"]},
