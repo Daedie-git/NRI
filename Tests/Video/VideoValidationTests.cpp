@@ -1105,7 +1105,7 @@ TEST_CASE("VID-REG-021 H.264 parameters may be omitted only for native decode", 
     REQUIRE(bool(harness.CreateParameters(*session, parametersDesc)) == (nativeDecode && type == nri::VideoSessionType::DECODE));
 }
 
-TEST_CASE("VID-REG-032 H.265 parameters require a Table A.8 level", "[video][validation][regression][short]") {
+TEST_CASE("VID-REG-032 H.265 parameters and Annex B parameter sets require a Table A.8 level", "[video][validation][regression][short]") {
     ValidationHarness harness;
     REQUIRE(harness.IsValid());
 
@@ -1131,6 +1131,13 @@ TEST_CASE("VID-REG-032 H.265 parameters require a Table A.8 level", "[video][val
     desc.h265Parameters = &h265;
     REQUIRE(harness.CreateParameters(*session, desc));
 
+    nri::VideoAnnexBParameterSetsDesc annexB = {};
+    annexB.codec = nri::VideoCodec::H265;
+    annexB.h265Vps = &vps;
+    annexB.h265Sps = &sps;
+    annexB.h265Pps = &pps;
+    REQUIRE(harness.GetVideo().WriteVideoAnnexBParameterSets(annexB) == nri::Result::SUCCESS);
+
     SECTION("VPS level 0") {
         vps.profileTierLevel.generalLevelIdc = 0;
     }
@@ -1142,6 +1149,7 @@ TEST_CASE("VID-REG-032 H.265 parameters require a Table A.8 level", "[video][val
     }
 
     REQUIRE_FALSE(harness.CreateParameters(*session, desc));
+    REQUIRE(harness.GetVideo().WriteVideoAnnexBParameterSets(annexB) == nri::Result::INVALID_ARGUMENT);
 }
 
 TEST_CASE("VID-REG-022 resolved metadata requires VIDEO_ENCODE usage", "[video][validation][regression][short]") {
