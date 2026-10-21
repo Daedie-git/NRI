@@ -44,6 +44,7 @@
         {"id": "VID-REG-032", "surface": "h265-level-idc-table-a8-required", "tests": ["VID-REG-032"]},
         {"id": "VID-REG-033", "surface": "vulkan-h265-level-idc-native-mapping", "tests": ["VID-REG-033"]},
         {"id": "VID-REG-034", "surface": "h264-level-idc-table-a1-required", "tests": ["VID-REG-034"]},
+        {"id": "VID-REG-035", "surface": "video-bitstream-range-within-size-max", "tests": ["VID-REG-035"]},
         {"id": "VID-REG-037", "surface": "h265-encode-lists-initial-without-list-modification", "tests": ["VID-REG-037"]},
         {"id": "VID-REG-038", "surface": "h265-encode-short-term-references-only", "tests": ["VID-REG-038"]},
         {"id": "VID-HW-001", "surface": "hardware-device-video-queue-interface-lifecycle", "tests": ["VID-HW-001"]},

@@ -1090,6 +1090,77 @@ TEST_CASE("VID-REG-026 video bitstream ranges satisfy session alignment", "[vide
     }
 }
 
+TEST_CASE("VID-REG-035 encode and decode bitstream ranges stay within bitstreamSizeMax", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.maxReferenceNum = 4;
+    capabilities.bitstreamSizeMax = 32;
+    harness.GetBackend().SetCapabilities(capabilities);
+
+    SECTION("decode") {
+        nri::VideoSession* session = harness.CreateSession(MakeSessionDesc());
+        REQUIRE(session);
+        nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+        REQUIRE(parameters);
+        nri::VideoPicture* dstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE);
+        REQUIRE(dstPicture);
+
+        FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+        nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+        FakeCommandBuffer command = {&harness.GetBackend()};
+        nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+        nri::VideoH264DecodePictureDesc defaultDecodePicture = MakeH264DecodePicture();
+        nri::VideoDecodeDesc desc = {};
+        desc.h264PictureDesc = &defaultDecodePicture;
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.bitstream.size = 32;
+        desc.dstPicture = dstPicture;
+
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+
+        desc.bitstream.size = 64;
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+    }
+
+    SECTION("encode") {
+        nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE));
+        REQUIRE(session);
+        nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+        REQUIRE(parameters);
+        nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+        REQUIRE(srcPicture);
+        nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+        REQUIRE(reconstructedPicture);
+
+        FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+        nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+        FakeCommandBuffer command = {&harness.GetBackend()};
+        nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+        nri::VideoEncodeDesc desc = {};
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.srcPicture = srcPicture;
+        desc.reconstructedPicture = reconstructedPicture;
+        desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.dstBitstream.offset = 32;
+        desc.dstBitstream.size = 32;
+
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+        desc.dstBitstream.offset = 0;
+        desc.dstBitstream.size = 64;
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+    }
+}
+
 TEST_CASE("VID-REG-021 H.264 parameters may be omitted only for native decode", "[video][validation][regression][short]") {
     ValidationHarness harness;
     REQUIRE(harness.IsValid());

@@ -312,6 +312,10 @@ TEST_CASE("VID-HW-002 video capability matrix is internally consistent", "[video
             REQUIRE(capabilities.bitstreamOffsetAlignment != 0);
             REQUIRE(capabilities.bitstreamSizeAlignment != 0);
 
+            // NVIDIA Vulkan encode feedback is 32-bit, larger ranges would be truncated
+            if (graphicsApi == nri::GraphicsAPI::VK && selectedAdapter->vendor == nri::Vendor::NVIDIA && type == nri::VideoSessionType::ENCODE)
+                REQUIRE(capabilities.bitstreamSizeMax <= UINT32_MAX);
+
             nri::VideoSession* session = nullptr;
             REQUIRE(video.CreateVideoSession(*owner.device, desc, session) == nri::Result::SUCCESS);
             REQUIRE(session != nullptr);
