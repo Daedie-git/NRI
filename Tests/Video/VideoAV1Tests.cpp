@@ -366,18 +366,25 @@ std::vector<uint8_t> WriteInterHeader(const InterHeader& header, bool hasFilmGra
                 writer.WriteBits(1, 4); // num_cb_points
                 writer.WriteBits(30, 8);
                 writer.WriteBits(50, 8);
-                writer.WriteBits(0, 4); // num_cr_points
+                writer.WriteBits(1, 4); // num_cr_points (4:2:0 requires Cr points with Cb points)
+                writer.WriteBits(60, 8);
+                writer.WriteBits(70, 8);
                 writer.WriteBits(3, 2); // grain_scaling_minus_8
                 writer.WriteBits(1, 2); // ar_coeff_lag: 4 luma, 5 chroma positions
                 for (uint32_t i = 0; i < 4; i++)
                     writer.WriteBits(128 + i, 8);
                 for (uint32_t i = 0; i < 5; i++)
-                    writer.WriteBits(120 + i, 8);
+                    writer.WriteBits(120 + i, 8); // ar_coeffs_cb_plus_128
+                for (uint32_t i = 0; i < 5; i++)
+                    writer.WriteBits(140 + i, 8); // ar_coeffs_cr_plus_128
                 writer.WriteBits(2, 2); // ar_coeff_shift_minus_6
                 writer.WriteBits(1, 2); // grain_scale_shift
                 writer.WriteBits(100, 8); // cb_mult
                 writer.WriteBits(110, 8); // cb_luma_mult
                 writer.WriteBits(300, 9); // cb_offset
+                writer.WriteBits(90, 8);  // cr_mult
+                writer.WriteBits(95, 8);  // cr_luma_mult
+                writer.WriteBits(400, 9); // cr_offset
                 writer.WriteBit(1);       // overlap_flag
                 writer.WriteBit(0);       // clip_to_restricted_range
             }
@@ -897,7 +904,13 @@ TEST_CASE("VID-PAR-008 AV1 film grain parameters are parsed or loaded", "[video]
         REQUIRE(info.filmGrain.pointYValue[1] == 200);
         REQUIRE(info.filmGrain.pointYScaling[1] == 40);
         REQUIRE(info.filmGrain.numCbPoints == 1);
-        REQUIRE(info.filmGrain.numCrPoints == 0);
+        REQUIRE(info.filmGrain.numCrPoints == 1);
+        REQUIRE(info.filmGrain.pointCrValue[0] == 60);
+        REQUIRE(info.filmGrain.pointCrScaling[0] == 70);
+        REQUIRE(info.filmGrain.arCoeffsCrPlus128[4] == 144);
+        REQUIRE(info.filmGrain.crMult == 90);
+        REQUIRE(info.filmGrain.crLumaMult == 95);
+        REQUIRE(info.filmGrain.crOffset == 400);
         REQUIRE(info.filmGrain.grainScalingMinus8 == 3);
         REQUIRE(info.filmGrain.arCoeffLag == 1);
         REQUIRE(info.filmGrain.arCoeffsYPlus128[3] == 131);
@@ -1019,11 +1032,12 @@ TEST_CASE("VID-PAR-011 AV1 state-dependent headers are failure-atomic for every 
     for (size_t size = 1; size < payload.size() - 1; size++) {
         CAPTURE(size);
         desc.encodedPayloadHeaderSize = size;
-        nri::VideoAV1EncodeDecodeInfo prefixInfo = {};
-        prefixInfo.picture.orderHint = 0x5A;
+        nri::VideoAV1EncodeDecodeInfo prefixInfo;
+        std::memset(&prefixInfo, 0xA5, sizeof(prefixInfo));
+        const nri::VideoAV1EncodeDecodeInfo original = prefixInfo;
         const nri::Result result = nri::video::av1::GetEncodeDecodeInfoFromHeader(desc, prefixInfo);
         REQUIRE(result != nri::Result::SUCCESS);
-        REQUIRE(prefixInfo.picture.orderHint == 0x5A);
+        REQUIRE(std::memcmp(&prefixInfo, &original, sizeof(prefixInfo)) == 0); // including "savedFrameState"
     }
 }
 
