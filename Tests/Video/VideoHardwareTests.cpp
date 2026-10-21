@@ -3,8 +3,15 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cstring>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#    include <windows.h>
+#else
+#    include <dlfcn.h>
+#endif
 
 #include "NRI.h"
 
@@ -94,6 +101,50 @@ void NRI_CALL CountMessage(nri::Message messageType, const char*, uint32_t, cons
 
 // Errors are counted by "CountMessage", the default handler would raise SIGTRAP
 void NRI_CALL IgnoreAbort(void*) {
+}
+
+// Mirrors "DeviceVK::FilterInstanceLayers": NRI enables the Khronos validation layer only if the loader enumerates it
+bool IsVulkanValidationLayerAvailable() {
+    struct LayerProperties { // "VkLayerProperties"
+        char layerName[256];
+        uint32_t specVersion;
+        uint32_t implementationVersion;
+        char description[256];
+    };
+
+    using EnumerateInstanceLayerProperties = int32_t(
+#ifdef _WIN32
+        __stdcall
+#endif
+        *)(uint32_t*, LayerProperties*);
+
+#ifdef _WIN32
+    HMODULE loader = LoadLibraryA("vulkan-1.dll");
+    EnumerateInstanceLayerProperties enumerate = loader ? (EnumerateInstanceLayerProperties)GetProcAddress(loader, "vkEnumerateInstanceLayerProperties") : nullptr;
+#else
+    void* loader = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+    EnumerateInstanceLayerProperties enumerate = loader ? (EnumerateInstanceLayerProperties)dlsym(loader, "vkEnumerateInstanceLayerProperties") : nullptr;
+#endif
+
+    bool found = false;
+    uint32_t layerNum = 0;
+    if (enumerate && enumerate(&layerNum, nullptr) == 0) {
+        std::vector<LayerProperties> layers(layerNum);
+        if (enumerate(&layerNum, layers.data()) == 0) {
+            for (uint32_t i = 0; i < layerNum && !found; i++)
+                found = std::strcmp(layers[i].layerName, "VK_LAYER_KHRONOS_validation") == 0;
+        }
+    }
+
+#ifdef _WIN32
+    if (loader)
+        FreeLibrary(loader);
+#else
+    if (loader)
+        dlclose(loader);
+#endif
+
+    return found;
 }
 
 } // namespace
@@ -357,4 +408,8 @@ TEST_CASE("VID-HW-003 H.265 session parameters accept every Table A.8 level with
 
     if (!testedSessionNum)
         SKIP("The selected adapter supports neither H.265 decode nor encode");
+
+    // Without the native layer "errorNum == 0" proves nothing about the native parameter sets
+    if (graphicsApi == nri::GraphicsAPI::VK && !IsVulkanValidationLayerAvailable())
+        SKIP("VK_LAYER_KHRONOS_validation is unavailable, native validation was not exercised");
 }
