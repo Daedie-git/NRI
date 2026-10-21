@@ -366,14 +366,14 @@ public:
         return parameters;
     }
 
-    nri::VideoPicture* CreatePicture(nri::VideoPictureUsage usage, nri::Format format, uint32_t width, uint32_t height, nri::TextureUsageBits textureUsage, nri::TextureType textureType = nri::TextureType::TEXTURE_2D, uint16_t layerNum = 1, uint16_t layer = 0, nri::VideoCodec videoCodec = nri::VideoCodec::H264) {
+    nri::VideoPicture* CreatePicture(nri::VideoPictureUsage usage, nri::Format format, uint32_t width, uint32_t height, nri::TextureUsageBits textureUsage, nri::TextureType textureType = nri::TextureType::TEXTURE_2D, uint16_t layerNum = 1, uint16_t layer = 0, nri::VideoCodec videoCodec = nri::VideoCodec::H264, uint32_t textureWidth = 0, uint32_t textureHeight = 0) {
         FakeTexture texture = {};
         texture.desc.type = textureType;
         texture.desc.usage = textureUsage;
         texture.desc.format = format;
         texture.desc.videoCodec = videoCodec;
-        texture.desc.width = (nri::Dim_t)width;
-        texture.desc.height = (nri::Dim_t)height;
+        texture.desc.width = (nri::Dim_t)(textureWidth ? textureWidth : width);
+        texture.desc.height = (nri::Dim_t)(textureHeight ? textureHeight : height);
         texture.desc.layerNum = layerNum;
         nri::TextureVal textureVal(GetDeviceVal(), (nri::Texture*)&texture, true);
         nri::VideoPictureDesc desc = {};
@@ -663,6 +663,94 @@ TEST_CASE("VID-REG-006 decode DPB slots stay within the session", "[video][valid
     desc.h264PictureDesc = &picture;
     harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
     REQUIRE(harness.GetBackend().GetDecodeCallNum() == 2);
+}
+
+TEST_CASE("VID-REG-036 distinct decode output requires matching extents and, if required, reference-only DPB pictures", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.decodeDpbAndOutputCoincide = false;
+    capabilities.decodeDpbAndOutputDistinct = true;
+    capabilities.decodeReferenceOnlyRequired = true;
+    harness.GetBackend().SetCapabilities(capabilities);
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc());
+    REQUIRE(session);
+    nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+    REQUIRE(parameters);
+
+    constexpr nri::TextureUsageBits outputUsage = nri::TextureUsageBits::VIDEO_DECODE | nri::TextureUsageBits::VIDEO_OUTPUT_ONLY;
+    constexpr nri::TextureUsageBits referenceOnlyUsage = nri::TextureUsageBits::VIDEO_DECODE | nri::TextureUsageBits::VIDEO_REFERENCE_ONLY;
+    nri::VideoPicture* dstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, outputUsage, nri::TextureType::TEXTURE_2D, 3, 0);
+    nri::VideoPicture* setupPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, referenceOnlyUsage, nri::TextureType::TEXTURE_2D, 3, 1);
+    nri::VideoPicture* referencePicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, referenceOnlyUsage, nri::TextureType::TEXTURE_2D, 3, 2);
+    nri::VideoPicture* plainSetupPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 3, 1);
+    nri::VideoPicture* plainReferencePicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 3, 2);
+    nri::VideoPicture* smallerSetupPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1280, 720, referenceOnlyUsage, nri::TextureType::TEXTURE_2D, 3, 1, nri::VideoCodec::H264, 1920, 1080);
+    nri::VideoPicture* plainDstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 3, 0);
+    nri::VideoPicture* largerTextureDstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, outputUsage, nri::TextureType::TEXTURE_2D, 3, 0, nri::VideoCodec::H264, 2048, 1152);
+    nri::VideoPicture* largerTextureSetupPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, referenceOnlyUsage, nri::TextureType::TEXTURE_2D, 3, 1, nri::VideoCodec::H264, 2048, 1152);
+    REQUIRE(dstPicture);
+    REQUIRE(setupPicture);
+    REQUIRE(referencePicture);
+    REQUIRE(plainSetupPicture);
+    REQUIRE(plainReferencePicture);
+    REQUIRE(smallerSetupPicture);
+    REQUIRE(plainDstPicture);
+    REQUIRE(largerTextureSetupPicture);
+    REQUIRE(largerTextureDstPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+    nri::VideoReference reference = {};
+    reference.picture = referencePicture;
+    reference.slot = 3;
+    nri::VideoH264DecodeReferenceDesc codecReference = {};
+    codecReference.slot = 3;
+    nri::VideoH264DecodePictureDesc picture = MakeH264DecodePicture();
+    picture.references = &codecReference;
+    picture.referenceNum = 1;
+    nri::VideoDecodeDesc desc = {};
+    desc.h264PictureDesc = &picture;
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.bitstream.size = 64;
+    desc.dstPicture = dstPicture;
+    desc.setupPicture = setupPicture;
+    desc.references = &reference;
+    desc.referenceNum = 1;
+    desc.dstSlot = 4;
+
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+
+    SECTION("setup picture without VIDEO_REFERENCE_ONLY") {
+        desc.setupPicture = plainSetupPicture;
+    }
+    SECTION("reference without VIDEO_REFERENCE_ONLY") {
+        reference.picture = plainReferencePicture;
+    }
+    SECTION("coincide mode") {
+        desc.dstPicture = plainDstPicture; // not output-only, only the mode is unsupported
+        desc.setupPicture = nullptr;
+    }
+    SECTION("setup picture with another picture extent in a session-sized texture") {
+        desc.setupPicture = smallerSetupPicture;
+    }
+    SECTION("setup picture with the same extent in a larger texture") {
+        desc.setupPicture = largerTextureSetupPicture;
+    }
+    SECTION("output and setup pictures in equally larger textures") {
+        desc.dstPicture = largerTextureDstPicture;
+        desc.setupPicture = largerTextureSetupPicture;
+    }
+
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
 }
 
 TEST_CASE("VID-REG-007 encode DPB slots stay within the session", "[video][validation][regression][short]") {
