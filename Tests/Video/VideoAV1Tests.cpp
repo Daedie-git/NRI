@@ -481,8 +481,11 @@ TEST_CASE("VID-PAR-001 AV1 inter-frame metadata parses all references", "[video]
     REQUIRE(info.picture.frameType == nri::VideoFrameType::P);
     REQUIRE(info.picture.refreshFrameFlags == 0x24);
     REQUIRE(info.picture.primaryReferenceName == nri::VideoAV1ReferenceName::GOLDEN);
-    REQUIRE(info.picture.referenceNum == 7);
+    REQUIRE(info.picture.referenceNum == 8); // 7 names, then the unused reference frame map entry 7
     REQUIRE(info.picture.references[0].slot == 10);
+    REQUIRE(info.picture.references[7].name == nri::VideoAV1ReferenceName::NONE);
+    REQUIRE(info.picture.references[7].refFrameIndex == 7);
+    REQUIRE(info.picture.references[7].slot == 17);
     REQUIRE(info.bitstreamOffset <= payload.size());
     REQUIRE(info.bitstreamSize == payload.size() - info.bitstreamOffset);
     REQUIRE(info.picture.tileNum == 1);
@@ -1093,4 +1096,30 @@ TEST_CASE("VID-PAR-014 AV1 global motion models with an invalid shear are marked
     REQUIRE(info.globalMotion.invalid[1] == 1);
     REQUIRE(info.globalMotion.invalid[2] == 0);
     REQUIRE(info.savedFrameState.globalMotion.invalid[1] == 1);
+}
+
+TEST_CASE("VID-PAR-015 AV1 inter frames return the complete reference frame map", "[video][parser][short]") {
+    const std::array<nri::VideoAV1ReferenceDesc, 8> references = MakeReferences();
+    const std::array<nri::VideoAV1SavedFrameState, 8> states = MakeSavedFrameStates();
+    nri::VideoAV1EncodeDecodeInfoDesc base = {};
+    base.references = references.data();
+    base.referenceNum = 8;
+
+    // Short signaling: LAST = 7, GOLDEN = 0, the others 6, 5, 4, 3, 2; map entry 1 is not used by the frame
+    InterHeader header;
+    header.shortSignaling = true;
+    header.lastFrameIdx = 7;
+    header.goldFrameIdx = 0;
+
+    nri::VideoAV1EncodeDecodeInfo info = {};
+    REQUIRE(ParseInterHeader(header, &base, states.data(), info) == nri::Result::SUCCESS);
+    REQUIRE(info.picture.referenceNum == 8);
+    REQUIRE(info.picture.references[7].name == nri::VideoAV1ReferenceName::NONE);
+    REQUIRE(info.picture.references[7].refFrameIndex == 1);
+    REQUIRE(info.picture.references[7].slot == references[1].slot);
+    REQUIRE(info.picture.references[7].orderHint == references[1].orderHint);
+
+    // Fewer map entries: only the provided ones are returned
+    base.referenceNum = 7; // entry 7 (LAST) is missing
+    REQUIRE(ParseInterHeader(header, &base, states.data(), info) == nri::Result::FAILURE);
 }

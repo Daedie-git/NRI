@@ -1597,3 +1597,112 @@ TEST_CASE("VID-REG-023 codec references stay within the session capacity", "[vid
     harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
     REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
 }
+
+TEST_CASE("VID-REG-039 AV1 decode accepts reference frame map entries the frame doesn't use", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::AV1));
+    REQUIRE(session);
+    nri::VideoAV1SessionParametersDesc av1Parameters = {};
+    av1Parameters.sequence.seqProfile = 0;
+    av1Parameters.sequence.bitDepth = 8;
+    av1Parameters.sequence.subsamplingX = 1;
+    av1Parameters.sequence.subsamplingY = 1;
+    av1Parameters.sequence.maxFrameWidthMinus1 = 1919;
+    av1Parameters.sequence.maxFrameHeightMinus1 = 1079;
+    nri::VideoSessionParametersDesc parametersDesc = {};
+    parametersDesc.session = session;
+    parametersDesc.av1Parameters = &av1Parameters;
+    nri::VideoSessionParameters* parameters = harness.CreateParameters(*session, parametersDesc);
+    REQUIRE(parameters);
+
+    nri::VideoPicture* dstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+    nri::VideoPicture* usedPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+    nri::VideoPicture* unusedPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+    REQUIRE(dstPicture);
+    REQUIRE(usedPicture);
+    REQUIRE(unusedPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+
+    // All 7 names use map entry 0 (slot 1), map entry 1 (slot 2) is not used by the frame
+    std::array<nri::VideoAV1ReferenceDesc, 16> references = {};
+    for (uint32_t i = 0; i < 7; i++) {
+        references[i].name = (nri::VideoAV1ReferenceName)((uint8_t)nri::VideoAV1ReferenceName::LAST + i);
+        references[i].refFrameIndex = 0;
+        references[i].frameType = nri::VideoFrameType::IDR;
+        references[i].slot = 1;
+    }
+    references[7].name = nri::VideoAV1ReferenceName::NONE;
+    references[7].refFrameIndex = 1;
+    references[7].frameType = nri::VideoFrameType::P;
+    references[7].orderHint = 2;
+    references[7].slot = 2;
+
+    nri::VideoAV1DecodeTileDesc tile = {};
+    tile.size = 32;
+    nri::VideoAV1DecodePictureDesc picture = {};
+    picture.frameType = nri::VideoFrameType::P;
+    picture.flags = nri::VideoAV1PictureBits::SHOW_FRAME;
+    picture.refreshFrameFlags = 0x04;
+    picture.tiles = &tile;
+    picture.tileNum = 1;
+    picture.references = references.data();
+    picture.referenceNum = 8;
+
+    std::array<nri::VideoReference, 2> dpbReferences = {};
+    dpbReferences[0].picture = usedPicture;
+    dpbReferences[0].slot = 1;
+    dpbReferences[1].picture = unusedPicture;
+    dpbReferences[1].slot = 2;
+
+    nri::VideoDecodeDesc desc = {};
+    desc.av1PictureDesc = &picture;
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.bitstream.size = 64;
+    desc.dstPicture = dstPicture;
+    desc.references = dpbReferences.data();
+    desc.referenceNum = 2;
+    desc.dstSlot = 3;
+
+    uint32_t decodeCallNum = 0;
+    auto decode = [&]() {
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        const bool isForwarded = harness.GetBackend().GetDecodeCallNum() != decodeCallNum;
+        decodeCallNum = harness.GetBackend().GetDecodeCallNum();
+        return isForwarded;
+    };
+
+    SECTION("a DPB reference used only by a NONE entry") {
+        REQUIRE(decode());
+    }
+    SECTION("NONE entries need their DPB reference (D3D12 maps them to reference pictures)") {
+        desc.referenceNum = 1;
+        REQUIRE_FALSE(decode());
+
+        picture.referenceNum = 7;
+        REQUIRE(decode());
+    }
+    SECTION("DPB references need an entry") {
+        picture.referenceNum = 7;
+        REQUIRE_FALSE(decode());
+    }
+    SECTION("up to 7 named + 8 map entries") {
+        for (uint32_t i = 8; i < 15; i++) {
+            references[i] = references[7];
+            references[i].refFrameIndex = 1; // repeated map entries alias the same slot
+        }
+        picture.referenceNum = 15;
+        REQUIRE(decode());
+
+        references[15] = references[7];
+        picture.referenceNum = 16;
+        REQUIRE_FALSE(decode());
+    }
+}
