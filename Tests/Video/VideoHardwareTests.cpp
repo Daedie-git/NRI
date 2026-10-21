@@ -147,6 +147,52 @@ bool IsVulkanValidationLayerAvailable() {
     return found;
 }
 
+struct ValidatedVideoDevice {
+    MessageCounter messages;
+    DeviceOwner owner;
+    nri::VideoInterface video = {};
+    nri::GraphicsAPI graphicsApi = nri::GraphicsAPI::NONE;
+};
+
+// Creates a video device with NRI and graphics API validation whose error messages are counted, or skips the test
+void CreateValidatedVideoDevice(ValidatedVideoDevice& device) {
+    uint32_t adapterNum = 0;
+    REQUIRE(nri::nriEnumerateAdapters(nullptr, adapterNum) == nri::Result::SUCCESS);
+
+    if (!adapterNum)
+        SKIP("No graphics adapters are available");
+
+    std::vector<nri::AdapterDesc> adapters(adapterNum);
+    REQUIRE(nri::nriEnumerateAdapters(adapters.data(), adapterNum) == nri::Result::SUCCESS);
+
+    const nri::AdapterDesc* selectedAdapter = FindVideoAdapter(adapters, device.graphicsApi);
+
+    if (!selectedAdapter)
+        SKIP("No adapter exposes NRI video queues");
+
+    std::array<nri::QueueFamilyDesc, 3> queueFamilies = {};
+    const uint32_t queueFamilyNum = FillVideoQueueFamilies(*selectedAdapter, queueFamilies);
+
+    nri::DeviceCreationDesc creationDesc = {};
+    creationDesc.graphicsAPI = device.graphicsApi;
+    creationDesc.adapterDesc = selectedAdapter;
+    creationDesc.queueFamilies = queueFamilies.data();
+    creationDesc.queueFamilyNum = queueFamilyNum;
+    creationDesc.callbackInterface.MessageCallback = CountMessage;
+    creationDesc.callbackInterface.AbortExecution = IgnoreAbort;
+    creationDesc.callbackInterface.userArg = &device.messages;
+    creationDesc.enableNRIValidation = true;
+    creationDesc.enableGraphicsAPIValidation = true;
+
+    REQUIRE(nri::nriCreateDevice(creationDesc, device.owner.device) == nri::Result::SUCCESS);
+
+    const nri::Result interfaceResult = nri::nriGetInterface(*device.owner.device, "VideoInterface", sizeof(device.video), &device.video);
+
+    if (interfaceResult == nri::Result::UNSUPPORTED)
+        SKIP("The selected adapter exposes no video interface");
+    REQUIRE(interfaceResult == nri::Result::SUCCESS);
+}
+
 } // namespace
 
 TEST_CASE("VID-HW-001 video adapters create queues and expose the interface", "[video][hardware][short]") {
@@ -282,45 +328,8 @@ TEST_CASE("VID-HW-002 video capability matrix is internally consistent", "[video
 }
 
 TEST_CASE("VID-HW-003 H.265 session parameters accept every Table A.8 level without native validation errors", "[video][hardware][regression][short]") {
-    uint32_t adapterNum = 0;
-    REQUIRE(nri::nriEnumerateAdapters(nullptr, adapterNum) == nri::Result::SUCCESS);
-
-    if (!adapterNum)
-        SKIP("No graphics adapters are available");
-
-    std::vector<nri::AdapterDesc> adapters(adapterNum);
-    REQUIRE(nri::nriEnumerateAdapters(adapters.data(), adapterNum) == nri::Result::SUCCESS);
-
-    nri::GraphicsAPI graphicsApi = nri::GraphicsAPI::NONE;
-    const nri::AdapterDesc* selectedAdapter = FindVideoAdapter(adapters, graphicsApi);
-
-    if (!selectedAdapter)
-        SKIP("No adapter exposes NRI video queues");
-
-    std::array<nri::QueueFamilyDesc, 3> queueFamilies = {};
-    const uint32_t queueFamilyNum = FillVideoQueueFamilies(*selectedAdapter, queueFamilies);
-
-    MessageCounter messages;
-    nri::DeviceCreationDesc creationDesc = {};
-    creationDesc.graphicsAPI = graphicsApi;
-    creationDesc.adapterDesc = selectedAdapter;
-    creationDesc.queueFamilies = queueFamilies.data();
-    creationDesc.queueFamilyNum = queueFamilyNum;
-    creationDesc.callbackInterface.MessageCallback = CountMessage;
-    creationDesc.callbackInterface.AbortExecution = IgnoreAbort;
-    creationDesc.callbackInterface.userArg = &messages;
-    creationDesc.enableNRIValidation = true;
-    creationDesc.enableGraphicsAPIValidation = true;
-
-    DeviceOwner owner;
-    REQUIRE(nri::nriCreateDevice(creationDesc, owner.device) == nri::Result::SUCCESS);
-
-    nri::VideoInterface video = {};
-    const nri::Result interfaceResult = nri::nriGetInterface(*owner.device, "VideoInterface", sizeof(video), &video);
-
-    if (interfaceResult == nri::Result::UNSUPPORTED)
-        SKIP("The selected adapter exposes no video interface");
-    REQUIRE(interfaceResult == nri::Result::SUCCESS);
+    ValidatedVideoDevice device;
+    CreateValidatedVideoDevice(device);
 
     // Every "general_level_idc" of H.265 Table A.8
     constexpr uint8_t levels[] = {30, 60, 63, 90, 93, 120, 123, 150, 153, 156, 180, 183, 186};
@@ -336,14 +345,14 @@ TEST_CASE("VID-HW-003 H.265 session parameters accept every Table A.8 level with
         sessionDesc.height = 1080;
         sessionDesc.maxReferenceNum = 4;
         nri::VideoCapabilities capabilities = {};
-        const nri::Result capabilitiesResult = video.GetVideoCapabilities(*owner.device, sessionDesc, capabilities);
+        const nri::Result capabilitiesResult = device.video.GetVideoCapabilities(*device.owner.device, sessionDesc, capabilities);
 
         if (capabilitiesResult == nri::Result::UNSUPPORTED)
             continue;
         REQUIRE(capabilitiesResult == nri::Result::SUCCESS);
 
         nri::VideoSession* session = nullptr;
-        REQUIRE(video.CreateVideoSession(*owner.device, sessionDesc, session) == nri::Result::SUCCESS);
+        REQUIRE(device.video.CreateVideoSession(*device.owner.device, sessionDesc, session) == nri::Result::SUCCESS);
 
         nri::VideoH265VideoParameterSetDesc vps = {};
         vps.flags = nri::VideoH265VideoParameterSetBits::TEMPORAL_ID_NESTING;
@@ -384,25 +393,25 @@ TEST_CASE("VID-HW-003 H.265 session parameters accept every Table A.8 level with
             vps.profileTierLevel.generalLevelIdc = generalLevelIdc;
             sps.profileTierLevel = vps.profileTierLevel;
 
-            messages = {};
+            device.messages = {};
             nri::VideoSessionParameters* parameters = nullptr;
-            REQUIRE(video.CreateVideoSessionParameters(*owner.device, parametersDesc, parameters) == nri::Result::SUCCESS);
+            REQUIRE(device.video.CreateVideoSessionParameters(*device.owner.device, parametersDesc, parameters) == nri::Result::SUCCESS);
             REQUIRE(parameters != nullptr);
-            video.DestroyVideoSessionParameters(parameters);
+            device.video.DestroyVideoSessionParameters(parameters);
 
-            INFO(messages.lastError);
-            REQUIRE(messages.errorNum == 0);
+            INFO(device.messages.lastError);
+            REQUIRE(device.messages.errorNum == 0);
         }
 
         vps.profileTierLevel.generalLevelIdc = 0;
         sps.profileTierLevel = vps.profileTierLevel;
-        messages = {};
+        device.messages = {};
         nri::VideoSessionParameters* parameters = nullptr;
-        REQUIRE(video.CreateVideoSessionParameters(*owner.device, parametersDesc, parameters) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(device.video.CreateVideoSessionParameters(*device.owner.device, parametersDesc, parameters) == nri::Result::INVALID_ARGUMENT);
         REQUIRE(parameters == nullptr);
-        REQUIRE(messages.errorNum != 0); // the message callback observes errors
+        REQUIRE(device.messages.errorNum != 0); // the message callback observes errors
 
-        video.DestroyVideoSession(session);
+        device.video.DestroyVideoSession(session);
         testedSessionNum++;
     }
 
@@ -410,6 +419,89 @@ TEST_CASE("VID-HW-003 H.265 session parameters accept every Table A.8 level with
         SKIP("The selected adapter supports neither H.265 decode nor encode");
 
     // Without the native layer "errorNum == 0" proves nothing about the native parameter sets
-    if (graphicsApi == nri::GraphicsAPI::VK && !IsVulkanValidationLayerAvailable())
+    if (device.graphicsApi == nri::GraphicsAPI::VK && !IsVulkanValidationLayerAvailable())
+        SKIP("VK_LAYER_KHRONOS_validation is unavailable, native validation was not exercised");
+}
+
+TEST_CASE("VID-HW-004 H.264 session parameters accept every Table A-1 level without native validation errors", "[video][hardware][regression][short]") {
+    ValidatedVideoDevice device;
+    CreateValidatedVideoDevice(device);
+
+    // Every "level_idc" of H.264 Table A-1, except level 1b
+    constexpr uint8_t levels[] = {10, 11, 12, 13, 20, 21, 22, 30, 31, 32, 40, 41, 42, 50, 51, 52, 60, 61, 62};
+
+    uint32_t testedSessionNum = 0;
+
+    for (nri::VideoSessionType type : {nri::VideoSessionType::DECODE, nri::VideoSessionType::ENCODE}) {
+        nri::VideoSessionDesc sessionDesc = {};
+        sessionDesc.type = type;
+        sessionDesc.codec = nri::VideoCodec::H264;
+        sessionDesc.format = nri::Format::NV12_UNORM;
+        sessionDesc.width = 1920;
+        sessionDesc.height = 1088;
+        sessionDesc.maxReferenceNum = 4;
+        nri::VideoCapabilities capabilities = {};
+        const nri::Result capabilitiesResult = device.video.GetVideoCapabilities(*device.owner.device, sessionDesc, capabilities);
+
+        if (capabilitiesResult == nri::Result::UNSUPPORTED)
+            continue;
+        REQUIRE(capabilitiesResult == nri::Result::SUCCESS);
+
+        nri::VideoSession* session = nullptr;
+        REQUIRE(device.video.CreateVideoSession(*device.owner.device, sessionDesc, session) == nri::Result::SUCCESS);
+
+        nri::VideoH264SequenceParameterSetDesc sps = {};
+        sps.flags = nri::VideoH264SequenceParameterSetBits::DIRECT_8X8_INFERENCE | nri::VideoH264SequenceParameterSetBits::FRAME_MBS_ONLY;
+        sps.profileIdc = 100;
+        sps.chromaFormatIdc = 1;
+        sps.log2MaxFrameNumMinus4 = 4;
+        sps.log2MaxPictureOrderCountLsbMinus4 = 4;
+        sps.referenceFrameNum = 4;
+        sps.pictureWidthInMbsMinus1 = (uint16_t)(sessionDesc.width / 16 - 1);
+        sps.pictureHeightInMapUnitsMinus1 = (uint16_t)(sessionDesc.height / 16 - 1);
+
+        nri::VideoH264PictureParameterSetDesc pps = {};
+        pps.flags = nri::VideoH264PictureParameterSetBits::DEBLOCKING_FILTER_CONTROL_PRESENT;
+
+        nri::VideoH264SessionParametersDesc h264 = {};
+        h264.sequenceParameterSets = &sps;
+        h264.sequenceParameterSetNum = 1;
+        h264.pictureParameterSets = &pps;
+        h264.pictureParameterSetNum = 1;
+
+        nri::VideoSessionParametersDesc parametersDesc = {};
+        parametersDesc.session = session;
+        parametersDesc.h264Parameters = &h264;
+
+        for (uint8_t levelIdc : levels) {
+            CAPTURE((uint32_t)type, (uint32_t)levelIdc);
+            sps.levelIdc = levelIdc;
+
+            device.messages = {};
+            nri::VideoSessionParameters* parameters = nullptr;
+            REQUIRE(device.video.CreateVideoSessionParameters(*device.owner.device, parametersDesc, parameters) == nri::Result::SUCCESS);
+            REQUIRE(parameters != nullptr);
+            device.video.DestroyVideoSessionParameters(parameters);
+
+            INFO(device.messages.lastError);
+            REQUIRE(device.messages.errorNum == 0);
+        }
+
+        sps.levelIdc = 0;
+        device.messages = {};
+        nri::VideoSessionParameters* parameters = nullptr;
+        REQUIRE(device.video.CreateVideoSessionParameters(*device.owner.device, parametersDesc, parameters) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(parameters == nullptr);
+        REQUIRE(device.messages.errorNum != 0); // the message callback observes errors
+
+        device.video.DestroyVideoSession(session);
+        testedSessionNum++;
+    }
+
+    if (!testedSessionNum)
+        SKIP("The selected adapter supports neither H.264 decode nor encode");
+
+    // Without the native layer "errorNum == 0" proves nothing about the native parameter sets
+    if (device.graphicsApi == nri::GraphicsAPI::VK && !IsVulkanValidationLayerAvailable())
         SKIP("VK_LAYER_KHRONOS_validation is unavailable, native validation was not exercised");
 }

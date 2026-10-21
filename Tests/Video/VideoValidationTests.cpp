@@ -45,6 +45,7 @@ static nri::VideoCapabilities MakeCapabilities() {
 static nri::VideoH264SequenceParameterSetDesc MakeH264Sequence() {
     nri::VideoH264SequenceParameterSetDesc sequence = {};
     sequence.profileIdc = 100;
+    sequence.levelIdc = 41;
     sequence.chromaFormatIdc = 1;
     sequence.flags = nri::VideoH264SequenceParameterSetBits::FRAME_MBS_ONLY;
 
@@ -1146,6 +1147,45 @@ TEST_CASE("VID-REG-032 H.265 parameters and Annex B parameter sets require a Tab
     }
     SECTION("SPS level not in Table A.8") {
         sps.profileTierLevel.generalLevelIdc = 121;
+    }
+
+    REQUIRE_FALSE(harness.CreateParameters(*session, desc));
+    REQUIRE(harness.GetVideo().WriteVideoAnnexBParameterSets(annexB) == nri::Result::INVALID_ARGUMENT);
+}
+
+TEST_CASE("VID-REG-034 H.264 parameters and Annex B parameter sets require a Table A-1 level", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    const auto type = GENERATE(nri::VideoSessionType::DECODE, nri::VideoSessionType::ENCODE);
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(type, nri::VideoCodec::H264));
+    REQUIRE(session);
+
+    nri::VideoH264SequenceParameterSetDesc sps = MakeH264Sequence();
+    nri::VideoH264PictureParameterSetDesc pps = {};
+    nri::VideoH264SessionParametersDesc h264 = {};
+    h264.sequenceParameterSets = &sps;
+    h264.sequenceParameterSetNum = 1;
+    h264.pictureParameterSets = &pps;
+    h264.pictureParameterSetNum = 1;
+    nri::VideoSessionParametersDesc desc = {};
+    desc.h264Parameters = &h264;
+    REQUIRE(harness.CreateParameters(*session, desc));
+
+    nri::VideoAnnexBParameterSetsDesc annexB = {};
+    annexB.codec = nri::VideoCodec::H264;
+    annexB.h264Sps = &sps;
+    annexB.h264Pps = &pps;
+    REQUIRE(harness.GetVideo().WriteVideoAnnexBParameterSets(annexB) == nri::Result::SUCCESS);
+
+    SECTION("level 0") {
+        sps.levelIdc = 0;
+    }
+    SECTION("level 1b of the High profiles") {
+        sps.levelIdc = 9;
+    }
+    SECTION("level not in Table A-1") {
+        sps.levelIdc = 14;
     }
 
     REQUIRE_FALSE(harness.CreateParameters(*session, desc));
