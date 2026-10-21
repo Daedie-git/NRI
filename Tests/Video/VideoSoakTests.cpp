@@ -1,0 +1,33 @@
+// Copyright (c) 2026 NVIDIA Corporation
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <chrono>
+#include <cstdlib>
+
+// clang-format off
+#include "SharedExternal.h" // must come first: its D3D headers include "windows.h", which defines "ERROR" (see "NRIMacro.h")
+// clang-format on
+#include "NRI.h"
+
+#include "Extensions/NRIVideo.h"
+
+TEST_CASE("VID-SOAK-001 serializer soak", "[video][soak]") {
+    nri::VideoAnnexBEndOfStreamDesc desc = {};
+    desc.codec = nri::VideoCodec::H264;
+    uint32_t durationMs = 10 * 60 * 1000;
+
+    if (const char* overrideValue = std::getenv("NRI_VIDEO_TEST_DURATION_MS"))
+        durationMs = (uint32_t)std::strtoul(overrideValue, nullptr, 10);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(durationMs);
+    uint64_t iterationNum = 0;
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        REQUIRE(nri::video::WriteAnnexBEndOfStream(desc) == nri::Result::SUCCESS);
+        desc.codec = desc.codec == nri::VideoCodec::H264 ? nri::VideoCodec::H265 : nri::VideoCodec::H264;
+        iterationNum++;
+    }
+
+    REQUIRE(iterationNum != 0);
+}
