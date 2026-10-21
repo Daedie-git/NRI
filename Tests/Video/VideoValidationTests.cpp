@@ -366,8 +366,9 @@ public:
         return parameters;
     }
 
-    nri::VideoPicture* CreatePicture(nri::VideoPictureUsage usage, nri::Format format, uint32_t width, uint32_t height, nri::TextureUsageBits textureUsage, nri::TextureType textureType = nri::TextureType::TEXTURE_2D, uint16_t layerNum = 1, uint16_t layer = 0, nri::VideoCodec videoCodec = nri::VideoCodec::H264, uint32_t textureWidth = 0, uint32_t textureHeight = 0) {
+    nri::VideoPicture* CreatePicture(nri::VideoPictureUsage usage, nri::Format format, uint32_t width, uint32_t height, nri::TextureUsageBits textureUsage, nri::TextureType textureType = nri::TextureType::TEXTURE_2D, uint16_t layerNum = 1, uint16_t layer = 0, nri::VideoCodec videoCodec = nri::VideoCodec::H264, uint32_t textureWidth = 0, uint32_t textureHeight = 0, bool videoAV1FilmGrain = false) {
         FakeTexture texture = {};
+        texture.desc.videoAV1FilmGrain = videoAV1FilmGrain;
         texture.desc.type = textureType;
         texture.desc.usage = textureUsage;
         texture.desc.format = format;
@@ -1704,5 +1705,222 @@ TEST_CASE("VID-REG-039 AV1 decode accepts reference frame map entries the frame 
         references[15] = references[7];
         picture.referenceNum = 16;
         REQUIRE_FALSE(decode());
+    }
+}
+
+TEST_CASE("VID-REG-040 AV1 film grain decode requires a film grain session and a distinct setup picture", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    // Distinct mode isn't advertised (VK on NVIDIA): applying film grain still uses a distinct setup picture
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.decodeDpbAndOutputDistinct = false;
+    harness.GetBackend().SetCapabilities(capabilities);
+
+    nri::VideoSessionDesc sessionDesc = MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::AV1);
+    sessionDesc.av1FilmGrain = true;
+    nri::VideoSession* session = harness.CreateSession(sessionDesc);
+    REQUIRE(session);
+
+    nri::VideoSessionDesc plainSessionDesc = MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::AV1);
+    nri::VideoSession* plainSession = harness.CreateSession(plainSessionDesc);
+    REQUIRE(plainSession);
+
+    SECTION("film grain sessions are AV1 decode sessions") {
+        nri::VideoSessionDesc invalidDesc = MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::H264);
+        invalidDesc.av1FilmGrain = true;
+        REQUIRE_FALSE(harness.CreateSession(invalidDesc));
+
+        invalidDesc = MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::AV1);
+        invalidDesc.av1FilmGrain = true;
+        REQUIRE_FALSE(harness.CreateSession(invalidDesc));
+    }
+
+    // "film_grain_params_present" sequences are accepted for decode
+    nri::VideoAV1SessionParametersDesc av1Parameters = {};
+    av1Parameters.sequence.bitDepth = 8;
+    av1Parameters.sequence.subsamplingX = 1;
+    av1Parameters.sequence.subsamplingY = 1;
+    av1Parameters.sequence.maxFrameWidthMinus1 = 1919;
+    av1Parameters.sequence.maxFrameHeightMinus1 = 1079;
+    av1Parameters.sequence.flags = nri::VideoAV1SequenceBits::FILM_GRAIN_PARAMS_PRESENT;
+    nri::VideoSessionParametersDesc parametersDesc = {};
+    parametersDesc.session = session;
+    parametersDesc.av1Parameters = &av1Parameters;
+    nri::VideoSessionParameters* parameters = harness.CreateParameters(*session, parametersDesc);
+    REQUIRE(parameters);
+    parametersDesc.session = plainSession;
+    nri::VideoSessionParameters* plainParameters = harness.CreateParameters(*plainSession, parametersDesc);
+    REQUIRE(plainParameters);
+
+    // Layers of one texture array: the harness textures are distinct subresources only by layer
+    auto createPicture = [&](nri::VideoPictureUsage usage, uint16_t layer, bool av1FilmGrain) {
+        return harness.CreatePicture(usage, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 2, layer, nri::VideoCodec::AV1, 0, 0, av1FilmGrain);
+    };
+    nri::VideoPicture* dstPicture = createPicture(nri::VideoPictureUsage::DECODE_OUTPUT, 0, true);
+    nri::VideoPicture* setupPicture = createPicture(nri::VideoPictureUsage::DECODE_REFERENCE, 1, true);
+    nri::VideoPicture* plainDstPicture = createPicture(nri::VideoPictureUsage::DECODE_OUTPUT, 0, false);
+    nri::VideoPicture* plainSetupPicture = createPicture(nri::VideoPictureUsage::DECODE_REFERENCE, 1, false);
+    REQUIRE(dstPicture);
+    REQUIRE(setupPicture);
+    REQUIRE(plainDstPicture);
+    REQUIRE(plainSetupPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+
+    nri::VideoAV1FilmGrainDesc filmGrain = {};
+    filmGrain.numYPoints = 14;
+    filmGrain.numCbPoints = 10;
+    filmGrain.numCrPoints = 10;
+    filmGrain.grainScalingMinus8 = 3;
+    filmGrain.arCoeffLag = 3;
+    filmGrain.arCoeffShiftMinus6 = 3;
+    filmGrain.grainScaleShift = 3;
+    filmGrain.filmGrainParamsRefIdx = 7;
+
+    nri::VideoAV1DecodeTileDesc tile = {};
+    tile.size = 32;
+    nri::VideoAV1DecodePictureDesc picture = {};
+    picture.frameType = nri::VideoFrameType::IDR;
+    picture.flags = nri::VideoAV1PictureBits::SHOW_FRAME | nri::VideoAV1PictureBits::APPLY_GRAIN;
+    picture.refreshFrameFlags = 0xFF;
+    picture.tiles = &tile;
+    picture.tileNum = 1;
+    picture.filmGrain = &filmGrain;
+
+    nri::VideoDecodeDesc desc = {};
+    desc.av1PictureDesc = &picture;
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.bitstream.size = 64;
+    desc.dstPicture = dstPicture;
+    desc.setupPicture = setupPicture;
+    desc.dstSlot = 1;
+
+    uint32_t decodeCallNum = 0;
+    auto decode = [&]() {
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        const bool isForwarded = harness.GetBackend().GetDecodeCallNum() != decodeCallNum;
+        decodeCallNum = harness.GetBackend().GetDecodeCallNum();
+        return isForwarded;
+    };
+
+    SECTION("film grain into a distinct output") {
+        REQUIRE(decode());
+    }
+    SECTION("film grain parameters are required and in range") {
+        picture.filmGrain = nullptr;
+        REQUIRE_FALSE(decode());
+
+        picture.filmGrain = &filmGrain;
+        filmGrain.numYPoints = 15;
+        REQUIRE_FALSE(decode());
+        filmGrain.numYPoints = 14;
+        filmGrain.numCbPoints = 11;
+        REQUIRE_FALSE(decode());
+        filmGrain.numCbPoints = 10;
+        filmGrain.numCrPoints = 11;
+        REQUIRE_FALSE(decode());
+        filmGrain.numCrPoints = 10;
+        filmGrain.grainScalingMinus8 = 4;
+        REQUIRE_FALSE(decode());
+        filmGrain.grainScalingMinus8 = 3;
+        filmGrain.arCoeffLag = 4;
+        REQUIRE_FALSE(decode());
+        filmGrain.arCoeffLag = 3;
+        filmGrain.arCoeffShiftMinus6 = 4;
+        REQUIRE_FALSE(decode());
+        filmGrain.arCoeffShiftMinus6 = 3;
+        filmGrain.grainScaleShift = 4;
+        REQUIRE_FALSE(decode());
+        filmGrain.grainScaleShift = 3;
+        filmGrain.filmGrainParamsRefIdx = 8;
+        REQUIRE_FALSE(decode());
+        filmGrain.filmGrainParamsRefIdx = 7;
+        REQUIRE(decode());
+
+        // "cb_offset", "cr_offset": f(9)
+        filmGrain.cbOffset = 511;
+        filmGrain.crOffset = 511;
+        REQUIRE(decode());
+        filmGrain.cbOffset = 512;
+        REQUIRE_FALSE(decode());
+        filmGrain.cbOffset = -1;
+        REQUIRE_FALSE(decode());
+        filmGrain.cbOffset = 0;
+        filmGrain.crOffset = 512;
+        REQUIRE_FALSE(decode());
+        filmGrain.crOffset = -1;
+        REQUIRE_FALSE(decode());
+        filmGrain.crOffset = 0;
+        REQUIRE(decode());
+    }
+    SECTION("the reference must not get the film grain") {
+        desc.setupPicture = nullptr;
+        REQUIRE_FALSE(decode());
+    }
+    SECTION("distinct output without film grain needs the capability") {
+        picture.flags = nri::VideoAV1PictureBits::SHOW_FRAME;
+        REQUIRE_FALSE(decode());
+    }
+    SECTION("film grain requires a film grain session") {
+        desc.session = plainSession;
+        desc.parameters = plainParameters;
+        desc.dstPicture = plainDstPicture;
+        desc.setupPicture = plainSetupPicture;
+        REQUIRE_FALSE(decode());
+
+        picture.flags = nri::VideoAV1PictureBits::SHOW_FRAME;
+        desc.setupPicture = nullptr;
+        REQUIRE(decode());
+    }
+    SECTION("pictures and sessions agree on film grain") {
+        desc.dstPicture = plainDstPicture;
+        REQUIRE_FALSE(decode());
+
+        desc.dstPicture = dstPicture;
+        desc.setupPicture = plainSetupPicture;
+        REQUIRE_FALSE(decode());
+    }
+    SECTION("film grain textures can be encode inputs (encode profiles don't have film grain)") {
+        nri::VideoSessionDesc encodeSessionDesc = MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::AV1);
+        encodeSessionDesc.maxReferenceNum = 0;
+        nri::VideoSession* encodeSession = harness.CreateSession(encodeSessionDesc);
+        REQUIRE(encodeSession);
+        av1Parameters.sequence.flags = nri::VideoAV1SequenceBits::NONE;
+        parametersDesc.session = encodeSession;
+        nri::VideoSessionParameters* encodeParameters = harness.CreateParameters(*encodeSession, parametersDesc);
+        REQUIRE(encodeParameters);
+
+        const nri::TextureUsageBits usage = nri::TextureUsageBits::VIDEO_DECODE | nri::TextureUsageBits::VIDEO_ENCODE;
+        nri::VideoPicture* filmGrainSrcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, usage, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1, 0, 0, true);
+        nri::VideoPicture* plainSrcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, usage, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+        REQUIRE(filmGrainSrcPicture);
+        REQUIRE(plainSrcPicture);
+
+        FakeBuffer encodeBitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+        nri::BufferVal encodeBitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&encodeBitstream, true);
+        FakeCommandBuffer encodeCommand = {&harness.GetBackend()};
+        nri::CommandBufferVal encodeCommandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&encodeCommand, nri::QueueType::VIDEO_ENCODE, true);
+        nri::VideoEncodePictureDesc encodePicture = {};
+        encodePicture.frameType = nri::VideoFrameType::IDR;
+        nri::VideoEncodeDesc encodeDesc = {};
+        encodeDesc.session = encodeSession;
+        encodeDesc.parameters = encodeParameters;
+        encodeDesc.srcPicture = plainSrcPicture;
+        encodeDesc.dstBitstream.buffer = (nri::Buffer*)&encodeBitstreamVal;
+        encodeDesc.dstBitstream.size = 64;
+        encodeDesc.pictureDesc = &encodePicture;
+
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)encodeCommandVal, encodeDesc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+        encodeDesc.srcPicture = filmGrainSrcPicture;
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)encodeCommandVal, encodeDesc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 2);
     }
 }

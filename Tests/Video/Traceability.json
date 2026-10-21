@@ -59,6 +59,7 @@
         {"id": "VID-REG-035", "surface": "video-bitstream-range-within-size-max", "tests": ["VID-REG-035"]},
         {"id": "VID-REG-037", "surface": "h265-encode-lists-initial-without-list-modification", "tests": ["VID-REG-037"]},
         {"id": "VID-REG-038", "surface": "h265-encode-short-term-references-only", "tests": ["VID-REG-038"]},
+        {"id": "VID-REG-040", "surface": "av1-film-grain-decode-session-and-distinct-setup", "tests": ["VID-REG-040"]},
         {"id": "VID-REG-039", "surface": "av1-decode-unused-reference-frame-map-entries", "tests": ["VID-REG-039"]},
         {"id": "VID-REG-036", "surface": "decode-reference-only-dpb-pictures", "tests": ["VID-REG-036"]},
         {"id": "VID-HW-001", "surface": "hardware-device-video-queue-interface-lifecycle", "tests": ["VID-HW-001"]},
