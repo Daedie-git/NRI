@@ -169,6 +169,7 @@ if(NRI_BUILD_VIDEO_HARDWARE_TESTS)
         PRIVATE
             Catch2::Catch2WithMain
             NRI
+            ${CMAKE_DL_LIBS} # "dlopen" for the Vulkan validation layer query
     )
     target_compile_definitions(NRI_VideoHardwareTests
         PRIVATE
