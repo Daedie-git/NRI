@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <string>
 #include <vector>
 
 #include "NRI.h"
@@ -75,6 +76,24 @@ uint32_t FillVideoQueueFamilies(const nri::AdapterDesc& adapter, std::array<nri:
     }
 
     return queueFamilyNum;
+}
+
+struct MessageCounter {
+    uint32_t errorNum = 0;
+    std::string lastError;
+};
+
+void NRI_CALL CountMessage(nri::Message messageType, const char*, uint32_t, const char* message, void* userArg) {
+    if (messageType != nri::Message::ERROR)
+        return;
+
+    MessageCounter& counter = *(MessageCounter*)userArg;
+    counter.errorNum++;
+    counter.lastError = message;
+}
+
+// Errors are counted by "CountMessage", the default handler would raise SIGTRAP
+void NRI_CALL IgnoreAbort(void*) {
 }
 
 } // namespace
@@ -209,4 +228,133 @@ TEST_CASE("VID-HW-002 video capability matrix is internally consistent", "[video
 #else
     REQUIRE(supportedCombinationNum != 0);
 #endif
+}
+
+TEST_CASE("VID-HW-003 H.265 session parameters accept every Table A.8 level without native validation errors", "[video][hardware][regression][short]") {
+    uint32_t adapterNum = 0;
+    REQUIRE(nri::nriEnumerateAdapters(nullptr, adapterNum) == nri::Result::SUCCESS);
+
+    if (!adapterNum)
+        SKIP("No graphics adapters are available");
+
+    std::vector<nri::AdapterDesc> adapters(adapterNum);
+    REQUIRE(nri::nriEnumerateAdapters(adapters.data(), adapterNum) == nri::Result::SUCCESS);
+
+    nri::GraphicsAPI graphicsApi = nri::GraphicsAPI::NONE;
+    const nri::AdapterDesc* selectedAdapter = FindVideoAdapter(adapters, graphicsApi);
+
+    if (!selectedAdapter)
+        SKIP("No adapter exposes NRI video queues");
+
+    std::array<nri::QueueFamilyDesc, 3> queueFamilies = {};
+    const uint32_t queueFamilyNum = FillVideoQueueFamilies(*selectedAdapter, queueFamilies);
+
+    MessageCounter messages;
+    nri::DeviceCreationDesc creationDesc = {};
+    creationDesc.graphicsAPI = graphicsApi;
+    creationDesc.adapterDesc = selectedAdapter;
+    creationDesc.queueFamilies = queueFamilies.data();
+    creationDesc.queueFamilyNum = queueFamilyNum;
+    creationDesc.callbackInterface.MessageCallback = CountMessage;
+    creationDesc.callbackInterface.AbortExecution = IgnoreAbort;
+    creationDesc.callbackInterface.userArg = &messages;
+    creationDesc.enableNRIValidation = true;
+    creationDesc.enableGraphicsAPIValidation = true;
+
+    DeviceOwner owner;
+    REQUIRE(nri::nriCreateDevice(creationDesc, owner.device) == nri::Result::SUCCESS);
+
+    nri::VideoInterface video = {};
+    const nri::Result interfaceResult = nri::nriGetInterface(*owner.device, "VideoInterface", sizeof(video), &video);
+
+    if (interfaceResult == nri::Result::UNSUPPORTED)
+        SKIP("The selected adapter exposes no video interface");
+    REQUIRE(interfaceResult == nri::Result::SUCCESS);
+
+    // Every "general_level_idc" of H.265 Table A.8
+    constexpr uint8_t levels[] = {30, 60, 63, 90, 93, 120, 123, 150, 153, 156, 180, 183, 186};
+
+    uint32_t testedSessionNum = 0;
+
+    for (nri::VideoSessionType type : {nri::VideoSessionType::DECODE, nri::VideoSessionType::ENCODE}) {
+        nri::VideoSessionDesc sessionDesc = {};
+        sessionDesc.type = type;
+        sessionDesc.codec = nri::VideoCodec::H265;
+        sessionDesc.format = nri::Format::NV12_UNORM;
+        sessionDesc.width = 1920;
+        sessionDesc.height = 1080;
+        sessionDesc.maxReferenceNum = 4;
+        nri::VideoCapabilities capabilities = {};
+        const nri::Result capabilitiesResult = video.GetVideoCapabilities(*owner.device, sessionDesc, capabilities);
+
+        if (capabilitiesResult == nri::Result::UNSUPPORTED)
+            continue;
+        REQUIRE(capabilitiesResult == nri::Result::SUCCESS);
+
+        nri::VideoSession* session = nullptr;
+        REQUIRE(video.CreateVideoSession(*owner.device, sessionDesc, session) == nri::Result::SUCCESS);
+
+        nri::VideoH265VideoParameterSetDesc vps = {};
+        vps.flags = nri::VideoH265VideoParameterSetBits::TEMPORAL_ID_NESTING;
+        vps.profileTierLevel.generalProfileIdc = 1;
+        vps.decPicBufMgr.maxDecPicBufferingMinus1[0] = 4;
+        vps.decPicBufMgr.maxNumReorderPics[0] = 1;
+
+        nri::VideoH265SequenceParameterSetDesc sps = {};
+        sps.flags = nri::VideoH265SequenceParameterSetBits::TEMPORAL_ID_NESTING | nri::VideoH265SequenceParameterSetBits::SAMPLE_ADAPTIVE_OFFSET_ENABLED;
+        sps.chromaFormatIdc = 1;
+        sps.pictureWidthInLumaSamples = sessionDesc.width;
+        sps.pictureHeightInLumaSamples = sessionDesc.height;
+        sps.log2MaxPictureOrderCountLsbMinus4 = 4;
+        sps.log2DiffMaxMinLumaCodingBlockSize = 2;
+        sps.log2DiffMaxMinLumaTransformBlockSize = 2;
+        sps.maxTransformHierarchyDepthInter = 2;
+        sps.maxTransformHierarchyDepthIntra = 2;
+        sps.decPicBufMgr = vps.decPicBufMgr;
+
+        nri::VideoH265PictureParameterSetDesc pps = {};
+        pps.flags = nri::VideoH265PictureParameterSetBits::LOOP_FILTER_ACROSS_SLICES_ENABLED;
+        pps.log2ParallelMergeLevelMinus2 = 2;
+
+        nri::VideoH265SessionParametersDesc h265 = {};
+        h265.videoParameterSets = &vps;
+        h265.videoParameterSetNum = 1;
+        h265.sequenceParameterSets = &sps;
+        h265.sequenceParameterSetNum = 1;
+        h265.pictureParameterSets = &pps;
+        h265.pictureParameterSetNum = 1;
+
+        nri::VideoSessionParametersDesc parametersDesc = {};
+        parametersDesc.session = session;
+        parametersDesc.h265Parameters = &h265;
+
+        for (uint8_t generalLevelIdc : levels) {
+            CAPTURE((uint32_t)type, (uint32_t)generalLevelIdc);
+            vps.profileTierLevel.generalLevelIdc = generalLevelIdc;
+            sps.profileTierLevel = vps.profileTierLevel;
+
+            messages = {};
+            nri::VideoSessionParameters* parameters = nullptr;
+            REQUIRE(video.CreateVideoSessionParameters(*owner.device, parametersDesc, parameters) == nri::Result::SUCCESS);
+            REQUIRE(parameters != nullptr);
+            video.DestroyVideoSessionParameters(parameters);
+
+            INFO(messages.lastError);
+            REQUIRE(messages.errorNum == 0);
+        }
+
+        vps.profileTierLevel.generalLevelIdc = 0;
+        sps.profileTierLevel = vps.profileTierLevel;
+        messages = {};
+        nri::VideoSessionParameters* parameters = nullptr;
+        REQUIRE(video.CreateVideoSessionParameters(*owner.device, parametersDesc, parameters) == nri::Result::INVALID_ARGUMENT);
+        REQUIRE(parameters == nullptr);
+        REQUIRE(messages.errorNum != 0); // the message callback observes errors
+
+        video.DestroyVideoSession(session);
+        testedSessionNum++;
+    }
+
+    if (!testedSessionNum)
+        SKIP("The selected adapter supports neither H.265 decode nor encode");
 }
