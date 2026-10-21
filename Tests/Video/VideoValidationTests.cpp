@@ -1192,6 +1192,147 @@ TEST_CASE("VID-REG-034 H.264 parameters and Annex B parameter sets require a Tab
     REQUIRE(harness.GetVideo().WriteVideoAnnexBParameterSets(annexB) == nri::Result::INVALID_ARGUMENT);
 }
 
+namespace {
+
+// H.265 encode session parameters with a PPS that optionally signals list modifications
+struct H265EncodeFixture {
+    nri::VideoH265VideoParameterSetDesc vps = {};
+    nri::VideoH265SequenceParameterSetDesc sps = {};
+    nri::VideoH265PictureParameterSetDesc pps = {};
+    nri::VideoH265SessionParametersDesc h265 = {};
+    nri::VideoSessionParametersDesc parametersDesc = {};
+
+    explicit H265EncodeFixture(bool isListsModificationPresent) {
+        vps.profileTierLevel.generalProfileIdc = 1;
+        vps.profileTierLevel.generalLevelIdc = 120;
+        sps.profileTierLevel = vps.profileTierLevel;
+        sps.chromaFormatIdc = 1;
+        pps.flags = isListsModificationPresent ? nri::VideoH265PictureParameterSetBits::LISTS_MODIFICATION_PRESENT : nri::VideoH265PictureParameterSetBits::NONE;
+        h265.videoParameterSets = &vps;
+        h265.videoParameterSetNum = 1;
+        h265.sequenceParameterSets = &sps;
+        h265.sequenceParameterSetNum = 1;
+        h265.pictureParameterSets = &pps;
+        h265.pictureParameterSetNum = 1;
+        parametersDesc.h265Parameters = &h265;
+    }
+};
+
+} // namespace
+
+TEST_CASE("VID-REG-037 H.265 encode lists in non-initial order require list modifications in the PPS", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    const bool isListsModificationPresent = GENERATE(false, true);
+    CAPTURE(isListsModificationPresent);
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::H265));
+    REQUIRE(session);
+    H265EncodeFixture fixture(isListsModificationPresent);
+    nri::VideoSessionParameters* parameters = harness.CreateParameters(*session, fixture.parametersDesc);
+    REQUIRE(parameters);
+
+    nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::H265);
+    nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::H265);
+    REQUIRE(srcPicture);
+    REQUIRE(reconstructedPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+
+    // P picture at POC 2 referencing POC 0 and POC 1: the initial List0 is POC 1, POC 0
+    nri::VideoH265ReferenceDesc codecReferences[2] = {};
+    codecReferences[0].slot = 2;
+    codecReferences[0].pictureOrderCount = 0;
+    codecReferences[0].frameType = nri::VideoFrameType::P;
+    codecReferences[1].slot = 3;
+    codecReferences[1].pictureOrderCount = 1;
+    codecReferences[1].frameType = nri::VideoFrameType::P;
+    nri::VideoReference references[2] = {};
+    references[0].picture = reconstructedPicture;
+    references[0].slot = 2;
+    references[1].picture = reconstructedPicture;
+    references[1].slot = 3;
+    nri::VideoEncodePictureDesc encodePicture = {};
+    encodePicture.frameType = nri::VideoFrameType::P;
+    encodePicture.pictureOrderCount = 2;
+    nri::VideoEncodeDesc desc = {};
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.srcPicture = srcPicture;
+    desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.dstBitstream.size = 64;
+    desc.pictureDesc = &encodePicture;
+    desc.reconstructedPicture = reconstructedPicture;
+    desc.references = references;
+    desc.referenceNum = 2;
+    desc.reconstructedSlot = 4;
+    desc.h265ReferenceDescs = codecReferences;
+
+    // List0 = POC 0, POC 1 (not the initial order)
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == (isListsModificationPresent ? 1u : 0u));
+
+    // List0 = POC 1, POC 0 (the initial order)
+    std::swap(references[0], references[1]);
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == (isListsModificationPresent ? 2u : 1u));
+}
+
+TEST_CASE("VID-REG-038 H.265 encode rejects long-term references", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::H265));
+    REQUIRE(session);
+    H265EncodeFixture fixture(true);
+    nri::VideoSessionParameters* parameters = harness.CreateParameters(*session, fixture.parametersDesc);
+    REQUIRE(parameters);
+
+    nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::H265);
+    nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::H265);
+    REQUIRE(srcPicture);
+    REQUIRE(reconstructedPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+
+    nri::VideoH265ReferenceDesc codecReference = {};
+    codecReference.slot = 2;
+    codecReference.pictureOrderCount = 0;
+    codecReference.frameType = nri::VideoFrameType::P;
+    nri::VideoReference reference = {};
+    reference.picture = reconstructedPicture;
+    reference.slot = 2;
+    nri::VideoEncodePictureDesc encodePicture = {};
+    encodePicture.frameType = nri::VideoFrameType::P;
+    encodePicture.pictureOrderCount = 1;
+    nri::VideoEncodeDesc desc = {};
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.srcPicture = srcPicture;
+    desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.dstBitstream.size = 64;
+    desc.pictureDesc = &encodePicture;
+    desc.reconstructedPicture = reconstructedPicture;
+    desc.references = &reference;
+    desc.referenceNum = 1;
+    desc.reconstructedSlot = 4;
+    desc.h265ReferenceDescs = &codecReference;
+
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+    codecReference.longTerm = 1;
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+}
+
 TEST_CASE("VID-REG-022 resolved metadata requires VIDEO_ENCODE usage", "[video][validation][regression][short]") {
     ValidationHarness harness;
     REQUIRE(harness.IsValid());
