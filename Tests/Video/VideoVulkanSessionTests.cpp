@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <limits>
 
 #include "vk_mem_alloc.h"
@@ -138,4 +139,25 @@ TEST_CASE("VID-REG-025 Vulkan AV1 decode info requires an explicit payload heade
     nri::VideoAV1EncodeDecodeInfo info = {};
 
     REQUIRE(video.GetVideoAV1EncodeDecodeInfo((nri::VideoSession&)harness.session, (nri::Buffer&)buffer, 0, desc, info) == nri::Result::UNSUPPORTED);
+}
+
+TEST_CASE("VID-REG-033 Vulkan maps every H.265 Table A.8 level to a native level", "[video][vulkan][regression][short]") {
+    // Must match the levels accepted by Validation ("IsVideoH265LevelIdcValid")
+    constexpr uint8_t levels[] = {30, 60, 63, 90, 93, 120, 123, 150, 153, 156, 180, 183, 186};
+
+    StdVideoH265LevelIdc previous = STD_VIDEO_H265_LEVEL_IDC_1_0;
+    for (uint8_t generalLevelIdc : levels) {
+        CAPTURE(generalLevelIdc);
+        const StdVideoH265LevelIdc level = nri::GetVideoH265LevelIdc(generalLevelIdc);
+        REQUIRE(level != STD_VIDEO_H265_LEVEL_IDC_INVALID);
+        REQUIRE(level >= previous);
+        previous = level;
+    }
+    REQUIRE(nri::GetVideoH265LevelIdc(levels[0]) == STD_VIDEO_H265_LEVEL_IDC_1_0);
+    REQUIRE(nri::GetVideoH265LevelIdc(levels[std::size(levels) - 1]) == STD_VIDEO_H265_LEVEL_IDC_6_2);
+
+    for (uint32_t size : {64u, 1280u, 1920u, 3840u, 7680u, 8192u})
+        REQUIRE(nri::GetVideoH265LevelIdc(nri::GetVideoH265DefaultGeneralLevelIdc(size, size * 9 / 16)) != STD_VIDEO_H265_LEVEL_IDC_INVALID);
+
+    REQUIRE(nri::GetVideoH265LevelIdc(0) == STD_VIDEO_H265_LEVEL_IDC_INVALID);
 }
