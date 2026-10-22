@@ -972,6 +972,11 @@ NRI_INLINE Result DeviceVal::CreateCommittedBuffer(MemoryLocation memoryLocation
 
     Buffer* bufferImpl = nullptr;
     Result result = m_iCoreImpl.CreateCommittedBuffer(m_Impl, memoryLocation, priority, bufferDesc, bufferImpl);
+    // A backend may leave its object behind when allocation or binding fails; never hide it from cleanup.
+    if (result != Result::SUCCESS && bufferImpl) {
+        m_iCoreImpl.DestroyBuffer(bufferImpl);
+        bufferImpl = nullptr;
+    }
 
     buffer = nullptr;
     if (result == Result::SUCCESS)
@@ -1009,6 +1014,11 @@ NRI_INLINE Result DeviceVal::CreateCommittedTexture(MemoryLocation memoryLocatio
 
     Texture* textureImpl = nullptr;
     Result result = m_iCoreImpl.CreateCommittedTexture(m_Impl, memoryLocation, priority, textureDesc, textureImpl);
+    // A backend may leave its object behind when allocation or binding fails; never hide it from cleanup.
+    if (result != Result::SUCCESS && textureImpl) {
+        m_iCoreImpl.DestroyTexture(textureImpl);
+        textureImpl = nullptr;
+    }
 
     texture = nullptr;
     if (result == Result::SUCCESS)
@@ -1028,6 +1038,11 @@ NRI_INLINE Result DeviceVal::CreateCommittedMicromap(MemoryLocation memoryLocati
 
     Micromap* micromapImpl = nullptr;
     Result result = m_iRayTracingImpl.CreateCommittedMicromap(m_Impl, memoryLocation, priority, micromapDesc, micromapImpl);
+    // A backend may leave its object behind when allocation or binding fails; never hide it from cleanup.
+    if (result != Result::SUCCESS && micromapImpl) {
+        m_iRayTracingImpl.DestroyMicromap(micromapImpl);
+        micromapImpl = nullptr;
+    }
 
     micromap = nullptr;
     if (result == Result::SUCCESS)
@@ -1086,6 +1101,11 @@ NRI_INLINE Result DeviceVal::CreateCommittedAccelerationStructure(MemoryLocation
     // Create
     AccelerationStructure* accelerationStructureImpl = nullptr;
     Result result = m_iRayTracingImpl.CreateCommittedAccelerationStructure(m_Impl, memoryLocation, priority, accelerationStructureDescImpl, accelerationStructureImpl);
+    // A backend may leave its object behind when allocation or binding fails; never hide it from cleanup.
+    if (result != Result::SUCCESS && accelerationStructureImpl) {
+        m_iRayTracingImpl.DestroyAccelerationStructure(accelerationStructureImpl);
+        accelerationStructureImpl = nullptr;
+    }
 
     accelerationStructure = nullptr;
     if (result == Result::SUCCESS)
@@ -1119,6 +1139,11 @@ NRI_INLINE Result DeviceVal::CreatePlacedBuffer(Memory* memory, uint64_t offset,
 
     Buffer* bufferImpl = nullptr;
     Result result = m_iCoreImpl.CreatePlacedBuffer(m_Impl, memoryImpl, offset, bufferDesc, bufferImpl);
+    // A backend may leave its object behind when allocation or binding fails; never hide it from cleanup.
+    if (result != Result::SUCCESS && bufferImpl) {
+        m_iCoreImpl.DestroyBuffer(bufferImpl);
+        bufferImpl = nullptr;
+    }
 
     buffer = nullptr;
     if (result == Result::SUCCESS)
@@ -1181,6 +1206,11 @@ NRI_INLINE Result DeviceVal::CreatePlacedTexture(Memory* memory, uint64_t offset
 
     Texture* textureImpl = nullptr;
     Result result = m_iCoreImpl.CreatePlacedTexture(m_Impl, memoryImpl, offset, textureDesc, textureImpl);
+    // A backend may leave its object behind when allocation or binding fails; never hide it from cleanup.
+    if (result != Result::SUCCESS && textureImpl) {
+        m_iCoreImpl.DestroyTexture(textureImpl);
+        textureImpl = nullptr;
+    }
 
     texture = nullptr;
     if (result == Result::SUCCESS)
@@ -1225,6 +1255,11 @@ NRI_INLINE Result DeviceVal::CreatePlacedMicromap(Memory* memory, uint64_t offse
 
     Micromap* micromapImpl = nullptr;
     Result result = m_iRayTracingImpl.CreatePlacedMicromap(m_Impl, memoryImpl, offset, micromapDesc, micromapImpl);
+    // A backend may leave its object behind when allocation or binding fails; never hide it from cleanup.
+    if (result != Result::SUCCESS && micromapImpl) {
+        m_iRayTracingImpl.DestroyMicromap(micromapImpl);
+        micromapImpl = nullptr;
+    }
 
     micromap = nullptr;
     if (result == Result::SUCCESS)
@@ -1307,6 +1342,11 @@ NRI_INLINE Result DeviceVal::CreatePlacedAccelerationStructure(Memory* memory, u
 
     AccelerationStructure* accelerationStructureImpl = nullptr;
     Result result = m_iRayTracingImpl.CreatePlacedAccelerationStructure(m_Impl, memoryImpl, offset, accelerationStructureDescImpl, accelerationStructureImpl);
+    // A backend may leave its object behind when allocation or binding fails; never hide it from cleanup.
+    if (result != Result::SUCCESS && accelerationStructureImpl) {
+        m_iRayTracingImpl.DestroyAccelerationStructure(accelerationStructureImpl);
+        accelerationStructureImpl = nullptr;
+    }
 
     accelerationStructure = nullptr;
     if (result == Result::SUCCESS)

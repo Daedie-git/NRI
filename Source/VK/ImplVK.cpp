@@ -250,7 +250,13 @@ static Result NRI_CALL CreateCommittedBuffer(Device& device, MemoryLocation memo
     if (result != Result::SUCCESS)
         return result;
 
-    return ((BufferVK*)buffer)->AllocateAndBindMemory(memoryLocation, priority, true);
+    result = ((BufferVK*)buffer)->AllocateAndBindMemory(memoryLocation, priority, true);
+    if (result != Result::SUCCESS) {
+        Destroy((BufferVK*)buffer);
+        buffer = nullptr;
+    }
+
+    return result;
 }
 
 static Result NRI_CALL CreateCommittedTexture(Device& device, MemoryLocation memoryLocation, float priority, const TextureDesc& textureDesc, Texture*& texture) {
@@ -260,7 +266,13 @@ static Result NRI_CALL CreateCommittedTexture(Device& device, MemoryLocation mem
     if (result != Result::SUCCESS)
         return result;
 
-    return ((TextureVK*)texture)->AllocateAndBindMemory(memoryLocation, priority, true);
+    result = ((TextureVK*)texture)->AllocateAndBindMemory(memoryLocation, priority, true);
+    if (result != Result::SUCCESS) {
+        Destroy((TextureVK*)texture);
+        texture = nullptr;
+    }
+
+    return result;
 }
 
 static Result NRI_CALL CreatePlacedBuffer(Device& device, Memory* memory, uint64_t offset, const BufferDesc& bufferDesc, Buffer*& buffer) {
@@ -274,6 +286,11 @@ static Result NRI_CALL CreatePlacedBuffer(Device& device, Memory* memory, uint64
         result = ((BufferVK*)buffer)->BindMemory(*(MemoryVK*)memory, offset, true);
     else
         result = ((BufferVK*)buffer)->AllocateAndBindMemory((MemoryLocation)offset, 0.0f, false);
+
+    if (result != Result::SUCCESS) {
+        Destroy((BufferVK*)buffer);
+        buffer = nullptr;
+    }
 
     return result;
 }
@@ -289,6 +306,11 @@ static Result NRI_CALL CreatePlacedTexture(Device& device, Memory* memory, uint6
         result = ((TextureVK*)texture)->BindMemory(*(MemoryVK*)memory, offset);
     else
         result = ((TextureVK*)texture)->AllocateAndBindMemory((MemoryLocation)offset, 0.0f, false);
+
+    if (result != Result::SUCCESS) {
+        Destroy((TextureVK*)texture);
+        texture = nullptr;
+    }
 
     return result;
 }
@@ -1050,7 +1072,13 @@ static Result NRI_CALL CreateCommittedAccelerationStructure(Device& device, Memo
     if (result != Result::SUCCESS)
         return result;
 
-    return ((AccelerationStructureVK*)accelerationStructure)->AllocateAndBindMemory(memoryLocation, priority, true);
+    result = ((AccelerationStructureVK*)accelerationStructure)->AllocateAndBindMemory(memoryLocation, priority, true);
+    if (result != Result::SUCCESS) {
+        Destroy((AccelerationStructureVK*)accelerationStructure);
+        accelerationStructure = nullptr;
+    }
+
+    return result;
 }
 
 static Result NRI_CALL CreateCommittedMicromap(Device& device, MemoryLocation memoryLocation, float priority, const MicromapDesc& micromapDesc, Micromap*& micromap) {
@@ -1060,7 +1088,13 @@ static Result NRI_CALL CreateCommittedMicromap(Device& device, MemoryLocation me
     if (result != Result::SUCCESS)
         return result;
 
-    return ((MicromapVK*)micromap)->AllocateAndBindMemory(memoryLocation, priority, true);
+    result = ((MicromapVK*)micromap)->AllocateAndBindMemory(memoryLocation, priority, true);
+    if (result != Result::SUCCESS) {
+        Destroy((MicromapVK*)micromap);
+        micromap = nullptr;
+    }
+
+    return result;
 }
 
 static Result NRI_CALL CreatePlacedAccelerationStructure(Device& device, Memory* memory, uint64_t offset, const AccelerationStructureDesc& accelerationStructureDesc, AccelerationStructure*& accelerationStructure) {
@@ -1074,6 +1108,11 @@ static Result NRI_CALL CreatePlacedAccelerationStructure(Device& device, Memory*
         result = ((AccelerationStructureVK*)accelerationStructure)->BindMemory((MemoryVK*)memory, offset);
     else
         result = ((AccelerationStructureVK*)accelerationStructure)->AllocateAndBindMemory((MemoryLocation)offset, 0.0f, false);
+
+    if (result != Result::SUCCESS) {
+        Destroy((AccelerationStructureVK*)accelerationStructure);
+        accelerationStructure = nullptr;
+    }
 
     return result;
 }
@@ -1089,6 +1128,11 @@ static Result NRI_CALL CreatePlacedMicromap(Device& device, Memory* memory, uint
         result = ((MicromapVK*)micromap)->BindMemory((MemoryVK*)memory, offset);
     else
         result = ((MicromapVK*)micromap)->AllocateAndBindMemory((MemoryLocation)offset, 0.0f, false);
+
+    if (result != Result::SUCCESS) {
+        Destroy((MicromapVK*)micromap);
+        micromap = nullptr;
+    }
 
     return result;
 }
