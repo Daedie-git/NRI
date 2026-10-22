@@ -6,7 +6,11 @@ namespace nri {
 
 struct FenceSubmissionWGPU {
     uint64_t value = 0;
+#if defined(__EMSCRIPTEN__)
+    WGPUFuture future = WGPU_FUTURE_INIT;
+#else
     WGPUSubmissionIndex index = 0;
+#endif
 };
 
 struct FenceWGPU final : public DebugNameBase {
@@ -23,13 +27,25 @@ struct FenceWGPU final : public DebugNameBase {
 
     uint64_t GetValue() const;
     void Wait(uint64_t value);
+    bool IsSatisfiedBySubmissionOrder(uint64_t value) const;
+#if defined(__EMSCRIPTEN__)
+    void Signal(uint64_t value);
+#else
     void Signal(uint64_t value, WGPUSubmissionIndex submissionIndex);
+#endif
+
+private:
+    uint64_t UpdateCompletedValue() const;
 
 private:
     DeviceWGPU& m_Device;
     mutable Vector<FenceSubmissionWGPU> m_Submissions;
+#if defined(__EMSCRIPTEN__)
+    mutable Lock m_Lock;
+#else
     mutable std::mutex m_Mutex;
     std::condition_variable m_ConditionVariable;
+#endif
     uint64_t m_SubmittedValue = 0;
     mutable uint64_t m_CompletedValue = 0;
     bool m_IsSwapChainSemaphore = false;

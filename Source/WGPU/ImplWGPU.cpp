@@ -6,6 +6,7 @@
 #include <mutex>
 #include <thread>
 
+#include "RenderPassDepth.hpp"
 #include "SharedWGPU.h"
 
 #include "BufferWGPU.h"

@@ -2037,6 +2037,7 @@ NriStruct(DeviceDesc) {
         uint32_t storageBufferMaxNum;
         uint32_t textureMaxNum;
         uint32_t storageTextureMaxNum;
+        uint32_t bindingMaxNum; // maximum binding index plus one; 0 if not reported
 
         struct {
             uint32_t samplerMaxNum;
