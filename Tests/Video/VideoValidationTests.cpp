@@ -1,0 +1,2116 @@
+// Copyright (c) 2026 NVIDIA Corporation
+
+#include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+
+#include <algorithm>
+#include <array>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <vector>
+
+// clang-format off
+#include "SharedVal.h" // must come first: its D3D headers include "windows.h", which defines "ERROR" (see "NRIMacro.h")
+// clang-format on
+#include "NRI.h"
+
+#include "Extensions/NRIDeviceCreation.h"
+#include "Extensions/NRIVideo.h"
+
+#include "BufferVal.h"
+#include "CommandBufferVal.h"
+#include "TextureVal.h"
+
+nri::DeviceBase* CreateDeviceValidation(const nri::DeviceCreationDesc& desc, nri::DeviceBase& device);
+
+namespace {
+
+static nri::VideoCapabilities MakeCapabilities() {
+    nri::VideoCapabilities capabilities = {};
+    capabilities.maxReferenceNum = 8;
+    capabilities.bitstreamOffsetAlignment = 1;
+    capabilities.bitstreamSizeAlignment = 1;
+    capabilities.bitstreamSizeMax = UINT64_MAX;
+    capabilities.decodeBitstreamSourceMask = nri::VideoDecodeBitstreamSourceBits::BUFFER;
+    capabilities.decodeDpbAndOutputCoincide = true;
+    capabilities.decodeDpbAndOutputDistinct = true;
+    capabilities.encodeBitstreamRangeSizeSupported = true;
+    capabilities.encodeFeedbackSupported = true;
+    capabilities.resolvedMetadataQueueType = nri::QueueType::VIDEO_ENCODE;
+
+    return capabilities;
+}
+
+static nri::VideoH264SequenceParameterSetDesc MakeH264Sequence() {
+    nri::VideoH264SequenceParameterSetDesc sequence = {};
+    sequence.profileIdc = 100;
+    sequence.levelIdc = 41;
+    sequence.chromaFormatIdc = 1;
+    sequence.flags = nri::VideoH264SequenceParameterSetBits::FRAME_MBS_ONLY;
+
+    return sequence;
+}
+
+static nri::VideoH264DecodePictureDesc MakeH264DecodePicture() {
+    static const uint32_t sliceOffset = 0;
+    nri::VideoH264DecodePictureDesc picture = {};
+    picture.sliceOffsets = &sliceOffset;
+    picture.sliceOffsetNum = 1;
+
+    return picture;
+}
+
+struct FakeTexture {
+    nri::TextureDesc desc;
+};
+
+struct FakeBuffer {
+    nri::BufferDesc desc;
+};
+
+struct FakeCommandBuffer;
+class FakeVideoDevice;
+
+struct FakeVideoSession {
+    FakeVideoDevice* device;
+};
+
+class FakeVideoDevice final : public nri::DeviceBase {
+public:
+    FakeVideoDevice(const nri::CallbackInterface& callbacks, const nri::AllocationCallbacks& allocationCallbacks)
+        : DeviceBase(callbacks, allocationCallbacks)
+        , m_Session({this}) {
+        m_Capabilities.maxReferenceNum = 8;
+    }
+
+    const nri::DeviceDesc& GetDesc() const override {
+        return m_Desc;
+    }
+
+    void Destruct() override {
+    }
+
+    nri::Result FillFunctionTable(nri::CoreInterface& table) const override {
+        table.GetBufferDesc = GetBufferDesc;
+        table.GetTextureDesc = GetTextureDesc;
+
+        return nri::Result::SUCCESS;
+    }
+
+    nri::Result FillFunctionTable(nri::HelperInterface&) const override {
+        return nri::Result::SUCCESS;
+    }
+
+    nri::Result FillFunctionTable(nri::VideoInterface& table) const override {
+        table.GetVideoCapabilities = GetVideoCapabilities;
+        table.GetVideoAV1Capabilities = GetVideoAV1Capabilities;
+        table.CreateVideoSession = CreateVideoSession;
+        table.CreateVideoSessionParameters = CreateVideoSessionParameters;
+        table.CreateVideoPicture = CreateVideoPicture;
+        table.DestroyVideoSession = DestroyVideoSession;
+        table.ResetVideoSession = ResetVideoSession;
+        table.DestroyVideoSessionParameters = DestroyVideoSessionParameters;
+        table.DestroyVideoPicture = DestroyVideoPicture;
+        table.CmdDecodeVideo = CmdDecodeVideo;
+        table.CmdEncodeVideo = CmdEncodeVideo;
+        table.CmdResolveVideoEncodeFeedback = CmdResolveVideoEncodeFeedback;
+        table.GetVideoEncodeFeedback = GetVideoEncodeFeedback;
+        table.GetVideoAV1EncodeDecodeInfo = GetVideoAV1EncodeDecodeInfo;
+
+        return nri::Result::SUCCESS;
+    }
+
+    void SetCapabilities(const nri::VideoCapabilities& capabilities) {
+        m_Capabilities = capabilities;
+    }
+
+    uint32_t GetDecodeCallNum() const {
+        return m_DecodeCallNum;
+    }
+
+    uint32_t GetEncodeCallNum() const {
+        return m_EncodeCallNum;
+    }
+
+    uint32_t GetAV1DecodeInfoCallNum() const {
+        return m_AV1DecodeInfoCallNum;
+    }
+
+    uint32_t GetResolveCallNum() const {
+        return m_ResolveCallNum;
+    }
+
+    uint32_t GetResetCallNum() const {
+        return m_ResetCallNum;
+    }
+
+private:
+    static const nri::BufferDesc& NRI_CALL GetBufferDesc(const nri::Buffer& buffer) {
+        return ((const FakeBuffer&)buffer).desc;
+    }
+
+    static const nri::TextureDesc& NRI_CALL GetTextureDesc(const nri::Texture& texture) {
+        return ((const FakeTexture&)texture).desc;
+    }
+
+    static nri::Result NRI_CALL GetVideoCapabilities(const nri::Device& device, const nri::VideoSessionDesc&, nri::VideoCapabilities& capabilities) {
+        capabilities = ((const FakeVideoDevice&)device).m_Capabilities;
+
+        return nri::Result::SUCCESS;
+    }
+
+    static nri::Result NRI_CALL GetVideoAV1Capabilities(const nri::Device&, const nri::VideoSessionDesc&, nri::VideoAV1Capabilities&) {
+        return nri::Result::SUCCESS;
+    }
+
+    static nri::Result NRI_CALL CreateVideoSession(nri::Device& device, const nri::VideoSessionDesc&, nri::VideoSession*& session) {
+        FakeVideoDevice& fakeDevice = (FakeVideoDevice&)device;
+        session = (nri::VideoSession*)&fakeDevice.m_Session;
+
+        return nri::Result::SUCCESS;
+    }
+
+    static nri::Result NRI_CALL CreateVideoSessionParameters(nri::Device& device, const nri::VideoSessionParametersDesc&, nri::VideoSessionParameters*& parameters) {
+        FakeVideoDevice& fakeDevice = (FakeVideoDevice&)device;
+        parameters = (nri::VideoSessionParameters*)&fakeDevice.m_Parameters;
+
+        return nri::Result::SUCCESS;
+    }
+
+    static nri::Result NRI_CALL CreateVideoPicture(nri::Device& device, const nri::VideoPictureDesc&, nri::VideoPicture*& picture) {
+        FakeVideoDevice& fakeDevice = (FakeVideoDevice&)device;
+        picture = (nri::VideoPicture*)&fakeDevice.m_Picture;
+
+        return nri::Result::SUCCESS;
+    }
+
+    static void NRI_CALL DestroyVideoSession(nri::VideoSession*) {
+    }
+
+    static void NRI_CALL ResetVideoSession(nri::VideoSession& session) {
+        ((FakeVideoSession&)session).device->m_ResetCallNum++;
+    }
+
+    static void NRI_CALL DestroyVideoSessionParameters(nri::VideoSessionParameters*) {
+    }
+
+    static void NRI_CALL DestroyVideoPicture(nri::VideoPicture*) {
+    }
+
+    static void NRI_CALL CmdDecodeVideo(nri::CommandBuffer& commandBuffer, const nri::VideoDecodeDesc&);
+    static void NRI_CALL CmdEncodeVideo(nri::CommandBuffer& commandBuffer, const nri::VideoEncodeDesc&);
+
+    static void NRI_CALL CmdResolveVideoEncodeFeedback(nri::CommandBuffer& commandBuffer, nri::VideoSession&, nri::Buffer&, uint64_t);
+
+    static nri::Result NRI_CALL GetVideoEncodeFeedback(nri::VideoSession&, nri::Buffer&, uint64_t, nri::VideoEncodeFeedback&) {
+        return nri::Result::SUCCESS;
+    }
+
+    static nri::Result NRI_CALL GetVideoAV1EncodeDecodeInfo(nri::VideoSession& session, nri::Buffer&, uint64_t, const nri::VideoAV1EncodeDecodeInfoDesc&, nri::VideoAV1EncodeDecodeInfo&) {
+        ((FakeVideoSession&)session).device->m_AV1DecodeInfoCallNum++;
+
+        return nri::Result::SUCCESS;
+    }
+
+    nri::DeviceDesc m_Desc = {};
+    nri::VideoCapabilities m_Capabilities = MakeCapabilities();
+    FakeVideoSession m_Session;
+    uint8_t m_Parameters = 0;
+    uint8_t m_Picture = 0;
+    uint32_t m_DecodeCallNum = 0;
+    uint32_t m_EncodeCallNum = 0;
+    uint32_t m_AV1DecodeInfoCallNum = 0;
+    uint32_t m_ResolveCallNum = 0;
+    uint32_t m_ResetCallNum = 0;
+};
+
+struct FakeCommandBuffer {
+    FakeVideoDevice* device;
+};
+
+void NRI_CALL FakeVideoDevice::CmdDecodeVideo(nri::CommandBuffer& commandBuffer, const nri::VideoDecodeDesc&) {
+    ((FakeCommandBuffer&)commandBuffer).device->m_DecodeCallNum++;
+}
+
+void NRI_CALL FakeVideoDevice::CmdEncodeVideo(nri::CommandBuffer& commandBuffer, const nri::VideoEncodeDesc&) {
+    ((FakeCommandBuffer&)commandBuffer).device->m_EncodeCallNum++;
+}
+
+void NRI_CALL FakeVideoDevice::CmdResolveVideoEncodeFeedback(nri::CommandBuffer& commandBuffer, nri::VideoSession&, nri::Buffer&, uint64_t) {
+    ((FakeCommandBuffer&)commandBuffer).device->m_ResolveCallNum++;
+}
+
+struct AllocationHeader {
+    void* memory;
+    size_t size;
+};
+
+static void* NRI_CALL Allocate(void*, size_t size, size_t alignment) {
+    const size_t effectiveAlignment = std::max(alignment, alignof(AllocationHeader));
+
+    if ((effectiveAlignment & (effectiveAlignment - 1)) || effectiveAlignment > std::numeric_limits<size_t>::max() - sizeof(AllocationHeader) + 1)
+        return nullptr;
+
+    const size_t overhead = sizeof(AllocationHeader) + effectiveAlignment - 1;
+
+    if (size > std::numeric_limits<size_t>::max() - overhead)
+        return nullptr;
+
+    uint8_t* memory = (uint8_t*)std::malloc(size + overhead);
+
+    if (!memory)
+        return nullptr;
+
+    uint8_t* alignedMemory = nri::Align(memory + sizeof(AllocationHeader), effectiveAlignment);
+    AllocationHeader* header = (AllocationHeader*)alignedMemory - 1;
+    header->memory = memory;
+    header->size = size;
+
+    return alignedMemory;
+}
+
+static void* NRI_CALL Reallocate(void* userArg, void* memory, size_t size, size_t alignment) {
+    if (!memory)
+        return Allocate(userArg, size, alignment);
+
+    AllocationHeader* oldHeader = (AllocationHeader*)memory - 1;
+    void* newMemory = Allocate(userArg, size, alignment);
+
+    if (!newMemory)
+        return nullptr;
+
+    std::memcpy(newMemory, memory, std::min(size, oldHeader->size));
+    std::free(oldHeader->memory);
+
+    return newMemory;
+}
+
+static void NRI_CALL Free(void*, void* memory) {
+    if (memory)
+        std::free(((AllocationHeader*)memory - 1)->memory);
+}
+
+static void NRI_CALL IgnoreMessage(nri::Message, const char*, uint32_t, const char*, void*) {
+}
+
+class ValidationHarness {
+public:
+    ValidationHarness()
+        : m_AllocationCallbacks({Allocate, Reallocate, Free})
+        , m_Callbacks({IgnoreMessage})
+        , m_Backend(m_Callbacks, m_AllocationCallbacks) {
+        nri::DeviceCreationDesc desc = {};
+        desc.allocationCallbacks = m_AllocationCallbacks;
+        desc.callbackInterface = m_Callbacks;
+        m_Device = CreateDeviceValidation(desc, m_Backend);
+
+        if (m_Device)
+            m_IsValid = m_Device->FillFunctionTable(m_Video) == nri::Result::SUCCESS;
+    }
+
+    ~ValidationHarness() {
+        for (nri::VideoPicture* picture : m_Pictures)
+            m_Video.DestroyVideoPicture(picture);
+
+        for (nri::VideoSessionParameters* parameters : m_Parameters)
+            m_Video.DestroyVideoSessionParameters(parameters);
+
+        for (nri::VideoSession* session : m_Sessions)
+            m_Video.DestroyVideoSession(session);
+
+        if (m_Device)
+            m_Device->Destruct();
+    }
+
+    bool IsValid() const {
+        return m_IsValid;
+    }
+
+    nri::Device& GetDevice() const {
+        return *(nri::Device*)m_Device;
+    }
+
+    nri::DeviceVal& GetDeviceVal() const {
+        return *(nri::DeviceVal*)m_Device;
+    }
+
+    FakeVideoDevice& GetBackend() {
+        return m_Backend;
+    }
+
+    nri::VideoInterface& GetVideo() {
+        return m_Video;
+    }
+
+    nri::VideoSession* CreateSession(const nri::VideoSessionDesc& desc) {
+        nri::VideoSession* session = nullptr;
+
+        if (m_Video.CreateVideoSession(GetDevice(), desc, session) == nri::Result::SUCCESS)
+            m_Sessions.push_back(session);
+
+        return session;
+    }
+
+    nri::VideoSessionParameters* CreateParameters(nri::VideoSession& session, const nri::VideoSessionParametersDesc& source) {
+        nri::VideoSessionParametersDesc desc = source;
+        desc.session = &session;
+
+        nri::VideoSessionParameters* parameters = nullptr;
+
+        if (m_Video.CreateVideoSessionParameters(GetDevice(), desc, parameters) == nri::Result::SUCCESS)
+            m_Parameters.push_back(parameters);
+
+        return parameters;
+    }
+
+    nri::VideoPicture* CreatePicture(nri::VideoPictureUsage usage, nri::Format format, uint32_t width, uint32_t height, nri::TextureUsageBits textureUsage, nri::TextureType textureType = nri::TextureType::TEXTURE_2D, uint16_t layerNum = 1, uint16_t layer = 0, nri::VideoCodec videoCodec = nri::VideoCodec::H264, uint32_t textureWidth = 0, uint32_t textureHeight = 0, bool videoAV1FilmGrain = false) {
+        FakeTexture texture = {};
+        texture.desc.videoAV1FilmGrain = videoAV1FilmGrain;
+        texture.desc.type = textureType;
+        texture.desc.usage = textureUsage;
+        texture.desc.format = format;
+        texture.desc.videoCodec = videoCodec;
+        texture.desc.width = (nri::Dim_t)(textureWidth ? textureWidth : width);
+        texture.desc.height = (nri::Dim_t)(textureHeight ? textureHeight : height);
+        texture.desc.layerNum = layerNum;
+        nri::TextureVal textureVal(GetDeviceVal(), (nri::Texture*)&texture, true);
+        nri::VideoPictureDesc desc = {};
+        desc.texture = (nri::Texture*)&textureVal;
+        desc.usage = usage;
+        desc.width = (nri::Dim_t)width;
+        desc.height = (nri::Dim_t)height;
+        desc.layer = layer;
+
+        nri::VideoPicture* picture = nullptr;
+
+        if (m_Video.CreateVideoPicture(GetDevice(), desc, picture) == nri::Result::SUCCESS)
+            m_Pictures.push_back(picture);
+
+        return picture;
+    }
+
+private:
+    nri::AllocationCallbacks m_AllocationCallbacks;
+    nri::CallbackInterface m_Callbacks;
+    FakeVideoDevice m_Backend;
+    nri::DeviceBase* m_Device = nullptr;
+    nri::VideoInterface m_Video = {};
+    std::vector<nri::VideoSession*> m_Sessions;
+    std::vector<nri::VideoSessionParameters*> m_Parameters;
+    std::vector<nri::VideoPicture*> m_Pictures;
+    bool m_IsValid = false;
+};
+
+static nri::VideoSessionDesc MakeSessionDesc(nri::VideoSessionType type = nri::VideoSessionType::DECODE, nri::VideoCodec codec = nri::VideoCodec::H264) {
+    nri::VideoSessionDesc desc = {};
+    desc.type = type;
+    desc.codec = codec;
+    desc.format = nri::Format::NV12_UNORM;
+    desc.width = 1920;
+    desc.height = 1080;
+    desc.maxReferenceNum = 4;
+
+    return desc;
+}
+
+static FakeBuffer MakeBuffer(uint64_t size, nri::BufferUsageBits usage = nri::BufferUsageBits::NONE) {
+    FakeBuffer buffer = {};
+    buffer.desc.size = size;
+    buffer.desc.usage = usage;
+
+    return buffer;
+}
+
+static nri::VideoSessionParameters* CreateH264Parameters(ValidationHarness& harness, nri::VideoSession& session) {
+    static const nri::VideoH264SequenceParameterSetDesc sequence = MakeH264Sequence();
+    static const nri::VideoH264PictureParameterSetDesc picture = {};
+    nri::VideoH264SessionParametersDesc h264 = {};
+    h264.sequenceParameterSets = &sequence;
+    h264.sequenceParameterSetNum = 1;
+    h264.pictureParameterSets = &picture;
+    h264.pictureParameterSetNum = 1;
+    nri::VideoSessionParametersDesc desc = {};
+    desc.h264Parameters = &h264;
+
+    return harness.CreateParameters(session, desc);
+}
+
+static nri::VideoSessionParameters* CreateAV1Parameters(ValidationHarness& harness, nri::VideoSession& session) {
+    nri::VideoAV1SessionParametersDesc av1 = {};
+    av1.sequence.flags = nri::VideoAV1SequenceBits::ENABLE_ORDER_HINT;
+    av1.sequence.bitDepth = 8;
+    av1.sequence.subsamplingX = 1;
+    av1.sequence.subsamplingY = 1;
+    av1.sequence.maxFrameWidthMinus1 = 1919;
+    av1.sequence.maxFrameHeightMinus1 = 1079;
+    av1.sequence.frameWidthBitsMinus1 = 10;
+    av1.sequence.frameHeightBitsMinus1 = 10;
+    av1.sequence.orderHintBitsMinus1 = 7;
+    av1.sequence.seqForceIntegerMv = 2;
+    av1.sequence.seqForceScreenContentTools = 2;
+    nri::VideoSessionParametersDesc desc = {};
+    desc.av1Parameters = &av1;
+
+    return harness.CreateParameters(session, desc);
+}
+
+class AV1PictureHarness {
+public:
+    AV1PictureHarness()
+        : m_DecodeBitstream(MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE))
+        , m_EncodeBitstream(MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE))
+        , m_DecodeBitstreamVal(m_Harness.GetDeviceVal(), (nri::Buffer*)&m_DecodeBitstream, true)
+        , m_EncodeBitstreamVal(m_Harness.GetDeviceVal(), (nri::Buffer*)&m_EncodeBitstream, true)
+        , m_DecodeCommand({&m_Harness.GetBackend()})
+        , m_EncodeCommand({&m_Harness.GetBackend()})
+        , m_DecodeCommandVal(m_Harness.GetDeviceVal(), (nri::CommandBuffer*)&m_DecodeCommand, nri::QueueType::VIDEO_DECODE, true)
+        , m_EncodeCommandVal(m_Harness.GetDeviceVal(), (nri::CommandBuffer*)&m_EncodeCommand, nri::QueueType::VIDEO_ENCODE, true) {
+        nri::VideoSession* decodeSession = m_Harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::AV1));
+        nri::VideoSession* encodeSession = m_Harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::AV1));
+        REQUIRE(decodeSession);
+        REQUIRE(encodeSession);
+
+        m_DecodeTile.size = 64;
+        decodePicture.frameType = nri::VideoFrameType::IDR;
+        decodePicture.tiles = &m_DecodeTile;
+        decodePicture.tileNum = 1;
+        m_Decode.session = decodeSession;
+        m_Decode.parameters = CreateAV1Parameters(m_Harness, *decodeSession);
+        m_Decode.bitstream.buffer = (nri::Buffer*)&m_DecodeBitstreamVal;
+        m_Decode.bitstream.size = 64;
+        m_Decode.dstPicture = m_Harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+        m_Decode.av1PictureDesc = &decodePicture;
+        REQUIRE(m_Decode.parameters);
+        REQUIRE(m_Decode.dstPicture);
+
+        m_EncodePicture.frameType = nri::VideoFrameType::IDR;
+        m_Encode.session = encodeSession;
+        m_Encode.parameters = CreateAV1Parameters(m_Harness, *encodeSession);
+        m_Encode.srcPicture = m_Harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+        m_Encode.reconstructedPicture = m_Harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+        m_Encode.dstBitstream.buffer = (nri::Buffer*)&m_EncodeBitstreamVal;
+        m_Encode.dstBitstream.size = 64;
+        m_Encode.pictureDesc = &m_EncodePicture;
+        m_Encode.av1PictureDesc = &encodePicture;
+        REQUIRE(m_Encode.parameters);
+        REQUIRE(m_Encode.srcPicture);
+        REQUIRE(m_Encode.reconstructedPicture);
+    }
+
+    bool Decode() {
+        const uint32_t callNum = m_Harness.GetBackend().GetDecodeCallNum();
+        m_Harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)m_DecodeCommandVal, m_Decode);
+
+        return m_Harness.GetBackend().GetDecodeCallNum() != callNum;
+    }
+
+    bool Encode() {
+        const uint32_t callNum = m_Harness.GetBackend().GetEncodeCallNum();
+        m_Harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)m_EncodeCommandVal, m_Encode);
+
+        return m_Harness.GetBackend().GetEncodeCallNum() != callNum;
+    }
+
+    nri::VideoAV1DecodePictureDesc decodePicture = {};
+    nri::VideoAV1EncodePictureDesc encodePicture = {};
+
+private:
+    ValidationHarness m_Harness;
+    FakeBuffer m_DecodeBitstream;
+    FakeBuffer m_EncodeBitstream;
+    nri::BufferVal m_DecodeBitstreamVal;
+    nri::BufferVal m_EncodeBitstreamVal;
+    FakeCommandBuffer m_DecodeCommand;
+    FakeCommandBuffer m_EncodeCommand;
+    nri::CommandBufferVal m_DecodeCommandVal;
+    nri::CommandBufferVal m_EncodeCommandVal;
+    nri::VideoAV1DecodeTileDesc m_DecodeTile = {};
+    nri::VideoEncodePictureDesc m_EncodePicture = {};
+    nri::VideoDecodeDesc m_Decode = {};
+    nri::VideoEncodeDesc m_Encode = {};
+};
+
+} // namespace
+
+TEST_CASE("VID-VAL-006 H.265 generalLevelIdc is a Table A.8 level", "[video][validation][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::H265));
+    REQUIRE(session);
+    nri::VideoH265ShortTermRefPicSetDesc shortTerm = {};
+    nri::VideoH265VideoParameterSetDesc vps = {};
+    vps.profileTierLevel.generalProfileIdc = 1;
+    nri::VideoH265SequenceParameterSetDesc sps = {};
+    sps.profileTierLevel.generalProfileIdc = 1;
+    sps.chromaFormatIdc = 1;
+    sps.numShortTermRefPicSets = 1;
+    sps.shortTermRefPicSets = &shortTerm;
+    nri::VideoH265SessionParametersDesc h265 = {};
+    h265.videoParameterSets = &vps;
+    h265.videoParameterSetNum = 1;
+    h265.sequenceParameterSets = &sps;
+    h265.sequenceParameterSetNum = 1;
+    nri::VideoSessionParametersDesc desc = {};
+    desc.h265Parameters = &h265;
+
+    for (int level : {30, 60, 63, 90, 93, 120, 123, 150, 153, 156, 180, 183, 186}) {
+        CAPTURE(level);
+        vps.profileTierLevel.generalLevelIdc = (uint8_t)level;
+        sps.profileTierLevel.generalLevelIdc = (uint8_t)level;
+        REQUIRE(harness.CreateParameters(*session, desc));
+    }
+
+    for (int level : {0, 1, 31, 91, 187, 255}) {
+        CAPTURE(level);
+        vps.profileTierLevel.generalLevelIdc = (uint8_t)level;
+        sps.profileTierLevel.generalLevelIdc = 120;
+        REQUIRE_FALSE(harness.CreateParameters(*session, desc));
+
+        vps.profileTierLevel.generalLevelIdc = 120;
+        sps.profileTierLevel.generalLevelIdc = (uint8_t)level;
+        REQUIRE_FALSE(harness.CreateParameters(*session, desc));
+    }
+}
+
+TEST_CASE("VID-VAL-007 AV1 CDEF strengths stay within their coded ranges", "[video][validation][short]") {
+    AV1PictureHarness av1;
+    nri::VideoAV1CdefDesc cdef = {};
+    av1.decodePicture.cdef = &cdef;
+    av1.encodePicture.cdef = &cdef;
+    REQUIRE(av1.Decode());
+    REQUIRE(av1.Encode());
+
+    std::fill(std::begin(cdef.yPrimaryStrength), std::end(cdef.yPrimaryStrength), uint8_t(15));
+    std::fill(std::begin(cdef.uvPrimaryStrength), std::end(cdef.uvPrimaryStrength), uint8_t(15));
+    std::fill(std::begin(cdef.ySecondaryStrength), std::end(cdef.ySecondaryStrength), uint8_t(3));
+    std::fill(std::begin(cdef.uvSecondaryStrength), std::end(cdef.uvSecondaryStrength), uint8_t(3));
+    REQUIRE(av1.Decode());
+    REQUIRE(av1.Encode());
+
+    for (uint8_t* strength : {&cdef.yPrimaryStrength[7], &cdef.uvPrimaryStrength[7], &cdef.ySecondaryStrength[7], &cdef.uvSecondaryStrength[7]}) {
+        const uint8_t valid = *strength;
+        *strength = uint8_t(valid + 1);
+        CAPTURE(int(*strength));
+        REQUIRE_FALSE(av1.Decode());
+        REQUIRE_FALSE(av1.Encode());
+        *strength = valid;
+    }
+
+    REQUIRE(av1.Decode());
+    REQUIRE(av1.Encode());
+}
+
+TEST_CASE("VID-VAL-008 AV1 interpolationFilter and txMode stay within their syntax ranges", "[video][validation][short]") {
+    AV1PictureHarness av1;
+
+    for (int interpolationFilter : {0, 4}) {
+        for (int txMode : {0, 2}) {
+            CAPTURE(interpolationFilter, txMode);
+            av1.decodePicture.interpolationFilter = (uint8_t)interpolationFilter;
+            av1.decodePicture.txMode = (uint8_t)txMode;
+            av1.encodePicture.interpolationFilter = (uint8_t)interpolationFilter;
+            av1.encodePicture.txMode = (uint8_t)txMode;
+            REQUIRE(av1.Decode());
+            REQUIRE(av1.Encode());
+        }
+    }
+
+    av1.decodePicture.interpolationFilter = 5;
+    av1.encodePicture.interpolationFilter = 5;
+    REQUIRE_FALSE(av1.Decode());
+    REQUIRE_FALSE(av1.Encode());
+
+    av1.decodePicture.interpolationFilter = 4;
+    av1.encodePicture.interpolationFilter = 4;
+    av1.decodePicture.txMode = 3;
+    av1.encodePicture.txMode = 3;
+    REQUIRE_FALSE(av1.Decode());
+    REQUIRE_FALSE(av1.Encode());
+}
+
+TEST_CASE("VID-VAL-001 video session descriptors reject every invalid discriminator", "[video][validation][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSessionDesc desc = MakeSessionDesc();
+    nri::VideoCapabilities capabilities = {};
+    REQUIRE(harness.GetVideo().GetVideoCapabilities(harness.GetDevice(), desc, capabilities) == nri::Result::SUCCESS);
+
+    SECTION("session type") {
+        desc.type = nri::VideoSessionType::MAX_NUM;
+    }
+    SECTION("codec none") {
+        desc.codec = nri::VideoCodec::NONE;
+    }
+    SECTION("codec maximum") {
+        desc.codec = nri::VideoCodec::MAX_NUM;
+    }
+    SECTION("format") {
+        desc.format = nri::Format::UNKNOWN;
+    }
+    SECTION("dimensions") {
+        desc.width = 0;
+    }
+    SECTION("slot overflow") {
+        desc.maxReferenceNum = UINT32_MAX;
+    }
+
+    REQUIRE(harness.GetVideo().GetVideoCapabilities(harness.GetDevice(), desc, capabilities) == nri::Result::INVALID_ARGUMENT);
+}
+
+TEST_CASE("VID-VAL-002 session parameters enforce codec and pointer-count contracts", "[video][validation][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* h264Session = harness.CreateSession(MakeSessionDesc());
+    REQUIRE(h264Session);
+
+    nri::VideoH264SequenceParameterSetDesc h264Sps = MakeH264Sequence();
+    nri::VideoH264PictureParameterSetDesc picture = {};
+    nri::VideoH264SessionParametersDesc h264 = {};
+    h264.sequenceParameterSets = &h264Sps;
+    h264.sequenceParameterSetNum = 1;
+    h264.pictureParameterSets = &picture;
+    h264.pictureParameterSetNum = 1;
+    nri::VideoSessionParametersDesc desc = {};
+    desc.h264Parameters = &h264;
+    REQUIRE(harness.CreateParameters(*h264Session, desc));
+
+    SECTION("multiple codec payloads") {
+        nri::VideoAV1SessionParametersDesc av1 = {};
+        desc.av1Parameters = &av1;
+        REQUIRE_FALSE(harness.CreateParameters(*h264Session, desc));
+    }
+    SECTION("missing counted array") {
+        h264.sequenceParameterSets = nullptr;
+        REQUIRE_FALSE(harness.CreateParameters(*h264Session, desc));
+    }
+    SECTION("capacity smaller than initial data") {
+        h264.maxSequenceParameterSetNum = 1;
+        h264.sequenceParameterSetNum = 2;
+        REQUIRE_FALSE(harness.CreateParameters(*h264Session, desc));
+    }
+    SECTION("wrong codec") {
+        nri::VideoSession* h265Session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::H265));
+        REQUIRE(h265Session);
+        REQUIRE_FALSE(harness.CreateParameters(*h265Session, desc));
+    }
+    SECTION("nested H.265 arrays") {
+        nri::VideoSession* h265Session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::H265));
+        REQUIRE(h265Session);
+        nri::VideoH265VideoParameterSetDesc h265Vps = {};
+        h265Vps.profileTierLevel.generalProfileIdc = 1;
+        h265Vps.profileTierLevel.generalLevelIdc = 120;
+        nri::VideoH265SequenceParameterSetDesc h265Sps = {};
+        h265Sps.profileTierLevel.generalProfileIdc = 1;
+        h265Sps.profileTierLevel.generalLevelIdc = 120;
+        h265Sps.chromaFormatIdc = 1;
+        h265Sps.numShortTermRefPicSets = 1;
+        nri::VideoH265SessionParametersDesc h265 = {};
+        h265.videoParameterSets = &h265Vps;
+        h265.videoParameterSetNum = 1;
+        h265.sequenceParameterSets = &h265Sps;
+        h265.sequenceParameterSetNum = 1;
+        nri::VideoSessionParametersDesc h265Desc = {};
+        h265Desc.h265Parameters = &h265;
+        REQUIRE_FALSE(harness.CreateParameters(*h265Session, h265Desc));
+
+        nri::VideoH265ShortTermRefPicSetDesc shortTerm = {};
+        h265Sps.shortTermRefPicSets = &shortTerm;
+        REQUIRE(harness.CreateParameters(*h265Session, h265Desc));
+    }
+}
+
+TEST_CASE("VID-VAL-003 video pictures validate texture shape, usage, and subresource", "[video][validation][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    REQUIRE(harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 2, 1));
+    REQUIRE_FALSE(harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 2, 2));
+    REQUIRE_FALSE(harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE));
+    REQUIRE_FALSE(harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_3D));
+}
+
+TEST_CASE("VID-VAL-004 AV1 aliases preserve DPB identity", "[video][validation][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::AV1));
+    REQUIRE(session);
+
+    FakeBuffer buffer = MakeBuffer(64);
+    nri::BufferVal bufferVal(harness.GetDeviceVal(), (nri::Buffer*)&buffer, true);
+    nri::VideoEncodeFeedback feedback = {};
+    nri::VideoAV1SequenceDesc sequence = {};
+    std::array<uint8_t, 8> savedOrderHints = {};
+    std::array<nri::VideoAV1ReferenceDesc, 2> references = {};
+    references[0].name = nri::VideoAV1ReferenceName::LAST;
+    references[0].refFrameIndex = 3;
+    references[0].frameType = nri::VideoFrameType::P;
+    references[0].orderHint = 4;
+    references[0].frameId = 10;
+    references[0].slot = 3;
+    references[0].savedOrderHints = savedOrderHints.data();
+    references[1] = references[0];
+    references[1].name = nri::VideoAV1ReferenceName::GOLDEN;
+    nri::VideoAV1EncodeDecodeInfoDesc desc = {};
+    desc.feedback = &feedback;
+    desc.sequence = &sequence;
+    desc.references = references.data();
+    desc.referenceNum = (uint32_t)references.size();
+    nri::VideoEncodePictureDesc pictureDesc = {};
+    pictureDesc.frameType = nri::VideoFrameType::P;
+    nri::VideoAV1EncodePictureDesc av1PictureDesc = {};
+    desc.pictureDesc = &pictureDesc;
+    desc.av1PictureDesc = &av1PictureDesc;
+    nri::VideoAV1EncodeDecodeInfo info = {};
+
+    REQUIRE(harness.GetVideo().GetVideoAV1EncodeDecodeInfo(*session, (nri::Buffer&)bufferVal, 0, desc, info) == nri::Result::SUCCESS);
+    REQUIRE(harness.GetBackend().GetAV1DecodeInfoCallNum() == 1);
+
+    references[1].frameId++;
+    REQUIRE(harness.GetVideo().GetVideoAV1EncodeDecodeInfo(*session, (nri::Buffer&)bufferVal, 0, desc, info) == nri::Result::INVALID_ARGUMENT);
+
+    references[1] = references[0];
+    references[1].name = nri::VideoAV1ReferenceName::GOLDEN;
+    references[1].refFrameIndex++;
+    references[1].frameId++;
+    REQUIRE(harness.GetVideo().GetVideoAV1EncodeDecodeInfo(*session, (nri::Buffer&)bufferVal, 0, desc, info) == nri::Result::INVALID_ARGUMENT);
+
+    references[1] = references[0];
+    REQUIRE(harness.GetVideo().GetVideoAV1EncodeDecodeInfo(*session, (nri::Buffer&)bufferVal, 0, desc, info) == nri::Result::INVALID_ARGUMENT);
+    REQUIRE(harness.GetBackend().GetAV1DecodeInfoCallNum() == 1);
+}
+
+TEST_CASE("VID-REG-006 decode DPB slots stay within the session", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc());
+    REQUIRE(session);
+    nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+    REQUIRE(parameters);
+    nri::VideoPicture* dstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE);
+    nri::VideoPicture* referencePicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE);
+    REQUIRE(dstPicture);
+    REQUIRE(referencePicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+    nri::VideoReference reference = {};
+    reference.picture = referencePicture;
+    reference.slot = 3;
+    nri::VideoH264DecodeReferenceDesc defaultCodecReference = {};
+    defaultCodecReference.slot = 3;
+    nri::VideoH264DecodePictureDesc defaultDecodePicture = MakeH264DecodePicture();
+    defaultDecodePicture.references = &defaultCodecReference;
+    defaultDecodePicture.referenceNum = 1;
+    nri::VideoDecodeDesc desc = {};
+    desc.h264PictureDesc = &defaultDecodePicture;
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.bitstream.size = 64;
+    desc.dstPicture = dstPicture;
+    desc.references = &reference;
+    desc.referenceNum = 1;
+    desc.dstSlot = 4;
+
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+
+    nri::VideoH264DecodePictureDesc setupPictureDesc = MakeH264DecodePicture();
+    setupPictureDesc.hasReferenceSlot = true;
+    setupPictureDesc.referenceSlot = 4;
+    setupPictureDesc.references = &defaultCodecReference;
+    setupPictureDesc.referenceNum = 1;
+    desc.h264PictureDesc = &setupPictureDesc;
+    desc.dstSlot = UINT32_MAX;
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 2);
+
+    desc.h264PictureDesc = &defaultDecodePicture;
+    desc.dstSlot = 4;
+    reference.slot = 5;
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 2);
+    reference.slot = 3;
+    desc.dstSlot = UINT32_MAX;
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 2);
+
+    nri::VideoH264DecodeReferenceDesc codecReference = {};
+    codecReference.slot = 5;
+    nri::VideoH264DecodePictureDesc picture = {};
+    picture.hasReferenceSlot = true;
+    picture.referenceSlot = 5;
+    picture.references = &codecReference;
+    picture.referenceNum = 1;
+    desc.dstSlot = 4;
+    desc.h264PictureDesc = &picture;
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 2);
+}
+
+TEST_CASE("VID-REG-036 distinct decode output requires matching extents and, if required, reference-only DPB pictures", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.decodeDpbAndOutputCoincide = false;
+    capabilities.decodeDpbAndOutputDistinct = true;
+    capabilities.decodeReferenceOnlyRequired = true;
+    harness.GetBackend().SetCapabilities(capabilities);
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc());
+    REQUIRE(session);
+    nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+    REQUIRE(parameters);
+
+    constexpr nri::TextureUsageBits outputUsage = nri::TextureUsageBits::VIDEO_DECODE | nri::TextureUsageBits::VIDEO_OUTPUT_ONLY;
+    constexpr nri::TextureUsageBits referenceOnlyUsage = nri::TextureUsageBits::VIDEO_DECODE | nri::TextureUsageBits::VIDEO_REFERENCE_ONLY;
+    nri::VideoPicture* dstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, outputUsage, nri::TextureType::TEXTURE_2D, 3, 0);
+    nri::VideoPicture* setupPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, referenceOnlyUsage, nri::TextureType::TEXTURE_2D, 3, 1);
+    nri::VideoPicture* referencePicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, referenceOnlyUsage, nri::TextureType::TEXTURE_2D, 3, 2);
+    nri::VideoPicture* plainSetupPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 3, 1);
+    nri::VideoPicture* plainReferencePicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 3, 2);
+    nri::VideoPicture* smallerSetupPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1280, 720, referenceOnlyUsage, nri::TextureType::TEXTURE_2D, 3, 1, nri::VideoCodec::H264, 1920, 1080);
+    nri::VideoPicture* plainDstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 3, 0);
+    nri::VideoPicture* largerTextureDstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, outputUsage, nri::TextureType::TEXTURE_2D, 3, 0, nri::VideoCodec::H264, 2048, 1152);
+    nri::VideoPicture* largerTextureSetupPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, referenceOnlyUsage, nri::TextureType::TEXTURE_2D, 3, 1, nri::VideoCodec::H264, 2048, 1152);
+    REQUIRE(dstPicture);
+    REQUIRE(setupPicture);
+    REQUIRE(referencePicture);
+    REQUIRE(plainSetupPicture);
+    REQUIRE(plainReferencePicture);
+    REQUIRE(smallerSetupPicture);
+    REQUIRE(plainDstPicture);
+    REQUIRE(largerTextureSetupPicture);
+    REQUIRE(largerTextureDstPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+    nri::VideoReference reference = {};
+    reference.picture = referencePicture;
+    reference.slot = 3;
+    nri::VideoH264DecodeReferenceDesc codecReference = {};
+    codecReference.slot = 3;
+    nri::VideoH264DecodePictureDesc picture = MakeH264DecodePicture();
+    picture.references = &codecReference;
+    picture.referenceNum = 1;
+    nri::VideoDecodeDesc desc = {};
+    desc.h264PictureDesc = &picture;
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.bitstream.size = 64;
+    desc.dstPicture = dstPicture;
+    desc.setupPicture = setupPicture;
+    desc.references = &reference;
+    desc.referenceNum = 1;
+    desc.dstSlot = 4;
+
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+
+    SECTION("setup picture without VIDEO_REFERENCE_ONLY") {
+        desc.setupPicture = plainSetupPicture;
+    }
+    SECTION("reference without VIDEO_REFERENCE_ONLY") {
+        reference.picture = plainReferencePicture;
+    }
+    SECTION("coincide mode") {
+        desc.dstPicture = plainDstPicture; // not output-only, only the mode is unsupported
+        desc.setupPicture = nullptr;
+    }
+    SECTION("setup picture with another picture extent in a session-sized texture") {
+        desc.setupPicture = smallerSetupPicture;
+    }
+    SECTION("setup picture with the same extent in a larger texture") {
+        desc.setupPicture = largerTextureSetupPicture;
+    }
+    SECTION("output and setup pictures in equally larger textures") {
+        desc.dstPicture = largerTextureDstPicture;
+        desc.setupPicture = largerTextureSetupPicture;
+    }
+
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+}
+
+TEST_CASE("VID-REG-007 encode DPB slots stay within the session", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE));
+    REQUIRE(session);
+    nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+    REQUIRE(parameters);
+    nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+    nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+    REQUIRE(srcPicture);
+    REQUIRE(reconstructedPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+    nri::VideoReference reference = {};
+    reference.picture = reconstructedPicture;
+    reference.slot = 3;
+    nri::VideoEncodePictureDesc encodePicture = {};
+    encodePicture.frameType = nri::VideoFrameType::P;
+    nri::VideoH264EncodeReferenceDesc codecReference = {};
+    codecReference.frameType = nri::VideoFrameType::P;
+    codecReference.listIndex = 0;
+    codecReference.slot = 3;
+    nri::VideoH264EncodePictureDesc picture = {};
+    picture.references = &codecReference;
+    picture.referenceNum = 1;
+    nri::VideoEncodeDesc desc = {};
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.srcPicture = srcPicture;
+    desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.dstBitstream.size = 64;
+    desc.pictureDesc = &encodePicture;
+    desc.reconstructedPicture = reconstructedPicture;
+    desc.references = &reference;
+    desc.referenceNum = 1;
+    desc.reconstructedSlot = 4;
+    desc.h264PictureDesc = &picture;
+
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+    reference.slot = 5;
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+    reference.slot = 3;
+    desc.reconstructedSlot = UINT32_MAX;
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+    desc.reconstructedSlot = 4;
+    codecReference.slot = 5;
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+}
+
+TEST_CASE("VID-REG-031 encode requires the reconstructed picture in sessions with DPB slots", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+    nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+    REQUIRE(srcPicture);
+    REQUIRE(reconstructedPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+
+    SECTION("H.264 non-reference B picture") {
+        nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE));
+        REQUIRE(session);
+        nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+        REQUIRE(parameters);
+
+        nri::VideoReference references[2] = {};
+        references[0].picture = reconstructedPicture;
+        references[0].slot = 2;
+        references[1].picture = reconstructedPicture;
+        references[1].slot = 3;
+        nri::VideoEncodePictureDesc encodePicture = {};
+        encodePicture.frameType = nri::VideoFrameType::B;
+        nri::VideoH264EncodeReferenceDesc codecReferences[2] = {};
+        codecReferences[0].frameType = nri::VideoFrameType::P;
+        codecReferences[0].listIndex = 0;
+        codecReferences[0].slot = 2;
+        codecReferences[1].frameType = nri::VideoFrameType::P;
+        codecReferences[1].listIndex = 1;
+        codecReferences[1].slot = 3;
+        nri::VideoH264EncodePictureDesc picture = {};
+        picture.references = codecReferences;
+        picture.referenceNum = 2;
+        nri::VideoEncodeDesc desc = {};
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.srcPicture = srcPicture;
+        desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.dstBitstream.size = 64;
+        desc.pictureDesc = &encodePicture;
+        desc.reconstructedPicture = reconstructedPicture;
+        desc.references = references;
+        desc.referenceNum = 2;
+        desc.reconstructedSlot = 4;
+        desc.h264PictureDesc = &picture;
+
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+        desc.reconstructedPicture = nullptr;
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+    }
+
+    SECTION("AV1 refreshFrameFlags = 0") {
+        nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::AV1));
+        REQUIRE(session);
+        nri::VideoAV1SessionParametersDesc av1 = {};
+        av1.sequence.flags = nri::VideoAV1SequenceBits::ENABLE_ORDER_HINT;
+        av1.sequence.bitDepth = 8;
+        av1.sequence.subsamplingX = 1;
+        av1.sequence.subsamplingY = 1;
+        av1.sequence.maxFrameWidthMinus1 = 1919;
+        av1.sequence.maxFrameHeightMinus1 = 1079;
+        av1.sequence.frameWidthBitsMinus1 = 10;
+        av1.sequence.frameHeightBitsMinus1 = 10;
+        av1.sequence.orderHintBitsMinus1 = 7;
+        av1.sequence.seqForceIntegerMv = 2;
+        av1.sequence.seqForceScreenContentTools = 2;
+        nri::VideoSessionParametersDesc parametersDesc = {};
+        parametersDesc.av1Parameters = &av1;
+        nri::VideoSessionParameters* parameters = harness.CreateParameters(*session, parametersDesc);
+        REQUIRE(parameters);
+
+        nri::VideoPicture* av1SrcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+        nri::VideoPicture* av1ReconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+        REQUIRE(av1SrcPicture);
+        REQUIRE(av1ReconstructedPicture);
+        nri::VideoEncodePictureDesc encodePicture = {};
+        encodePicture.frameType = nri::VideoFrameType::IDR;
+        nri::VideoAV1EncodePictureDesc av1PictureDesc = {};
+        av1PictureDesc.refreshFrameFlags = 0;
+        nri::VideoEncodeDesc desc = {};
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.srcPicture = av1SrcPicture;
+        desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.dstBitstream.size = 64;
+        desc.pictureDesc = &encodePicture;
+        desc.reconstructedPicture = av1ReconstructedPicture;
+        desc.reconstructedSlot = 4;
+        desc.av1PictureDesc = &av1PictureDesc;
+
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+        desc.reconstructedPicture = nullptr;
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+        // the default AV1 key frame
+        desc.av1PictureDesc = nullptr;
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+    }
+
+    SECTION("a session without DPB slots needs no reconstructed picture") {
+        nri::VideoSessionDesc sessionDesc = MakeSessionDesc(nri::VideoSessionType::ENCODE);
+        sessionDesc.maxReferenceNum = 0;
+        nri::VideoSession* session = harness.CreateSession(sessionDesc);
+        REQUIRE(session);
+        nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+        REQUIRE(parameters);
+
+        nri::VideoEncodePictureDesc encodePicture = {};
+        encodePicture.frameType = nri::VideoFrameType::IDR;
+        nri::VideoEncodeDesc desc = {};
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.srcPicture = srcPicture;
+        desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.dstBitstream.size = 64;
+        desc.pictureDesc = &encodePicture;
+
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+    }
+}
+
+TEST_CASE("VID-REG-011 session formats stay within backend conversion tables", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSessionDesc desc = MakeSessionDesc();
+    desc.format = nri::Format::MAX_NUM;
+    nri::VideoCapabilities capabilities = {};
+    REQUIRE(harness.GetVideo().GetVideoCapabilities(harness.GetDevice(), desc, capabilities) == nri::Result::INVALID_ARGUMENT);
+}
+
+TEST_CASE("VID-VAL-005 session recording-state reset is forwarded to the backend", "[video][validation][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc());
+    REQUIRE(session);
+    REQUIRE(harness.GetBackend().GetResetCallNum() == 0);
+
+    harness.GetVideo().ResetVideoSession(*session);
+    REQUIRE(harness.GetBackend().GetResetCallNum() == 1);
+}
+
+TEST_CASE("VID-REG-012 video metadata ranges use checked subtraction", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.maxReferenceNum = 4;
+    capabilities.metadataOffsetAlignment = 4;
+    capabilities.resolvedMetadataOffsetAlignment = 4;
+    capabilities.metadataSize = 16;
+    capabilities.resolvedMetadataSize = 16;
+    harness.GetBackend().SetCapabilities(capabilities);
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE));
+    REQUIRE(session);
+    nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+    REQUIRE(parameters);
+    nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+    REQUIRE(srcPicture);
+    nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+    REQUIRE(reconstructedPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    FakeBuffer metadata = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    FakeBuffer resolvedMetadata = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    nri::BufferVal metadataVal(harness.GetDeviceVal(), (nri::Buffer*)&metadata, true);
+    nri::BufferVal resolvedMetadataVal(harness.GetDeviceVal(), (nri::Buffer*)&resolvedMetadata, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+    nri::VideoEncodeDesc desc = {};
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.srcPicture = srcPicture;
+    desc.reconstructedPicture = reconstructedPicture;
+    desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.dstBitstream.size = 64;
+    desc.metadata = (nri::Buffer*)&metadataVal;
+    desc.metadataOffset = 48;
+    desc.resolvedMetadata = (nri::Buffer*)&resolvedMetadataVal;
+    desc.resolvedMetadataOffset = 48;
+
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+    desc.metadataOffset = 49;
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+    desc.metadataOffset = 48;
+    desc.resolvedMetadataOffset = 52;
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+    FakeBuffer hugeMetadata = MakeBuffer(UINT64_MAX, nri::BufferUsageBits::VIDEO_ENCODE);
+    nri::BufferVal hugeMetadataVal(harness.GetDeviceVal(), (nri::Buffer*)&hugeMetadata, true);
+    desc.metadata = (nri::Buffer*)&hugeMetadataVal;
+    desc.metadataOffset = UINT64_MAX - 3;
+    desc.resolvedMetadata = nullptr;
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+}
+
+TEST_CASE("VID-REG-013 video pictures match their session format and coded extent", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* decodeSession = harness.CreateSession(MakeSessionDesc());
+    REQUIRE(decodeSession);
+    nri::VideoSessionParameters* decodeParameters = CreateH264Parameters(harness, *decodeSession);
+    REQUIRE(decodeParameters);
+    nri::VideoPicture* validDecodePicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1280, 720, nri::TextureUsageBits::VIDEO_DECODE);
+    nri::VideoPicture* wrongFormatPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::P010_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE);
+    REQUIRE(validDecodePicture);
+    REQUIRE(wrongFormatPicture);
+
+    FakeBuffer decodeBitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+    nri::BufferVal decodeBitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&decodeBitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+    nri::VideoH264DecodePictureDesc defaultDecodePicture = MakeH264DecodePicture();
+    nri::VideoDecodeDesc decodeDesc = {};
+    decodeDesc.h264PictureDesc = &defaultDecodePicture;
+    decodeDesc.session = decodeSession;
+    decodeDesc.parameters = decodeParameters;
+    decodeDesc.bitstream.buffer = (nri::Buffer*)&decodeBitstreamVal;
+    decodeDesc.bitstream.size = 64;
+    decodeDesc.dstPicture = validDecodePicture;
+    decodeDesc.dstSlot = 0;
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, decodeDesc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+    decodeDesc.dstPicture = wrongFormatPicture;
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, decodeDesc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+
+    nri::VideoSession* encodeSession = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE));
+    REQUIRE(encodeSession);
+    nri::VideoSessionParameters* encodeParameters = CreateH264Parameters(harness, *encodeSession);
+    REQUIRE(encodeParameters);
+    nri::VideoPicture* smallEncodePicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1280, 720, nri::TextureUsageBits::VIDEO_ENCODE);
+    REQUIRE(smallEncodePicture);
+
+    FakeBuffer encodeBitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    nri::BufferVal encodeBitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&encodeBitstream, true);
+    nri::CommandBufferVal encodeCommandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+    nri::VideoEncodeDesc encodeDesc = {};
+    encodeDesc.session = encodeSession;
+    encodeDesc.parameters = encodeParameters;
+    encodeDesc.srcPicture = smallEncodePicture;
+    encodeDesc.dstBitstream.buffer = (nri::Buffer*)&encodeBitstreamVal;
+    encodeDesc.dstBitstream.size = 64;
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)encodeCommandVal, encodeDesc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 0);
+
+    nri::VideoSession* h265Session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::H265));
+    REQUIRE(h265Session);
+    nri::VideoSessionParametersDesc h265ParametersDesc = {};
+    nri::VideoSessionParameters* h265Parameters = harness.CreateParameters(*h265Session, h265ParametersDesc);
+    REQUIRE(h265Parameters);
+    nri::VideoPicture* h264Picture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE);
+    REQUIRE(h264Picture);
+
+    nri::VideoDecodeDesc wrongCodecDesc = {};
+    wrongCodecDesc.session = h265Session;
+    wrongCodecDesc.parameters = h265Parameters;
+    wrongCodecDesc.bitstream.buffer = (nri::Buffer*)&decodeBitstreamVal;
+    wrongCodecDesc.bitstream.size = 64;
+    wrongCodecDesc.dstPicture = h264Picture;
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, wrongCodecDesc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+}
+
+TEST_CASE("VID-REG-026 video bitstream ranges satisfy session alignment", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.maxReferenceNum = 4;
+    capabilities.bitstreamOffsetAlignment = 4;
+    capabilities.bitstreamSizeAlignment = 8;
+    harness.GetBackend().SetCapabilities(capabilities);
+
+    SECTION("decode") {
+        nri::VideoSession* session = harness.CreateSession(MakeSessionDesc());
+        REQUIRE(session);
+        nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+        REQUIRE(parameters);
+        nri::VideoPicture* dstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE);
+        REQUIRE(dstPicture);
+
+        FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+        nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+        FakeCommandBuffer command = {&harness.GetBackend()};
+        nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+        nri::VideoH264DecodePictureDesc defaultDecodePicture = MakeH264DecodePicture();
+        nri::VideoDecodeDesc desc = {};
+        desc.h264PictureDesc = &defaultDecodePicture;
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.bitstream.size = 64;
+        desc.dstPicture = dstPicture;
+
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+
+        desc.bitstream.offset = 2;
+        desc.bitstream.size = 56;
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+
+        desc.bitstream.offset = 0;
+        desc.bitstream.size = 60;
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+    }
+
+    SECTION("encode") {
+        nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE));
+        REQUIRE(session);
+        nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+        REQUIRE(parameters);
+        nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+        REQUIRE(srcPicture);
+        nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+        REQUIRE(reconstructedPicture);
+
+        FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+        nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+        FakeCommandBuffer command = {&harness.GetBackend()};
+        nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+        nri::VideoEncodeDesc desc = {};
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.srcPicture = srcPicture;
+        desc.reconstructedPicture = reconstructedPicture;
+        desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.dstBitstream.size = 64;
+
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+        desc.dstBitstream.offset = 2;
+        desc.dstBitstream.size = 56;
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+        desc.dstBitstream.offset = 0;
+        desc.dstBitstream.size = 60;
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+    }
+}
+
+TEST_CASE("VID-REG-035 encode and decode bitstream ranges stay within bitstreamSizeMax", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.maxReferenceNum = 4;
+    capabilities.bitstreamSizeMax = 32;
+    harness.GetBackend().SetCapabilities(capabilities);
+
+    SECTION("decode") {
+        nri::VideoSession* session = harness.CreateSession(MakeSessionDesc());
+        REQUIRE(session);
+        nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+        REQUIRE(parameters);
+        nri::VideoPicture* dstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE);
+        REQUIRE(dstPicture);
+
+        FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+        nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+        FakeCommandBuffer command = {&harness.GetBackend()};
+        nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+        nri::VideoH264DecodePictureDesc defaultDecodePicture = MakeH264DecodePicture();
+        nri::VideoDecodeDesc desc = {};
+        desc.h264PictureDesc = &defaultDecodePicture;
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.bitstream.size = 32;
+        desc.dstPicture = dstPicture;
+
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+
+        desc.bitstream.size = 64;
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+    }
+
+    SECTION("encode") {
+        nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE));
+        REQUIRE(session);
+        nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+        REQUIRE(parameters);
+        nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+        REQUIRE(srcPicture);
+        nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+        REQUIRE(reconstructedPicture);
+
+        FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+        nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+        FakeCommandBuffer command = {&harness.GetBackend()};
+        nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+        nri::VideoEncodeDesc desc = {};
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.srcPicture = srcPicture;
+        desc.reconstructedPicture = reconstructedPicture;
+        desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.dstBitstream.offset = 32;
+        desc.dstBitstream.size = 32;
+
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+        desc.dstBitstream.offset = 0;
+        desc.dstBitstream.size = 64;
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+    }
+}
+
+TEST_CASE("VID-REG-021 H.264 parameters may be omitted only for native decode", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    const bool nativeDecode = GENERATE(false, true);
+    const auto type = GENERATE(nri::VideoSessionType::DECODE, nri::VideoSessionType::ENCODE);
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.decodeNativeArgumentsSupported = nativeDecode;
+    harness.GetBackend().SetCapabilities(capabilities);
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(type));
+    REQUIRE(session);
+
+    nri::VideoSessionParametersDesc parametersDesc = {};
+    REQUIRE(bool(harness.CreateParameters(*session, parametersDesc)) == (nativeDecode && type == nri::VideoSessionType::DECODE));
+}
+
+TEST_CASE("VID-REG-032 H.265 parameters and Annex B parameter sets require a Table A.8 level", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    const auto type = GENERATE(nri::VideoSessionType::DECODE, nri::VideoSessionType::ENCODE);
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(type, nri::VideoCodec::H265));
+    REQUIRE(session);
+
+    nri::VideoH265VideoParameterSetDesc vps = {};
+    vps.profileTierLevel.generalProfileIdc = 1;
+    vps.profileTierLevel.generalLevelIdc = 120;
+    nri::VideoH265SequenceParameterSetDesc sps = {};
+    sps.profileTierLevel = vps.profileTierLevel;
+    sps.chromaFormatIdc = 1;
+    nri::VideoH265PictureParameterSetDesc pps = {};
+    nri::VideoH265SessionParametersDesc h265 = {};
+    h265.videoParameterSets = &vps;
+    h265.videoParameterSetNum = 1;
+    h265.sequenceParameterSets = &sps;
+    h265.sequenceParameterSetNum = 1;
+    h265.pictureParameterSets = &pps;
+    h265.pictureParameterSetNum = 1;
+    nri::VideoSessionParametersDesc desc = {};
+    desc.h265Parameters = &h265;
+    REQUIRE(harness.CreateParameters(*session, desc));
+
+    nri::VideoAnnexBParameterSetsDesc annexB = {};
+    annexB.codec = nri::VideoCodec::H265;
+    annexB.h265Vps = &vps;
+    annexB.h265Sps = &sps;
+    annexB.h265Pps = &pps;
+    REQUIRE(harness.GetVideo().WriteVideoAnnexBParameterSets(annexB) == nri::Result::SUCCESS);
+
+    SECTION("VPS level 0") {
+        vps.profileTierLevel.generalLevelIdc = 0;
+    }
+    SECTION("SPS level 0") {
+        sps.profileTierLevel.generalLevelIdc = 0;
+    }
+    SECTION("SPS level not in Table A.8") {
+        sps.profileTierLevel.generalLevelIdc = 121;
+    }
+
+    REQUIRE_FALSE(harness.CreateParameters(*session, desc));
+    REQUIRE(harness.GetVideo().WriteVideoAnnexBParameterSets(annexB) == nri::Result::INVALID_ARGUMENT);
+}
+
+TEST_CASE("VID-REG-034 H.264 parameters and Annex B parameter sets require a Table A-1 level", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    const auto type = GENERATE(nri::VideoSessionType::DECODE, nri::VideoSessionType::ENCODE);
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(type, nri::VideoCodec::H264));
+    REQUIRE(session);
+
+    nri::VideoH264SequenceParameterSetDesc sps = MakeH264Sequence();
+    nri::VideoH264PictureParameterSetDesc pps = {};
+    nri::VideoH264SessionParametersDesc h264 = {};
+    h264.sequenceParameterSets = &sps;
+    h264.sequenceParameterSetNum = 1;
+    h264.pictureParameterSets = &pps;
+    h264.pictureParameterSetNum = 1;
+    nri::VideoSessionParametersDesc desc = {};
+    desc.h264Parameters = &h264;
+    REQUIRE(harness.CreateParameters(*session, desc));
+
+    nri::VideoAnnexBParameterSetsDesc annexB = {};
+    annexB.codec = nri::VideoCodec::H264;
+    annexB.h264Sps = &sps;
+    annexB.h264Pps = &pps;
+    REQUIRE(harness.GetVideo().WriteVideoAnnexBParameterSets(annexB) == nri::Result::SUCCESS);
+
+    SECTION("level 0") {
+        sps.levelIdc = 0;
+    }
+    SECTION("level 1b of the High profiles") {
+        sps.levelIdc = 9;
+    }
+    SECTION("level not in Table A-1") {
+        sps.levelIdc = 14;
+    }
+
+    REQUIRE_FALSE(harness.CreateParameters(*session, desc));
+    REQUIRE(harness.GetVideo().WriteVideoAnnexBParameterSets(annexB) == nri::Result::INVALID_ARGUMENT);
+}
+
+namespace {
+
+// H.265 encode session parameters with a PPS that optionally signals list modifications
+struct H265EncodeFixture {
+    nri::VideoH265VideoParameterSetDesc vps = {};
+    nri::VideoH265SequenceParameterSetDesc sps = {};
+    nri::VideoH265PictureParameterSetDesc pps = {};
+    nri::VideoH265SessionParametersDesc h265 = {};
+    nri::VideoSessionParametersDesc parametersDesc = {};
+
+    explicit H265EncodeFixture(bool isListsModificationPresent) {
+        vps.profileTierLevel.generalProfileIdc = 1;
+        vps.profileTierLevel.generalLevelIdc = 120;
+        sps.profileTierLevel = vps.profileTierLevel;
+        sps.chromaFormatIdc = 1;
+        pps.flags = isListsModificationPresent ? nri::VideoH265PictureParameterSetBits::LISTS_MODIFICATION_PRESENT : nri::VideoH265PictureParameterSetBits::NONE;
+        h265.videoParameterSets = &vps;
+        h265.videoParameterSetNum = 1;
+        h265.sequenceParameterSets = &sps;
+        h265.sequenceParameterSetNum = 1;
+        h265.pictureParameterSets = &pps;
+        h265.pictureParameterSetNum = 1;
+        parametersDesc.h265Parameters = &h265;
+    }
+};
+
+} // namespace
+
+TEST_CASE("VID-REG-037 H.265 encode lists in non-initial order require list modifications in the PPS", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    const bool isListsModificationPresent = GENERATE(false, true);
+    CAPTURE(isListsModificationPresent);
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::H265));
+    REQUIRE(session);
+    H265EncodeFixture fixture(isListsModificationPresent);
+    nri::VideoSessionParameters* parameters = harness.CreateParameters(*session, fixture.parametersDesc);
+    REQUIRE(parameters);
+
+    nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::H265);
+    nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::H265);
+    REQUIRE(srcPicture);
+    REQUIRE(reconstructedPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+
+    // P picture at POC 2 referencing POC 0 and POC 1: the initial List0 is POC 1, POC 0
+    nri::VideoH265ReferenceDesc codecReferences[2] = {};
+    codecReferences[0].slot = 2;
+    codecReferences[0].pictureOrderCount = 0;
+    codecReferences[0].frameType = nri::VideoFrameType::P;
+    codecReferences[1].slot = 3;
+    codecReferences[1].pictureOrderCount = 1;
+    codecReferences[1].frameType = nri::VideoFrameType::P;
+    nri::VideoReference references[2] = {};
+    references[0].picture = reconstructedPicture;
+    references[0].slot = 2;
+    references[1].picture = reconstructedPicture;
+    references[1].slot = 3;
+    nri::VideoEncodePictureDesc encodePicture = {};
+    encodePicture.frameType = nri::VideoFrameType::P;
+    encodePicture.pictureOrderCount = 2;
+    nri::VideoEncodeDesc desc = {};
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.srcPicture = srcPicture;
+    desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.dstBitstream.size = 64;
+    desc.pictureDesc = &encodePicture;
+    desc.reconstructedPicture = reconstructedPicture;
+    desc.references = references;
+    desc.referenceNum = 2;
+    desc.reconstructedSlot = 4;
+    desc.h265ReferenceDescs = codecReferences;
+
+    // List0 = POC 0, POC 1 (not the initial order)
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == (isListsModificationPresent ? 1u : 0u));
+
+    // List0 = POC 1, POC 0 (the initial order)
+    std::swap(references[0], references[1]);
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == (isListsModificationPresent ? 2u : 1u));
+}
+
+TEST_CASE("VID-REG-038 H.265 encode rejects long-term references", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::H265));
+    REQUIRE(session);
+    H265EncodeFixture fixture(true);
+    nri::VideoSessionParameters* parameters = harness.CreateParameters(*session, fixture.parametersDesc);
+    REQUIRE(parameters);
+
+    nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::H265);
+    nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::H265);
+    REQUIRE(srcPicture);
+    REQUIRE(reconstructedPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+
+    nri::VideoH265ReferenceDesc codecReference = {};
+    codecReference.slot = 2;
+    codecReference.pictureOrderCount = 0;
+    codecReference.frameType = nri::VideoFrameType::P;
+    nri::VideoReference reference = {};
+    reference.picture = reconstructedPicture;
+    reference.slot = 2;
+    nri::VideoEncodePictureDesc encodePicture = {};
+    encodePicture.frameType = nri::VideoFrameType::P;
+    encodePicture.pictureOrderCount = 1;
+    nri::VideoEncodeDesc desc = {};
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.srcPicture = srcPicture;
+    desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.dstBitstream.size = 64;
+    desc.pictureDesc = &encodePicture;
+    desc.reconstructedPicture = reconstructedPicture;
+    desc.references = &reference;
+    desc.referenceNum = 1;
+    desc.reconstructedSlot = 4;
+    desc.h265ReferenceDescs = &codecReference;
+
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+    codecReference.longTerm = 1;
+    harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+}
+
+TEST_CASE("VID-REG-022 resolved metadata requires VIDEO_ENCODE usage", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.maxReferenceNum = 4;
+    capabilities.resolvedMetadataOffsetAlignment = 4;
+    capabilities.resolvedMetadataSize = 16;
+    harness.GetBackend().SetCapabilities(capabilities);
+
+    nri::VideoSessionDesc sessionDesc = MakeSessionDesc(nri::VideoSessionType::ENCODE);
+    nri::VideoSession* session = harness.CreateSession(sessionDesc);
+    REQUIRE(session);
+
+    const auto usage = GENERATE(nri::BufferUsageBits::NONE, nri::BufferUsageBits::VIDEO_ENCODE);
+    const uint32_t expectedCallNum = usage == nri::BufferUsageBits::VIDEO_ENCODE ? 1 : 0;
+    FakeBuffer resolvedMetadata = MakeBuffer(64, usage);
+    nri::BufferVal resolvedMetadataVal(harness.GetDeviceVal(), (nri::Buffer*)&resolvedMetadata, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_ENCODE, true);
+
+    SECTION("encode") {
+        nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+        REQUIRE(parameters);
+        nri::VideoPicture* srcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+        REQUIRE(srcPicture);
+        nri::VideoPicture* reconstructedPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_ENCODE);
+        REQUIRE(reconstructedPicture);
+
+        FakeBuffer bitstream = {};
+        bitstream.desc.size = 64;
+        bitstream.desc.usage = nri::BufferUsageBits::VIDEO_ENCODE;
+        nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+        nri::VideoEncodeDesc desc = {};
+        desc.session = session;
+        desc.parameters = parameters;
+        desc.srcPicture = srcPicture;
+        desc.reconstructedPicture = reconstructedPicture;
+        desc.dstBitstream.buffer = (nri::Buffer*)&bitstreamVal;
+        desc.dstBitstream.size = 64;
+        desc.resolvedMetadata = (nri::Buffer*)&resolvedMetadataVal;
+
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)commandVal, desc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == expectedCallNum);
+    }
+
+    SECTION("resolve") {
+        harness.GetVideo().CmdResolveVideoEncodeFeedback((nri::CommandBuffer&)commandVal, *session, (nri::Buffer&)resolvedMetadataVal, 0);
+        REQUIRE(harness.GetBackend().GetResolveCallNum() == expectedCallNum);
+    }
+}
+
+TEST_CASE("VID-REG-023 codec references stay within the session capacity", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSessionDesc sessionDesc = MakeSessionDesc();
+    sessionDesc.maxReferenceNum = 4;
+    nri::VideoSession* session = harness.CreateSession(sessionDesc);
+    REQUIRE(session);
+    nri::VideoSessionParameters* parameters = CreateH264Parameters(harness, *session);
+    REQUIRE(parameters);
+    nri::VideoPicture* dstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE);
+    REQUIRE(dstPicture);
+
+    FakeBuffer bitstream = {};
+    bitstream.desc.size = 64;
+    bitstream.desc.usage = nri::BufferUsageBits::VIDEO_DECODE;
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+
+    nri::VideoPicture* referencePicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE);
+    REQUIRE(referencePicture);
+    std::array<nri::VideoReference, 5> references = {};
+    std::array<nri::VideoH264DecodeReferenceDesc, 5> codecReferences = {};
+
+    for (uint32_t i = 0; i < codecReferences.size(); i++) {
+        codecReferences[i].slot = i;
+        references[i].slot = i;
+        references[i].picture = referencePicture;
+    }
+
+    nri::VideoH264DecodePictureDesc picture = MakeH264DecodePicture();
+    picture.references = codecReferences.data();
+    picture.referenceNum = 4;
+    nri::VideoDecodeDesc desc = {};
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.bitstream.size = 64;
+    desc.dstPicture = dstPicture;
+    desc.h264PictureDesc = &picture;
+    desc.dstSlot = 4;
+    desc.references = references.data();
+    desc.referenceNum = 4;
+
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+
+    desc.referenceNum = 5;
+    picture.referenceNum = 5;
+    harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+    REQUIRE(harness.GetBackend().GetDecodeCallNum() == 1);
+}
+
+TEST_CASE("VID-REG-039 AV1 decode accepts reference frame map entries the frame doesn't use", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    nri::VideoSession* session = harness.CreateSession(MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::AV1));
+    REQUIRE(session);
+    nri::VideoAV1SessionParametersDesc av1Parameters = {};
+    av1Parameters.sequence.seqProfile = 0;
+    av1Parameters.sequence.bitDepth = 8;
+    av1Parameters.sequence.subsamplingX = 1;
+    av1Parameters.sequence.subsamplingY = 1;
+    av1Parameters.sequence.maxFrameWidthMinus1 = 1919;
+    av1Parameters.sequence.maxFrameHeightMinus1 = 1079;
+    nri::VideoSessionParametersDesc parametersDesc = {};
+    parametersDesc.session = session;
+    parametersDesc.av1Parameters = &av1Parameters;
+    nri::VideoSessionParameters* parameters = harness.CreateParameters(*session, parametersDesc);
+    REQUIRE(parameters);
+
+    nri::VideoPicture* dstPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_OUTPUT, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+    nri::VideoPicture* usedPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+    nri::VideoPicture* unusedPicture = harness.CreatePicture(nri::VideoPictureUsage::DECODE_REFERENCE, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+    REQUIRE(dstPicture);
+    REQUIRE(usedPicture);
+    REQUIRE(unusedPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+
+    // All 7 names use map entry 0 (slot 1), map entry 1 (slot 2) is not used by the frame
+    std::array<nri::VideoAV1ReferenceDesc, 16> references = {};
+    for (uint32_t i = 0; i < 7; i++) {
+        references[i].name = (nri::VideoAV1ReferenceName)((uint8_t)nri::VideoAV1ReferenceName::LAST + i);
+        references[i].refFrameIndex = 0;
+        references[i].frameType = nri::VideoFrameType::IDR;
+        references[i].slot = 1;
+    }
+    references[7].name = nri::VideoAV1ReferenceName::NONE;
+    references[7].refFrameIndex = 1;
+    references[7].frameType = nri::VideoFrameType::P;
+    references[7].orderHint = 2;
+    references[7].slot = 2;
+
+    nri::VideoAV1DecodeTileDesc tile = {};
+    tile.size = 32;
+    nri::VideoAV1DecodePictureDesc picture = {};
+    picture.frameType = nri::VideoFrameType::P;
+    picture.flags = nri::VideoAV1PictureBits::SHOW_FRAME;
+    picture.refreshFrameFlags = 0x04;
+    picture.tiles = &tile;
+    picture.tileNum = 1;
+    picture.references = references.data();
+    picture.referenceNum = 8;
+
+    std::array<nri::VideoReference, 2> dpbReferences = {};
+    dpbReferences[0].picture = usedPicture;
+    dpbReferences[0].slot = 1;
+    dpbReferences[1].picture = unusedPicture;
+    dpbReferences[1].slot = 2;
+
+    nri::VideoDecodeDesc desc = {};
+    desc.av1PictureDesc = &picture;
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.bitstream.size = 64;
+    desc.dstPicture = dstPicture;
+    desc.references = dpbReferences.data();
+    desc.referenceNum = 2;
+    desc.dstSlot = 3;
+
+    uint32_t decodeCallNum = 0;
+    auto decode = [&]() {
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        const bool isForwarded = harness.GetBackend().GetDecodeCallNum() != decodeCallNum;
+        decodeCallNum = harness.GetBackend().GetDecodeCallNum();
+        return isForwarded;
+    };
+
+    SECTION("a DPB reference used only by a NONE entry") {
+        REQUIRE(decode());
+    }
+    SECTION("NONE entries need their DPB reference (D3D12 maps them to reference pictures)") {
+        desc.referenceNum = 1;
+        REQUIRE_FALSE(decode());
+
+        picture.referenceNum = 7;
+        REQUIRE(decode());
+    }
+    SECTION("DPB references need an entry") {
+        picture.referenceNum = 7;
+        REQUIRE_FALSE(decode());
+    }
+    SECTION("up to 7 named + 8 map entries") {
+        for (uint32_t i = 8; i < 15; i++) {
+            references[i] = references[7];
+            references[i].refFrameIndex = 1; // repeated map entries alias the same slot
+        }
+        picture.referenceNum = 15;
+        REQUIRE(decode());
+
+        references[15] = references[7];
+        picture.referenceNum = 16;
+        REQUIRE_FALSE(decode());
+    }
+}
+
+TEST_CASE("VID-REG-040 AV1 film grain decode requires a film grain session and a distinct setup picture", "[video][validation][regression][short]") {
+    ValidationHarness harness;
+    REQUIRE(harness.IsValid());
+
+    // Distinct mode isn't advertised (VK on NVIDIA): applying film grain still uses a distinct setup picture
+    nri::VideoCapabilities capabilities = MakeCapabilities();
+    capabilities.decodeDpbAndOutputDistinct = false;
+    harness.GetBackend().SetCapabilities(capabilities);
+
+    nri::VideoSessionDesc sessionDesc = MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::AV1);
+    sessionDesc.av1FilmGrain = true;
+    nri::VideoSession* session = harness.CreateSession(sessionDesc);
+    REQUIRE(session);
+
+    nri::VideoSessionDesc plainSessionDesc = MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::AV1);
+    nri::VideoSession* plainSession = harness.CreateSession(plainSessionDesc);
+    REQUIRE(plainSession);
+
+    SECTION("film grain sessions are AV1 decode sessions") {
+        nri::VideoSessionDesc invalidDesc = MakeSessionDesc(nri::VideoSessionType::DECODE, nri::VideoCodec::H264);
+        invalidDesc.av1FilmGrain = true;
+        REQUIRE_FALSE(harness.CreateSession(invalidDesc));
+
+        invalidDesc = MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::AV1);
+        invalidDesc.av1FilmGrain = true;
+        REQUIRE_FALSE(harness.CreateSession(invalidDesc));
+    }
+
+    // "film_grain_params_present" sequences are accepted for decode
+    nri::VideoAV1SessionParametersDesc av1Parameters = {};
+    av1Parameters.sequence.bitDepth = 8;
+    av1Parameters.sequence.subsamplingX = 1;
+    av1Parameters.sequence.subsamplingY = 1;
+    av1Parameters.sequence.maxFrameWidthMinus1 = 1919;
+    av1Parameters.sequence.maxFrameHeightMinus1 = 1079;
+    av1Parameters.sequence.flags = nri::VideoAV1SequenceBits::FILM_GRAIN_PARAMS_PRESENT;
+    nri::VideoSessionParametersDesc parametersDesc = {};
+    parametersDesc.session = session;
+    parametersDesc.av1Parameters = &av1Parameters;
+    nri::VideoSessionParameters* parameters = harness.CreateParameters(*session, parametersDesc);
+    REQUIRE(parameters);
+    parametersDesc.session = plainSession;
+    nri::VideoSessionParameters* plainParameters = harness.CreateParameters(*plainSession, parametersDesc);
+    REQUIRE(plainParameters);
+
+    // Layers of one texture array: the harness textures are distinct subresources only by layer
+    auto createPicture = [&](nri::VideoPictureUsage usage, uint16_t layer, bool av1FilmGrain) {
+        return harness.CreatePicture(usage, nri::Format::NV12_UNORM, 1920, 1080, nri::TextureUsageBits::VIDEO_DECODE, nri::TextureType::TEXTURE_2D, 2, layer, nri::VideoCodec::AV1, 0, 0, av1FilmGrain);
+    };
+    nri::VideoPicture* dstPicture = createPicture(nri::VideoPictureUsage::DECODE_OUTPUT, 0, true);
+    nri::VideoPicture* setupPicture = createPicture(nri::VideoPictureUsage::DECODE_REFERENCE, 1, true);
+    nri::VideoPicture* plainDstPicture = createPicture(nri::VideoPictureUsage::DECODE_OUTPUT, 0, false);
+    nri::VideoPicture* plainSetupPicture = createPicture(nri::VideoPictureUsage::DECODE_REFERENCE, 1, false);
+    REQUIRE(dstPicture);
+    REQUIRE(setupPicture);
+    REQUIRE(plainDstPicture);
+    REQUIRE(plainSetupPicture);
+
+    FakeBuffer bitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_DECODE);
+    nri::BufferVal bitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&bitstream, true);
+    FakeCommandBuffer command = {&harness.GetBackend()};
+    nri::CommandBufferVal commandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&command, nri::QueueType::VIDEO_DECODE, true);
+
+    nri::VideoAV1FilmGrainDesc filmGrain = {};
+    filmGrain.numYPoints = 14;
+    filmGrain.numCbPoints = 10;
+    filmGrain.numCrPoints = 10;
+    filmGrain.grainScalingMinus8 = 3;
+    filmGrain.arCoeffLag = 3;
+    filmGrain.arCoeffShiftMinus6 = 3;
+    filmGrain.grainScaleShift = 3;
+    filmGrain.filmGrainParamsRefIdx = 7;
+
+    nri::VideoAV1DecodeTileDesc tile = {};
+    tile.size = 32;
+    nri::VideoAV1DecodePictureDesc picture = {};
+    picture.frameType = nri::VideoFrameType::IDR;
+    picture.flags = nri::VideoAV1PictureBits::SHOW_FRAME | nri::VideoAV1PictureBits::APPLY_GRAIN;
+    picture.refreshFrameFlags = 0xFF;
+    picture.tiles = &tile;
+    picture.tileNum = 1;
+    picture.filmGrain = &filmGrain;
+
+    nri::VideoDecodeDesc desc = {};
+    desc.av1PictureDesc = &picture;
+    desc.session = session;
+    desc.parameters = parameters;
+    desc.bitstream.buffer = (nri::Buffer*)&bitstreamVal;
+    desc.bitstream.size = 64;
+    desc.dstPicture = dstPicture;
+    desc.setupPicture = setupPicture;
+    desc.dstSlot = 1;
+
+    uint32_t decodeCallNum = 0;
+    auto decode = [&]() {
+        harness.GetVideo().CmdDecodeVideo((nri::CommandBuffer&)commandVal, desc);
+        const bool isForwarded = harness.GetBackend().GetDecodeCallNum() != decodeCallNum;
+        decodeCallNum = harness.GetBackend().GetDecodeCallNum();
+        return isForwarded;
+    };
+
+    SECTION("film grain into a distinct output") {
+        REQUIRE(decode());
+    }
+    SECTION("film grain parameters are required and in range") {
+        picture.filmGrain = nullptr;
+        REQUIRE_FALSE(decode());
+
+        picture.filmGrain = &filmGrain;
+        filmGrain.numYPoints = 15;
+        REQUIRE_FALSE(decode());
+        filmGrain.numYPoints = 14;
+        filmGrain.numCbPoints = 11;
+        REQUIRE_FALSE(decode());
+        filmGrain.numCbPoints = 10;
+        filmGrain.numCrPoints = 11;
+        REQUIRE_FALSE(decode());
+        filmGrain.numCrPoints = 10;
+        filmGrain.grainScalingMinus8 = 4;
+        REQUIRE_FALSE(decode());
+        filmGrain.grainScalingMinus8 = 3;
+        filmGrain.arCoeffLag = 4;
+        REQUIRE_FALSE(decode());
+        filmGrain.arCoeffLag = 3;
+        filmGrain.arCoeffShiftMinus6 = 4;
+        REQUIRE_FALSE(decode());
+        filmGrain.arCoeffShiftMinus6 = 3;
+        filmGrain.grainScaleShift = 4;
+        REQUIRE_FALSE(decode());
+        filmGrain.grainScaleShift = 3;
+        filmGrain.filmGrainParamsRefIdx = 8;
+        REQUIRE_FALSE(decode());
+        filmGrain.filmGrainParamsRefIdx = 7;
+        REQUIRE(decode());
+
+        // "cb_offset", "cr_offset": f(9)
+        filmGrain.cbOffset = 511;
+        filmGrain.crOffset = 511;
+        REQUIRE(decode());
+        filmGrain.cbOffset = 512;
+        REQUIRE_FALSE(decode());
+        filmGrain.cbOffset = -1;
+        REQUIRE_FALSE(decode());
+        filmGrain.cbOffset = 0;
+        filmGrain.crOffset = 512;
+        REQUIRE_FALSE(decode());
+        filmGrain.crOffset = -1;
+        REQUIRE_FALSE(decode());
+        filmGrain.crOffset = 0;
+        REQUIRE(decode());
+    }
+    SECTION("the reference must not get the film grain") {
+        desc.setupPicture = nullptr;
+        REQUIRE_FALSE(decode());
+    }
+    SECTION("distinct output without film grain needs the capability") {
+        picture.flags = nri::VideoAV1PictureBits::SHOW_FRAME;
+        REQUIRE_FALSE(decode());
+    }
+    SECTION("film grain requires a film grain session") {
+        desc.session = plainSession;
+        desc.parameters = plainParameters;
+        desc.dstPicture = plainDstPicture;
+        desc.setupPicture = plainSetupPicture;
+        REQUIRE_FALSE(decode());
+
+        picture.flags = nri::VideoAV1PictureBits::SHOW_FRAME;
+        desc.setupPicture = nullptr;
+        REQUIRE(decode());
+    }
+    SECTION("pictures and sessions agree on film grain") {
+        desc.dstPicture = plainDstPicture;
+        REQUIRE_FALSE(decode());
+
+        desc.dstPicture = dstPicture;
+        desc.setupPicture = plainSetupPicture;
+        REQUIRE_FALSE(decode());
+    }
+    SECTION("film grain textures can be encode inputs (encode profiles don't have film grain)") {
+        nri::VideoSessionDesc encodeSessionDesc = MakeSessionDesc(nri::VideoSessionType::ENCODE, nri::VideoCodec::AV1);
+        encodeSessionDesc.maxReferenceNum = 0;
+        nri::VideoSession* encodeSession = harness.CreateSession(encodeSessionDesc);
+        REQUIRE(encodeSession);
+        av1Parameters.sequence.flags = nri::VideoAV1SequenceBits::NONE;
+        parametersDesc.session = encodeSession;
+        nri::VideoSessionParameters* encodeParameters = harness.CreateParameters(*encodeSession, parametersDesc);
+        REQUIRE(encodeParameters);
+
+        const nri::TextureUsageBits usage = nri::TextureUsageBits::VIDEO_DECODE | nri::TextureUsageBits::VIDEO_ENCODE;
+        nri::VideoPicture* filmGrainSrcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, usage, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1, 0, 0, true);
+        nri::VideoPicture* plainSrcPicture = harness.CreatePicture(nri::VideoPictureUsage::ENCODE_INPUT, nri::Format::NV12_UNORM, 1920, 1080, usage, nri::TextureType::TEXTURE_2D, 1, 0, nri::VideoCodec::AV1);
+        REQUIRE(filmGrainSrcPicture);
+        REQUIRE(plainSrcPicture);
+
+        FakeBuffer encodeBitstream = MakeBuffer(64, nri::BufferUsageBits::VIDEO_ENCODE);
+        nri::BufferVal encodeBitstreamVal(harness.GetDeviceVal(), (nri::Buffer*)&encodeBitstream, true);
+        FakeCommandBuffer encodeCommand = {&harness.GetBackend()};
+        nri::CommandBufferVal encodeCommandVal(harness.GetDeviceVal(), (nri::CommandBuffer*)&encodeCommand, nri::QueueType::VIDEO_ENCODE, true);
+        nri::VideoEncodePictureDesc encodePicture = {};
+        encodePicture.frameType = nri::VideoFrameType::IDR;
+        nri::VideoEncodeDesc encodeDesc = {};
+        encodeDesc.session = encodeSession;
+        encodeDesc.parameters = encodeParameters;
+        encodeDesc.srcPicture = plainSrcPicture;
+        encodeDesc.dstBitstream.buffer = (nri::Buffer*)&encodeBitstreamVal;
+        encodeDesc.dstBitstream.size = 64;
+        encodeDesc.pictureDesc = &encodePicture;
+
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)encodeCommandVal, encodeDesc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 1);
+
+        encodeDesc.srcPicture = filmGrainSrcPicture;
+        harness.GetVideo().CmdEncodeVideo((nri::CommandBuffer&)encodeCommandVal, encodeDesc);
+        REQUIRE(harness.GetBackend().GetEncodeCallNum() == 2);
+    }
+}
