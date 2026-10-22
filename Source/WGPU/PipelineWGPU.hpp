@@ -1,5 +1,53 @@
 // © 2026 NVIDIA Corporation
 
+#if defined(__EMSCRIPTEN__)
+template <typename Pipeline, void (*Release)(Pipeline)>
+struct PipelineRequestWGPU {
+    AllocationCallbacks allocationCallbacks;
+    Pipeline pipeline = nullptr;
+    WGPUCreatePipelineAsyncStatus status = WGPUCreatePipelineAsyncStatus_InternalError;
+    bool completed = false;
+    bool orphaned = false;
+
+    static void OnCreated(WGPUCreatePipelineAsyncStatus status, Pipeline pipeline, WGPUStringView message, void* userdata1, void* userdata2) {
+        PipelineRequestWGPU* request = (PipelineRequestWGPU*)userdata1;
+        if (request->orphaned) {
+            if (pipeline)
+                Release(pipeline);
+            Destroy(request->allocationCallbacks, request);
+            return;
+        }
+
+        request->status = status;
+        request->pipeline = pipeline;
+        request->completed = true;
+        // Async creation rejection is an operation result, not an uncaptured device error.
+        // ERROR reporting invokes AbortExecution before Wait can return FAILURE to the caller.
+        if (status != WGPUCreatePipelineAsyncStatus_Success)
+            NRI_REPORT_WARNING((DeviceWGPU*)userdata2, "WebGPU pipeline creation failed (%u): %.*s", (uint32_t)status, (int)message.length, message.data ? message.data : "");
+    }
+
+    Result Wait(DeviceWGPU& device, WGPUFuture future, Pipeline& output) {
+        // WaitAnyOnly dispatches on this wait (or instance shutdown), never spontaneously.
+        // Keep callback storage alive even if waiting fails before the callback runs.
+        bool waited = WaitForFuture(device.GetInstance(), future);
+        if (!completed) {
+            orphaned = true;
+            NRI_REPORT_ERROR(&device, "WebGPU pipeline creation wait failed");
+            return Result::FAILURE;
+        }
+
+        Result result = waited && status == WGPUCreatePipelineAsyncStatus_Success && pipeline ? Result::SUCCESS : Result::FAILURE;
+        if (result == Result::SUCCESS)
+            output = pipeline;
+        else if (pipeline)
+            Release(pipeline);
+        Destroy(allocationCallbacks, this);
+        return result;
+    }
+};
+#endif
+
 static constexpr WGPUShaderStage GRAPHICS_SHADER_STAGE_MASK_WGPU = (WGPUShaderStage)(WGPUShaderStage_Vertex | WGPUShaderStage_Fragment);
 
 static bool IsSpirvBytecode(const ShaderDesc& shaderDesc) {
@@ -325,13 +373,29 @@ Result PipelineWGPU::Create(const GraphicsPipelineDesc& graphicsPipelineDesc) {
     desc.fragment = fragmentShader ? &fragment : nullptr;
     desc.depthStencil = graphicsPipelineDesc.outputMerger.depthStencilFormat != Format::UNKNOWN ? &depthStencil : nullptr;
 
+#if defined(__EMSCRIPTEN__)
+    using Request = PipelineRequestWGPU<WGPURenderPipeline, wgpuRenderPipelineRelease>;
+    Request* request = Allocate<Request>(m_Device.GetAllocationCallbacks());
+    result = Result::OUT_OF_MEMORY;
+    if (request) {
+        request->allocationCallbacks = m_Device.GetAllocationCallbacks();
+        WGPUCreateRenderPipelineAsyncCallbackInfo callbackInfo = WGPU_CREATE_RENDER_PIPELINE_ASYNC_CALLBACK_INFO_INIT;
+        callbackInfo.mode = WGPUCallbackMode_WaitAnyOnly;
+        callbackInfo.callback = Request::OnCreated;
+        callbackInfo.userdata1 = request;
+        callbackInfo.userdata2 = &m_Device;
+        result = request->Wait(m_Device, wgpuDeviceCreateRenderPipelineAsync(m_Device, &desc, callbackInfo), m_RenderPipeline);
+    }
+#else
     m_RenderPipeline = wgpuDeviceCreateRenderPipeline(m_Device, &desc);
+    result = m_RenderPipeline ? Result::SUCCESS : Result::FAILURE;
+#endif
 
     wgpuShaderModuleRelease(vertexShader);
     if (fragmentShader)
         wgpuShaderModuleRelease(fragmentShader);
 
-    return m_RenderPipeline ? Result::SUCCESS : Result::FAILURE;
+    return result;
 }
 
 Result PipelineWGPU::Create(const ComputePipelineDesc& computePipelineDesc) {
@@ -354,8 +418,24 @@ Result PipelineWGPU::Create(const ComputePipelineDesc& computePipelineDesc) {
     desc.compute.module = shader;
     desc.compute.entryPoint = WGPUString(entryPoint);
 
+#if defined(__EMSCRIPTEN__)
+    using Request = PipelineRequestWGPU<WGPUComputePipeline, wgpuComputePipelineRelease>;
+    Request* request = Allocate<Request>(m_Device.GetAllocationCallbacks());
+    result = Result::OUT_OF_MEMORY;
+    if (request) {
+        request->allocationCallbacks = m_Device.GetAllocationCallbacks();
+        WGPUCreateComputePipelineAsyncCallbackInfo callbackInfo = WGPU_CREATE_COMPUTE_PIPELINE_ASYNC_CALLBACK_INFO_INIT;
+        callbackInfo.mode = WGPUCallbackMode_WaitAnyOnly;
+        callbackInfo.callback = Request::OnCreated;
+        callbackInfo.userdata1 = request;
+        callbackInfo.userdata2 = &m_Device;
+        result = request->Wait(m_Device, wgpuDeviceCreateComputePipelineAsync(m_Device, &desc, callbackInfo), m_ComputePipeline);
+    }
+#else
     m_ComputePipeline = wgpuDeviceCreateComputePipeline(m_Device, &desc);
+    result = m_ComputePipeline ? Result::SUCCESS : Result::FAILURE;
+#endif
     wgpuShaderModuleRelease(shader);
 
-    return m_ComputePipeline ? Result::SUCCESS : Result::FAILURE;
+    return result;
 }
