@@ -70,6 +70,10 @@ NriStruct(MetalWindow) {    // Expects "APPLE" platform macro
     void* caMetalLayer;     //    CAMetalLayer
 };
 
+NriStruct(WebWindow) { // Expects "__EMSCRIPTEN__" platform macro
+    const char* canvasSelector;
+};
+
 NriStruct(AndroidWindow) {  // Expects "__ANDROID__" platform macro
     void* nativeWindow;     //    ANativeWindow
 };
@@ -80,6 +84,7 @@ NriStruct(Window) {
     Nri(X11Window) x11;
     Nri(WaylandWindow) wayland;
     Nri(MetalWindow) metal;
+    Nri(WebWindow) web;
     Nri(AndroidWindow) android;
 };
 

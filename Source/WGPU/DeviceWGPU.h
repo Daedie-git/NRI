@@ -40,6 +40,10 @@ struct DeviceWGPU final : public DeviceBase {
         return m_Queue;
     }
 
+    inline Lock& GetQueueLock() const {
+        return m_QueueLock;
+    }
+
     inline const CoreInterface& GetCoreInterface() const {
         return m_iCore;
     }
@@ -54,6 +58,10 @@ struct DeviceWGPU final : public DeviceBase {
 
     inline bool IsTimestampQueryInsidePassesSupported() const {
         return m_IsTimestampQueryInsidePassesSupported;
+    }
+
+    inline bool IsMultiDrawIndirectSupported() const {
+        return m_IsMultiDrawIndirectSupported;
     }
 
     void Destruct() override;
@@ -98,8 +106,6 @@ struct DeviceWGPU final : public DeviceBase {
     Result ReadbackTextureToHostMemory(const ReadbackTextureToHostMemoryDesc* copyDescs, uint32_t copyDescNum);
 
 private:
-    friend struct QueueWGPU;
-
     HostCopyLayoutWGPU GetHostCopyLayout(const TextureWGPU& texture, const TextureRegionDesc& region, uint64_t& offset, bool alignForBufferCopy) const;
     Result AcquireHostCopyContext(HostCopyContextWGPU*& context);
     void ReleaseHostCopyContext(HostCopyContextWGPU& context);
@@ -117,9 +123,10 @@ private:
     WGPUDevice m_Device = nullptr;
     WGPUQueue m_Queue = nullptr;
     VKBindingOffsets m_BindingOffsets = {};
+    mutable Lock m_QueueLock;
     bool m_IsTimestampQueryInsidePassesSupported = false;
     bool m_IsSubgroupsSupported = false;
-    Lock m_QueueLock;
+    bool m_IsMultiDrawIndirectSupported = false;
     Lock m_HostCopyContextLock;
 };
 

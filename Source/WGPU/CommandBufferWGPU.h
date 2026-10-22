@@ -176,6 +176,7 @@ private:
     const PipelineWGPU* m_GraphicsPipelineWGPU = nullptr;
     const PipelineWGPU* m_ComputePipelineWGPU = nullptr;
     WGPURenderPipeline m_RenderPipeline = nullptr;
+    WGPURenderPipeline m_PendingRenderPipeline = nullptr; // bound outside a render pass, applied when the next one begins
     WGPUComputePipeline m_ComputePipeline = nullptr;
     WGPUComputePipeline m_BoundComputePipeline = nullptr;
     Viewport m_Viewport = {};

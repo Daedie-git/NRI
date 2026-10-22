@@ -527,7 +527,7 @@ WGPURenderPipeline CommandBufferWGPU::GetClearPipeline(uint32_t colorAttachmentI
     WGPUPipelineLayoutDescriptor layoutDesc = WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
     layoutDesc.immediateSize = sizeof(Color32f);
 
-    pipelineLayout = wgpuDeviceCreatePipelineLayout(m_Device, &layoutDesc);
+    pipelineLayout = CreatePipelineLayoutWithImmediates(m_Device, layoutDesc);
     if (!pipelineLayout) {
         wgpuShaderModuleRelease(shader);
         return nullptr;
@@ -685,7 +685,7 @@ WGPUComputePipeline CommandBufferWGPU::GetClearStorageBufferPipeline(WGPUBindGro
     pipelineLayoutDesc.bindGroupLayouts = &layout;
     pipelineLayoutDesc.immediateSize = sizeof(ClearStorageBufferConstantsWGPU);
 
-    WGPUPipelineLayout pipelineLayout = wgpuDeviceCreatePipelineLayout(m_Device, &pipelineLayoutDesc);
+    WGPUPipelineLayout pipelineLayout = CreatePipelineLayoutWithImmediates(m_Device, pipelineLayoutDesc);
     if (!pipelineLayout) {
         wgpuBindGroupLayoutRelease(layout);
         wgpuShaderModuleRelease(shader);
@@ -775,7 +775,7 @@ WGPUComputePipeline CommandBufferWGPU::GetClearStorageTexturePipeline(Format for
     pipelineLayoutDesc.bindGroupLayouts = &layout;
     pipelineLayoutDesc.immediateSize = sizeof(ClearStorageTextureConstantsWGPU);
 
-    WGPUPipelineLayout pipelineLayout = wgpuDeviceCreatePipelineLayout(m_Device, &pipelineLayoutDesc);
+    WGPUPipelineLayout pipelineLayout = CreatePipelineLayoutWithImmediates(m_Device, pipelineLayoutDesc);
     if (!pipelineLayout) {
         wgpuBindGroupLayoutRelease(layout);
         wgpuShaderModuleRelease(shader);
@@ -834,6 +834,7 @@ Result CommandBufferWGPU::Begin(const DescriptorPool* descriptorPool) {
     m_CommandEncoder = wgpuDeviceCreateCommandEncoder(m_Device, &desc);
     m_PipelineLayout = nullptr;
     m_RenderPipeline = nullptr;
+    m_PendingRenderPipeline = nullptr;
     m_ComputePipeline = nullptr;
     m_BoundComputePipeline = nullptr;
     m_BindPoint = BindPoint::GRAPHICS;
@@ -890,6 +891,7 @@ void CommandBufferWGPU::EndPass() {
         wgpuRenderPassEncoderRelease(m_RenderPass);
         m_RenderPass = nullptr;
         m_RenderPipeline = nullptr;
+        m_PendingRenderPipeline = nullptr;
         ReleaseRenderPassTransientObjects();
     }
 
@@ -981,6 +983,10 @@ void CommandBufferWGPU::SetPipeline(const Pipeline& pipeline) {
         wgpuRenderPassEncoderSetPipeline(m_RenderPass, renderPipeline);
         m_RenderPipeline = renderPipeline;
     }
+
+    // WebGPU encodes pipelines into render passes only, while NRI allows binding one before "BeginRendering".
+    if (!m_RenderPass && renderPipeline)
+        m_PendingRenderPipeline = renderPipeline;
 
     if (m_RenderPass && renderPipeline)
         RestoreRootConstants(BindPoint::GRAPHICS);
@@ -1229,9 +1235,9 @@ void CommandBufferWGPU::RestoreRootConstants(BindPoint bindPoint) {
             continue;
 
         if (bindPoint == BindPoint::COMPUTE)
-            wgpuComputePassEncoderSetImmediates(m_ComputePass, begin, state.data.data() + begin, end - begin);
+            SetPassImmediates(m_ComputePass, begin, state.data.data() + begin, end - begin);
         else
-            wgpuRenderPassEncoderSetImmediates(m_RenderPass, begin, state.data.data() + begin, end - begin);
+            SetPassImmediates(m_RenderPass, begin, state.data.data() + begin, end - begin);
 
         begin = end;
     }
@@ -1253,10 +1259,10 @@ void CommandBufferWGPU::SetRootConstants(const SetRootConstantsDesc& setRootCons
     }
 
     if (m_RenderPass && m_RenderPipeline && bindPoint == BindPoint::GRAPHICS)
-        wgpuRenderPassEncoderSetImmediates(m_RenderPass, offset, setRootConstantsDesc.data, setRootConstantsDesc.size);
+        SetPassImmediates(m_RenderPass, offset, setRootConstantsDesc.data, setRootConstantsDesc.size);
 
     if (m_ComputePass && m_BoundComputePipeline && bindPoint == BindPoint::COMPUTE)
-        wgpuComputePassEncoderSetImmediates(m_ComputePass, offset, setRootConstantsDesc.data, setRootConstantsDesc.size);
+        SetPassImmediates(m_ComputePass, offset, setRootConstantsDesc.data, setRootConstantsDesc.size);
 }
 
 void CommandBufferWGPU::SetRootDescriptor(const SetRootDescriptorDesc& setRootDescriptorDesc) {
@@ -1331,6 +1337,7 @@ void CommandBufferWGPU::BeginRendering(const RenderingDesc& renderingDesc) {
 
     Scratch<WGPURenderPassColorAttachment> colorAttachments = NRI_ALLOCATE_SCRATCH(m_Device, WGPURenderPassColorAttachment, renderingDesc.colorNum);
     WGPURenderPassDepthStencilAttachment depthStencilAttachment = WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
+    depthStencilAttachment.depthClearValue = GetRenderPassDepthClearValue(nullptr, true); // INIT's NaN is rejected by WebIDL even when unused
     const WGPURenderPassDepthStencilAttachment* depthStencilAttachmentPtr = nullptr;
     for (Format& format : m_RenderColorFormats)
         format = Format::UNKNOWN;
@@ -1349,7 +1356,9 @@ void CommandBufferWGPU::BeginRendering(const RenderingDesc& renderingDesc) {
         out.view = descriptor.GetTextureView();
         out.loadOp = GetLoadOp(in.loadOp);
         out.storeOp = GetStoreOp(in.storeOp);
-        out.clearValue = {in.clearValue.color.f.x, in.clearValue.color.f.y, in.clearValue.color.f.z, in.clearValue.color.f.w};
+        out.clearValue = in.loadOp == LoadOp::CLEAR
+            ? WGPUColor{in.clearValue.color.f.x, in.clearValue.color.f.y, in.clearValue.color.f.z, in.clearValue.color.f.w}
+            : WGPUColor{0.0, 0.0, 0.0, 0.0};
         if (in.resolveDst)
             out.resolveTarget = ((DescriptorWGPU*)in.resolveDst)->GetTextureView();
 
@@ -1395,10 +1404,11 @@ void CommandBufferWGPU::BeginRendering(const RenderingDesc& renderingDesc) {
             const AttachmentDesc& depth = renderingDesc.depth.descriptor ? renderingDesc.depth : *depthOrStencil;
             bool isReadOnly = IsDepthStencilPlaneReadOnly(*(DescriptorWGPU*)depth.descriptor, PlaneBits::DEPTH);
             depthStencilAttachment.depthReadOnly = isReadOnly ? WGPU_TRUE : WGPU_FALSE;
+            depthStencilAttachment.depthClearValue = GetRenderPassDepthClearValue(&depth, isReadOnly);
+
             if (!isReadOnly) {
                 depthStencilAttachment.depthLoadOp = GetLoadOp(depth.loadOp);
                 depthStencilAttachment.depthStoreOp = GetStoreOp(depth.storeOp);
-                depthStencilAttachment.depthClearValue = depth.clearValue.depthStencil.depth;
             }
         }
 
@@ -1409,7 +1419,7 @@ void CommandBufferWGPU::BeginRendering(const RenderingDesc& renderingDesc) {
             if (!isReadOnly) {
                 depthStencilAttachment.stencilLoadOp = GetLoadOp(stencil.loadOp);
                 depthStencilAttachment.stencilStoreOp = GetStoreOp(stencil.storeOp);
-                depthStencilAttachment.stencilClearValue = stencil.clearValue.depthStencil.stencil;
+                depthStencilAttachment.stencilClearValue = stencil.loadOp == LoadOp::CLEAR ? stencil.clearValue.depthStencil.stencil : 0u;
             }
         }
 
@@ -1430,6 +1440,13 @@ void CommandBufferWGPU::BeginRendering(const RenderingDesc& renderingDesc) {
     m_StencilReference = 0;
     MarkDescriptorSetsDirty(BindPoint::GRAPHICS);
     m_GraphicsRootGroupDirty = true;
+
+    if (m_RenderPass && m_PendingRenderPipeline) {
+        wgpuRenderPassEncoderSetPipeline(m_RenderPass, m_PendingRenderPipeline);
+        m_RenderPipeline = m_PendingRenderPipeline;
+        RestoreRootConstants(BindPoint::GRAPHICS);
+    }
+    m_PendingRenderPipeline = nullptr;
 }
 
 void CommandBufferWGPU::EndRendering() {
@@ -1475,7 +1492,7 @@ void CommandBufferWGPU::ClearAttachments(const ClearAttachmentDesc* clearAttachm
                 const void* clearData = props.isInteger ? (props.isSigned ? (const void*)&clearAttachmentDesc.value.color.i : (const void*)&clearAttachmentDesc.value.color.ui) : (const void*)&clearAttachmentDesc.value.color.f;
 
                 wgpuRenderPassEncoderSetPipeline(m_RenderPass, clearPipeline);
-                wgpuRenderPassEncoderSetImmediates(m_RenderPass, 0, clearData, sizeof(clearAttachmentDesc.value.color));
+                SetPassImmediates(m_RenderPass, 0, clearData, sizeof(clearAttachmentDesc.value.color));
                 drawClear(rects, rectNum);
             }
         }
@@ -1488,7 +1505,7 @@ void CommandBufferWGPU::ClearAttachments(const ClearAttachmentDesc* clearAttachm
             if (clearPipeline) {
                 Color32f clearValue = {clearAttachmentDesc.value.depthStencil.depth, 0.0f, 0.0f, 0.0f};
                 wgpuRenderPassEncoderSetPipeline(m_RenderPass, clearPipeline);
-                wgpuRenderPassEncoderSetImmediates(m_RenderPass, 0, &clearValue, sizeof(clearValue));
+                SetPassImmediates(m_RenderPass, 0, &clearValue, sizeof(clearValue));
                 if (depthStencilPlanes & PlaneBits::STENCIL)
                     wgpuRenderPassEncoderSetStencilReference(m_RenderPass, clearAttachmentDesc.value.depthStencil.stencil);
 
@@ -1544,9 +1561,6 @@ void CommandBufferWGPU::DrawIndexed(const DrawIndexedDesc& drawIndexedDesc) {
 }
 
 void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset) {
-    // TODO: WGPU indirect-count draws are not advertised because native count APIs do not support NRI's stride.
-    MaybeUnused(countBuffer, countBufferOffset);
-
     if (!m_RenderPass)
         return;
 
@@ -1554,14 +1568,26 @@ void CommandBufferWGPU::DrawIndirect(const Buffer& buffer, uint64_t offset, uint
     BindDescriptorSets(BindPoint::GRAPHICS);
 
     const BufferWGPU& bufferWGPU = (BufferWGPU&)buffer;
+#if defined(__EMSCRIPTEN__)
+    // Multi-draw reads tightly packed arguments; other strides fall back to one draw per record.
+    if (m_Device.IsMultiDrawIndirectSupported() && (drawNum <= 1 || stride == sizeof(DrawDesc))) {
+        WGPUBuffer count = countBuffer ? (WGPUBuffer) * (const BufferWGPU*)countBuffer : nullptr;
+        wgpuRenderPassEncoderMultiDrawIndirect(m_RenderPass, bufferWGPU, offset, drawNum, count, countBufferOffset);
+        return;
+    }
+#endif
+    // The per-record loop cannot read a GPU count; drawing every record would render stale arguments.
+    if (countBuffer) {
+        NRI_REPORT_ERROR(&m_Device, "Indirect count draws require tightly packed records (stride %u) on WebGPU", (uint32_t)sizeof(DrawDesc));
+        return;
+    }
+    MaybeUnused(countBufferOffset);
+
     for (uint32_t i = 0; i < drawNum; i++)
         wgpuRenderPassEncoderDrawIndirect(m_RenderPass, bufferWGPU, offset + (uint64_t)i * stride);
 }
 
 void CommandBufferWGPU::DrawIndexedIndirect(const Buffer& buffer, uint64_t offset, uint32_t drawNum, uint32_t stride, const Buffer* countBuffer, uint64_t countBufferOffset) {
-    // TODO: WGPU indirect-count draws are not advertised because native count APIs do not support NRI's stride.
-    MaybeUnused(countBuffer, countBufferOffset);
-
     if (!m_RenderPass)
         return;
 
@@ -1569,6 +1595,21 @@ void CommandBufferWGPU::DrawIndexedIndirect(const Buffer& buffer, uint64_t offse
     BindDescriptorSets(BindPoint::GRAPHICS);
 
     const BufferWGPU& bufferWGPU = (BufferWGPU&)buffer;
+#if defined(__EMSCRIPTEN__)
+    // Multi-draw reads tightly packed arguments; other strides fall back to one draw per record.
+    if (m_Device.IsMultiDrawIndirectSupported() && (drawNum <= 1 || stride == sizeof(DrawIndexedDesc))) {
+        WGPUBuffer count = countBuffer ? (WGPUBuffer) * (const BufferWGPU*)countBuffer : nullptr;
+        wgpuRenderPassEncoderMultiDrawIndexedIndirect(m_RenderPass, bufferWGPU, offset, drawNum, count, countBufferOffset);
+        return;
+    }
+#endif
+    // The per-record loop cannot read a GPU count; drawing every record would render stale arguments.
+    if (countBuffer) {
+        NRI_REPORT_ERROR(&m_Device, "Indirect count draws require tightly packed records (stride %u) on WebGPU", (uint32_t)sizeof(DrawIndexedDesc));
+        return;
+    }
+    MaybeUnused(countBufferOffset);
+
     for (uint32_t i = 0; i < drawNum; i++)
         wgpuRenderPassEncoderDrawIndexedIndirect(m_RenderPass, bufferWGPU, offset + (uint64_t)i * stride);
 }
@@ -1617,6 +1658,7 @@ void CommandBufferWGPU::CopyBuffer(Buffer& dstBuffer, uint64_t dstOffset, const 
     const BufferWGPU& srcBufferWGPU = (const BufferWGPU&)srcBuffer;
     uint64_t copySize = size == WHOLE_SIZE ? srcBufferWGPU.GetSize() : size;
 
+    const_cast<BufferWGPU&>(srcBufferWGPU).FlushHostWrites(srcOffset, copySize);
     wgpuCommandEncoderCopyBufferToBuffer(m_CommandEncoder, srcBufferWGPU, srcOffset, (BufferWGPU&)dstBuffer, dstOffset, copySize);
 }
 
@@ -1667,6 +1709,17 @@ void CommandBufferWGPU::UploadBufferToTexture(Texture& dstTexture, const Texture
     FillTexelCopyTexture(dst, textureWGPU, dstRegion);
 
     WGPUExtent3D size = GetCopySize(textureDesc, dstRegion);
+    {
+        // Upper bound of the source bytes the copy reads: every row of every slice at the layout's pitch.
+        const FormatProps& formatProps = GetFormatProps(textureDesc.format);
+        const uint64_t rows = (size.height + formatProps.blockHeight - 1) / formatProps.blockHeight;
+        const uint64_t rowBytes = (uint64_t)((size.width + formatProps.blockWidth - 1) / formatProps.blockWidth) * formatProps.stride;
+        const uint64_t slices = std::max<uint64_t>(size.depthOrArrayLayers, 1);
+        const uint64_t rowPitch = std::max<uint64_t>(srcDataLayout.rowPitch, rowBytes);
+        const uint64_t imageRows = (srcDataLayout.slicePitch && srcDataLayout.rowPitch) ? srcDataLayout.slicePitch / srcDataLayout.rowPitch : rows;
+        const uint64_t span = ((slices - 1) * imageRows + rows) * rowPitch;
+        ((BufferWGPU&)srcBuffer).FlushHostWrites(srcDataLayout.offset, span);
+    }
     wgpuCommandEncoderCopyBufferToTexture(m_CommandEncoder, &src, &dst, &size);
 }
 
@@ -1808,7 +1861,7 @@ void CommandBufferWGPU::ClearStorage(const ClearStorageDesc& clearStorageDesc) {
         if (pass) {
             wgpuComputePassEncoderSetPipeline(pass, pipeline);
             wgpuComputePassEncoderSetBindGroup(pass, 0, bindGroup, 0, nullptr);
-            wgpuComputePassEncoderSetImmediates(pass, 0, &constants, sizeof(constants));
+            SetPassImmediates(pass, 0, &constants, sizeof(constants));
             wgpuComputePassEncoderDispatchWorkgroups(pass, DivideUp(constants.wordNum, 64u), 1, 1);
             wgpuComputePassEncoderEnd(pass);
             wgpuComputePassEncoderRelease(pass);
@@ -1869,7 +1922,7 @@ void CommandBufferWGPU::ClearStorage(const ClearStorageDesc& clearStorageDesc) {
     if (pass) {
         wgpuComputePassEncoderSetPipeline(pass, pipeline);
         wgpuComputePassEncoderSetBindGroup(pass, 0, bindGroup, 0, nullptr);
-        wgpuComputePassEncoderSetImmediates(pass, 0, &constants, sizeof(constants));
+        SetPassImmediates(pass, 0, &constants, sizeof(constants));
         wgpuComputePassEncoderDispatchWorkgroups(pass, DivideUp(width, 8u), DivideUp(constants.height, 8u), depth);
         wgpuComputePassEncoderEnd(pass);
         wgpuComputePassEncoderRelease(pass);

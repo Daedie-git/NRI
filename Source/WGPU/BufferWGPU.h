@@ -35,6 +35,10 @@ struct BufferWGPU final : public DebugNameBase {
     Result Create(const BufferDesc& bufferDesc);
     Result Create(const BufferDesc& bufferDesc, MemoryLocation memoryLocation);
     void* Map(uint64_t offset, uint64_t size);
+    // Internal synchronous host copies must not inherit the application's deferred-map policy.
+    void* MapBlocking(uint64_t offset, uint64_t size);
+    // Host-visible upload buffers are CPU shadows; GPU reads need their latest bytes queued first.
+    void FlushHostWrites(uint64_t offset, uint64_t size);
     void Unmap();
 
     Result SetHostVisible(MemoryLocation memoryLocation);
@@ -49,6 +53,7 @@ struct BufferWGPU final : public DebugNameBase {
 
 private:
     Result CreateNativeBuffer();
+    void* MapInternal(uint64_t offset, uint64_t size, bool blocking);
 
 private:
     DeviceWGPU& m_Device;
@@ -56,6 +61,11 @@ private:
     WGPUBuffer m_Buffer = nullptr;
     BufferDesc m_Desc = {};
     const void* m_MappedReadback = nullptr;
+#if defined(__EMSCRIPTEN__)
+    // The first deferred Map starts a request; a later call returns its range after callback delivery.
+    struct PendingMap;
+    PendingMap* m_PendingMap = nullptr;
+#endif
     uint64_t m_MapOffset = 0;
     uint64_t m_MapSize = 0;
     MemoryLocation m_MemoryLocation = MemoryLocation::DEVICE;
