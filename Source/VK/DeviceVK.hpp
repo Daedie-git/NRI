@@ -742,7 +742,18 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
         if (!isWrapper) {
             ProcessInstanceExtensions(desiredInstanceExts);
 
-            res = CreateInstance(desc.enableGraphicsAPIValidation, desiredInstanceExts);
+            bool disableValidationHandleWrapping = false;
+#ifdef __linux__
+            // NVIDIA 610.57.04 retains the validation layer's temporary H.264
+            // picture-info pointer until submission. Keep validation checks on,
+            // but avoid the handle wrapper's short-lived parameter copies.
+            // The layer keeps one process-wide wrapping mode, so the choice
+            // follows the driver alone: a queue-dependent choice leaves devices
+            // created under the other mode handing wrapped handles to the driver.
+            const uint32_t affectedDriver = (610u << 22) | (57u << 14) | (4u << 6);
+            disableValidationHandleWrapping = m_Desc.adapterDesc.vendor == Vendor::NVIDIA && m_Desc.adapterDesc.driverVersion == affectedDriver;
+#endif
+            res = CreateInstance(desc.enableGraphicsAPIValidation, disableValidationHandleWrapping, desiredInstanceExts);
             if (res != Result::SUCCESS)
                 return res;
         }
@@ -860,6 +871,16 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
                 queueType = TrySelectPreferredQueueType(props, scores);
             }
         }
+    }
+
+    // FURY-PATCH(vk-copy-queue, until the upstream NRI ticket lands): clamp each requested queue count to what its selected
+    // family offers, so a request sized for a shared family stays valid on a dedicated one (the reported count follows).
+    Scratch<QueueFamilyDesc> queueFamilyDescs = NRI_ALLOCATE_SCRATCH(*this, QueueFamilyDesc, desc.queueFamilyNum ? desc.queueFamilyNum : 1);
+    for (uint32_t i = 0; i < desc.queueFamilyNum; i++) {
+        queueFamilyDescs[i] = desc.queueFamilies[i];
+        const uint32_t familyIndex = queueFamilyIndices[(size_t)queueFamilyDescs[i].queueType];
+        if (!isWrapper && familyIndex != INVALID_FAMILY_INDEX)
+            queueFamilyDescs[i].queueNum = std::min(queueFamilyDescs[i].queueNum, familyProps2[familyIndex].queueFamilyProperties.queueCount);
     }
 
     { // Memory props
@@ -1089,7 +1110,7 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
             deviceCreateInfo.enabledExtensionCount = (uint32_t)desiredDeviceExts.size();
             deviceCreateInfo.ppEnabledExtensionNames = desiredDeviceExts.data();
 
-            deviceCreateInfo.queueCreateInfoCount = BuildQueueCreateInfos(desc.queueFamilies, desc.queueFamilyNum, queueFamilyIndices, queueCreateInfos, queuePriorities);
+            deviceCreateInfo.queueCreateInfoCount = BuildQueueCreateInfos(queueFamilyDescs, desc.queueFamilyNum, queueFamilyIndices, queueCreateInfos, queuePriorities);
 
             VkResult vkResult = m_VK.CreateDevice(m_PhysicalDevice, &deviceCreateInfo, m_AllocationCallbackPtr, &m_Device);
             NRI_RETURN_ON_BAD_VKRESULT(this, vkResult, "vkCreateDevice");
@@ -1156,7 +1177,7 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
         }
     } else {
         for (uint32_t i = 0; i < desc.queueFamilyNum; i++) {
-            const QueueFamilyDesc& queueFamilyDesc = desc.queueFamilies[i];
+            const QueueFamilyDesc& queueFamilyDesc = queueFamilyDescs[i];
             auto& queueFamily = m_QueueFamilies[(size_t)queueFamilyDesc.queueType];
             uint32_t queueFamilyIndex = queueFamilyIndices[(size_t)queueFamilyDesc.queueType];
 
@@ -1647,6 +1668,7 @@ Result DeviceVK::Create(const DeviceCreationDesc& desc, const DeviceCreationVKDe
         m_Desc.features.extendedDynamicState = ExtendedDynamicStateFeatures.extendedDynamicState;
         m_Desc.features.unifiedTextureLayouts = UnifiedImageLayoutsFeatures.unifiedImageLayouts;
         m_Desc.features.resourceAliasing = true;
+        m_Desc.features.storeOpNone = m_IsSupported.storeOpNone;
 
         const VkVideoCodecOperationFlagsKHR decodeCodecOperations = m_IsSupported.videoMaintenance1 ? GetVideoCodecOperations(true, false) : 0;
         m_Desc.videoFeatures.decode.H264 = (decodeCodecOperations & VK_VIDEO_CODEC_OPERATION_DECODE_H264_BIT_KHR) != 0;
@@ -2040,7 +2062,7 @@ void DeviceVK::GetMicromapBuildSizesInfo(const MicromapDesc& micromapDesc, VkMic
     vk.GetMicromapBuildSizesEXT(m_Device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &buildInfo, &sizesInfo);
 }
 
-Result DeviceVK::CreateInstance(bool enableGraphicsAPIValidation, const Vector<const char*>& desiredInstanceExts) {
+Result DeviceVK::CreateInstance(bool enableGraphicsAPIValidation, bool disableValidationHandleWrapping, const Vector<const char*>& desiredInstanceExts) {
     Vector<const char*> layers(GetStdAllocator());
     if (enableGraphicsAPIValidation)
         layers.push_back("VK_LAYER_KHRONOS_validation");
@@ -2089,6 +2111,9 @@ Result DeviceVK::CreateInstance(bool enableGraphicsAPIValidation, const Vector<c
     VkValidationFeaturesEXT validationFeatures = {VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
     validationFeatures.enabledValidationFeatureCount = GetCountOf(enabledValidationFeatures);
     validationFeatures.pEnabledValidationFeatures = enabledValidationFeatures;
+    const VkValidationFeatureDisableEXT disabledFeature = VK_VALIDATION_FEATURE_DISABLE_UNIQUE_HANDLES_EXT;
+    validationFeatures.disabledValidationFeatureCount = disableValidationHandleWrapping ? 1 : 0;
+    validationFeatures.pDisabledValidationFeatures = disableValidationHandleWrapping ? &disabledFeature : nullptr;
 
     if (enableGraphicsAPIValidation)
         PNEXTCHAIN_APPEND_STRUCT(validationFeatures);

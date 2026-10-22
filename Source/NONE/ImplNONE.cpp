@@ -181,6 +181,7 @@ struct DeviceNONE final : public DeviceBase {
 
         memset(&m_Desc.tiers, 0xFF, sizeof(m_Desc.tiers));
         memset(&m_Desc.features, 1, sizeof(m_Desc.features));
+        m_Desc.features.storeOpNone = false;
         memset(&m_Desc.shaderFeatures, 1, sizeof(m_Desc.shaderFeatures));
         memset(&m_Desc.videoFeatures, 1, sizeof(m_Desc.videoFeatures));
 

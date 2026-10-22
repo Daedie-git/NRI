@@ -2325,6 +2325,7 @@ NriStruct(DeviceDesc) {
         bool extendedDynamicState;                                // VK: allows to use "VertexBufferDesc::stride" (dynamic) instead of "VertexStreamDesc::stride" (static). Widely supported
         bool unifiedTextureLayouts;                               // VK: allows to use "GENERAL" everywhere: https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_unified_image_layouts.html
         bool resourceAliasing;                                    // binding multiple distinct texture or buffer objects to overlap the same underlying memory allocation (unsupported only in D3D11)
+        bool storeOpNone;                                        // native "StoreOp::NONE": no store access for unwritten attachments (VK only); if false, NONE may fall back to STORE
     } features;
 
     // Shader features
