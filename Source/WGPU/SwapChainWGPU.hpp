@@ -179,7 +179,11 @@ Result SwapChainWGPU::AcquireNextTexture(uint32_t& textureIndex) {
     WGPUSurfaceTexture surfaceTexture = WGPU_SURFACE_TEXTURE_INIT;
     wgpuSurfaceGetCurrentTexture(m_Surface, &surfaceTexture);
 
-    if ((uint32_t)surfaceTexture.status == (uint32_t)WGPUSurfaceGetCurrentTextureStatus_Occluded || surfaceTexture.status == WGPUSurfaceGetCurrentTextureStatus_Timeout)
+#if !defined(__EMSCRIPTEN__) // emdawn has no "Occluded" status
+    if ((uint32_t)surfaceTexture.status == (uint32_t)WGPUSurfaceGetCurrentTextureStatus_Occluded)
+        return Result::NOT_READY;
+#endif
+    if (surfaceTexture.status == WGPUSurfaceGetCurrentTextureStatus_Timeout)
         return Result::NOT_READY;
     if (surfaceTexture.status == WGPUSurfaceGetCurrentTextureStatus_Outdated || surfaceTexture.status == WGPUSurfaceGetCurrentTextureStatus_Lost)
         return Result::OUT_OF_DATE;
