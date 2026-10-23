@@ -2828,7 +2828,7 @@ NRI_INLINE void DeviceVK::DestroyFramebuffers(VkImageView imageView) {
     }
 }
 
-NRI_INLINE Result DeviceVK::CreateCommittedBufferVK(MemoryLocation memoryLocation, float priority, const BufferDesc& bufferDesc, Buffer*& buffer) {
+NRI_INLINE Result DeviceVK::CreateCommittedBuffer(MemoryLocation memoryLocation, float priority, const BufferDesc& bufferDesc, Buffer*& buffer) {
     Result result = CreateImplementation<BufferVK>(buffer, bufferDesc);
 
     if (result != Result::SUCCESS)
@@ -2844,7 +2844,7 @@ NRI_INLINE Result DeviceVK::CreateCommittedBufferVK(MemoryLocation memoryLocatio
     return result;
 }
 
-NRI_INLINE Result DeviceVK::CreateCommittedTextureVK(MemoryLocation memoryLocation, float priority, const TextureDesc& textureDesc, Texture*& texture) {
+NRI_INLINE Result DeviceVK::CreateCommittedTexture(MemoryLocation memoryLocation, float priority, const TextureDesc& textureDesc, Texture*& texture) {
     Result result = CreateImplementation<TextureVK>(texture, textureDesc);
 
     if (result != Result::SUCCESS)
@@ -2860,7 +2860,7 @@ NRI_INLINE Result DeviceVK::CreateCommittedTextureVK(MemoryLocation memoryLocati
     return result;
 }
 
-NRI_INLINE Result DeviceVK::CreatePlacedBufferVK(Memory* memory, uint64_t offset, const BufferDesc& bufferDesc, Buffer*& buffer) {
+NRI_INLINE Result DeviceVK::CreatePlacedBuffer(Memory* memory, uint64_t offset, const BufferDesc& bufferDesc, Buffer*& buffer) {
     Result result = CreateImplementation<BufferVK>(buffer, bufferDesc);
 
     if (result != Result::SUCCESS)
@@ -2879,7 +2879,7 @@ NRI_INLINE Result DeviceVK::CreatePlacedBufferVK(Memory* memory, uint64_t offset
     return result;
 }
 
-NRI_INLINE Result DeviceVK::CreatePlacedTextureVK(Memory* memory, uint64_t offset, const TextureDesc& textureDesc, Texture*& texture) {
+NRI_INLINE Result DeviceVK::CreatePlacedTexture(Memory* memory, uint64_t offset, const TextureDesc& textureDesc, Texture*& texture) {
     Result result = CreateImplementation<TextureVK>(texture, textureDesc);
 
     if (result != Result::SUCCESS)
@@ -2898,7 +2898,7 @@ NRI_INLINE Result DeviceVK::CreatePlacedTextureVK(Memory* memory, uint64_t offse
     return result;
 }
 
-NRI_INLINE Result DeviceVK::CreateCommittedAccelerationStructureVK(MemoryLocation memoryLocation, float priority, const AccelerationStructureDesc& accelerationStructureDesc, AccelerationStructure*& accelerationStructure) {
+NRI_INLINE Result DeviceVK::CreateCommittedAccelerationStructure(MemoryLocation memoryLocation, float priority, const AccelerationStructureDesc& accelerationStructureDesc, AccelerationStructure*& accelerationStructure) {
     Result result = CreateImplementation<AccelerationStructureVK>(accelerationStructure, accelerationStructureDesc);
 
     if (result != Result::SUCCESS)
@@ -2914,7 +2914,7 @@ NRI_INLINE Result DeviceVK::CreateCommittedAccelerationStructureVK(MemoryLocatio
     return result;
 }
 
-NRI_INLINE Result DeviceVK::CreateCommittedMicromapVK(MemoryLocation memoryLocation, float priority, const MicromapDesc& micromapDesc, Micromap*& micromap) {
+NRI_INLINE Result DeviceVK::CreateCommittedMicromap(MemoryLocation memoryLocation, float priority, const MicromapDesc& micromapDesc, Micromap*& micromap) {
     Result result = CreateImplementation<MicromapVK>(micromap, micromapDesc);
 
     if (result != Result::SUCCESS)
@@ -2930,7 +2930,7 @@ NRI_INLINE Result DeviceVK::CreateCommittedMicromapVK(MemoryLocation memoryLocat
     return result;
 }
 
-NRI_INLINE Result DeviceVK::CreatePlacedAccelerationStructureVK(Memory* memory, uint64_t offset, const AccelerationStructureDesc& accelerationStructureDesc, AccelerationStructure*& accelerationStructure) {
+NRI_INLINE Result DeviceVK::CreatePlacedAccelerationStructure(Memory* memory, uint64_t offset, const AccelerationStructureDesc& accelerationStructureDesc, AccelerationStructure*& accelerationStructure) {
     Result result = CreateImplementation<AccelerationStructureVK>(accelerationStructure, accelerationStructureDesc);
 
     if (result != Result::SUCCESS)
@@ -2949,7 +2949,7 @@ NRI_INLINE Result DeviceVK::CreatePlacedAccelerationStructureVK(Memory* memory, 
     return result;
 }
 
-NRI_INLINE Result DeviceVK::CreatePlacedMicromapVK(Memory* memory, uint64_t offset, const MicromapDesc& micromapDesc, Micromap*& micromap) {
+NRI_INLINE Result DeviceVK::CreatePlacedMicromap(Memory* memory, uint64_t offset, const MicromapDesc& micromapDesc, Micromap*& micromap) {
     Result result = CreateImplementation<MicromapVK>(micromap, micromapDesc);
 
     if (result != Result::SUCCESS)

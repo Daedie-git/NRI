@@ -1841,7 +1841,7 @@ void DeviceD3D12::Destruct() {
     Destroy(GetAllocationCallbacks(), this);
 }
 
-NRI_INLINE Result DeviceD3D12::CreateCommittedBufferD3D12(MemoryLocation memoryLocation, float priority, const BufferDesc& bufferDesc, Buffer*& buffer) {
+NRI_INLINE Result DeviceD3D12::CreateCommittedBuffer(MemoryLocation memoryLocation, float priority, const BufferDesc& bufferDesc, Buffer*& buffer) {
     Result result = CreateImplementation<BufferD3D12>(buffer, bufferDesc);
 
     if (result != Result::SUCCESS)
@@ -1857,7 +1857,7 @@ NRI_INLINE Result DeviceD3D12::CreateCommittedBufferD3D12(MemoryLocation memoryL
     return result;
 }
 
-NRI_INLINE Result DeviceD3D12::CreateCommittedTextureD3D12(MemoryLocation memoryLocation, float priority, const TextureDesc& textureDesc, Texture*& texture) {
+NRI_INLINE Result DeviceD3D12::CreateCommittedTexture(MemoryLocation memoryLocation, float priority, const TextureDesc& textureDesc, Texture*& texture) {
     Result result = CreateImplementation<TextureD3D12>(texture, textureDesc);
 
     if (result != Result::SUCCESS)
@@ -1873,7 +1873,7 @@ NRI_INLINE Result DeviceD3D12::CreateCommittedTextureD3D12(MemoryLocation memory
     return result;
 }
 
-NRI_INLINE Result DeviceD3D12::CreatePlacedBufferD3D12(Memory* memory, uint64_t offset, const BufferDesc& bufferDesc, Buffer*& buffer) {
+NRI_INLINE Result DeviceD3D12::CreatePlacedBuffer(Memory* memory, uint64_t offset, const BufferDesc& bufferDesc, Buffer*& buffer) {
     Result result = CreateImplementation<BufferD3D12>(buffer, bufferDesc);
 
     if (result != Result::SUCCESS)
@@ -1892,7 +1892,7 @@ NRI_INLINE Result DeviceD3D12::CreatePlacedBufferD3D12(Memory* memory, uint64_t 
     return result;
 }
 
-NRI_INLINE Result DeviceD3D12::CreatePlacedTextureD3D12(Memory* memory, uint64_t offset, const TextureDesc& textureDesc, Texture*& texture) {
+NRI_INLINE Result DeviceD3D12::CreatePlacedTexture(Memory* memory, uint64_t offset, const TextureDesc& textureDesc, Texture*& texture) {
     Result result = CreateImplementation<TextureD3D12>(texture, textureDesc);
 
     if (result != Result::SUCCESS)
@@ -1911,7 +1911,7 @@ NRI_INLINE Result DeviceD3D12::CreatePlacedTextureD3D12(Memory* memory, uint64_t
     return result;
 }
 
-NRI_INLINE Result DeviceD3D12::CreateCommittedAccelerationStructureD3D12(MemoryLocation memoryLocation, float priority, const AccelerationStructureDesc& accelerationStructureDesc, AccelerationStructure*& accelerationStructure) {
+NRI_INLINE Result DeviceD3D12::CreateCommittedAccelerationStructure(MemoryLocation memoryLocation, float priority, const AccelerationStructureDesc& accelerationStructureDesc, AccelerationStructure*& accelerationStructure) {
     Result result = CreateImplementation<AccelerationStructureD3D12>(accelerationStructure, accelerationStructureDesc);
 
     if (result != Result::SUCCESS)
@@ -1927,7 +1927,7 @@ NRI_INLINE Result DeviceD3D12::CreateCommittedAccelerationStructureD3D12(MemoryL
     return result;
 }
 
-NRI_INLINE Result DeviceD3D12::CreateCommittedMicromapD3D12(MemoryLocation memoryLocation, float priority, const MicromapDesc& micromapDesc, Micromap*& micromap) {
+NRI_INLINE Result DeviceD3D12::CreateCommittedMicromap(MemoryLocation memoryLocation, float priority, const MicromapDesc& micromapDesc, Micromap*& micromap) {
     Result result = CreateImplementation<MicromapD3D12>(micromap, micromapDesc);
 
     if (result != Result::SUCCESS)
@@ -1943,7 +1943,7 @@ NRI_INLINE Result DeviceD3D12::CreateCommittedMicromapD3D12(MemoryLocation memor
     return result;
 }
 
-NRI_INLINE Result DeviceD3D12::CreatePlacedAccelerationStructureD3D12(Memory* memory, uint64_t offset, const AccelerationStructureDesc& accelerationStructureDesc, AccelerationStructure*& accelerationStructure) {
+NRI_INLINE Result DeviceD3D12::CreatePlacedAccelerationStructure(Memory* memory, uint64_t offset, const AccelerationStructureDesc& accelerationStructureDesc, AccelerationStructure*& accelerationStructure) {
     Result result = CreateImplementation<AccelerationStructureD3D12>(accelerationStructure, accelerationStructureDesc);
 
     if (result != Result::SUCCESS)
@@ -1962,7 +1962,7 @@ NRI_INLINE Result DeviceD3D12::CreatePlacedAccelerationStructureD3D12(Memory* me
     return result;
 }
 
-NRI_INLINE Result DeviceD3D12::CreatePlacedMicromapD3D12(Memory* memory, uint64_t offset, const MicromapDesc& micromapDesc, Micromap*& micromap) {
+NRI_INLINE Result DeviceD3D12::CreatePlacedMicromap(Memory* memory, uint64_t offset, const MicromapDesc& micromapDesc, Micromap*& micromap) {
     Result result = CreateImplementation<MicromapD3D12>(micromap, micromapDesc);
 
     if (result != Result::SUCCESS)
