@@ -58,6 +58,11 @@ SwapChainWGPU::~SwapChainWGPU() {
 Result SwapChainWGPU::Create(const SwapChainDesc& swapChainDesc) {
     WGPUChainedStruct* surfaceSource = nullptr;
 
+#if defined(__EMSCRIPTEN__)
+    WGPUEmscriptenSurfaceSourceCanvasHTMLSelector surfaceSourceCanvas = WGPU_EMSCRIPTEN_SURFACE_SOURCE_CANVAS_HTML_SELECTOR_INIT;
+    surfaceSourceCanvas.selector = WGPUString(swapChainDesc.window.web.canvasSelector ? swapChainDesc.window.web.canvasSelector : "#canvas");
+    surfaceSource = &surfaceSourceCanvas.chain;
+#endif
 #if defined(_WIN32)
     WGPUSurfaceSourceWindowsHWND surfaceSourceWindows = WGPU_SURFACE_SOURCE_WINDOWS_HWND_INIT;
     if (swapChainDesc.window.windows.hwnd) {
@@ -109,12 +114,16 @@ Result SwapChainWGPU::Create(const SwapChainDesc& swapChainDesc) {
     WGPUPresentMode presentMode = GetSurfacePresentMode(capabilities, swapChainDesc.flags);
     WGPUCompositeAlphaMode alphaMode = GetSurfaceAlphaMode(capabilities);
 
+#if defined(__EMSCRIPTEN__)
+    WGPUTextureUsage usage = WGPUTextureUsage_RenderAttachment;
+#else
     WGPUTextureUsage usage = (WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopySrc | WGPUTextureUsage_CopyDst) & capabilities.usages;
 
     // TODO: remove WAR when wgpu-native fixes "to_native_texture_usage_flags", which reports COPY_DST as CopySrc.
     // https://github.com/gfx-rs/wgpu-native/blob/v29.0.1.1/src/conv.rs#L1759-L1766
     if (wgpuGetVersion() == 0x1D000101 && (capabilities.usages & WGPUTextureUsage_CopySrc)) // v29.0.1.1
         usage |= WGPUTextureUsage_CopyDst;
+#endif
 
     wgpuSurfaceCapabilitiesFreeMembers(capabilities);
 
@@ -157,8 +166,13 @@ Texture* const* SwapChainWGPU::GetTextures(uint32_t& textureNum) const {
 }
 
 Result SwapChainWGPU::GetDisplayDesc(DisplayDesc& displayDesc) {
+#if defined(__EMSCRIPTEN__)
+    MaybeUnused(displayDesc);
+    return Result::UNSUPPORTED;
+#else
     // TODO: DisplayDescHelper is HWND-based. Add X11/Wayland/macOS display queries for non-Windows swapchains.
     return DisplayDescHelper::GetDisplayDesc(m_Hwnd, displayDesc);
+#endif
 }
 
 Result SwapChainWGPU::AcquireNextTexture(uint32_t& textureIndex) {
@@ -185,7 +199,12 @@ Result SwapChainWGPU::WaitForPresent() {
 }
 
 Result SwapChainWGPU::Present() {
+#if defined(__EMSCRIPTEN__)
+    // Browser canvas textures are presented automatically when the animation-frame callback returns.
+    WGPUStatus status = WGPUStatus_Success;
+#else
     WGPUStatus status = wgpuSurfacePresent(m_Surface);
+#endif
     if (m_CurrentTextureIndex != uint32_t(-1)) {
         m_Textures[m_CurrentTextureIndex]->DetachSurfaceTexture();
         m_CurrentTextureIndex = uint32_t(-1);

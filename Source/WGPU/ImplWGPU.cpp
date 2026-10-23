@@ -7,6 +7,7 @@
 #include <thread>
 
 #include "SharedWGPU.h"
+#include "RenderPassDepth.hpp"
 
 #include "BufferWGPU.h"
 #include "CommandAllocatorWGPU.h"

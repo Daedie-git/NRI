@@ -123,6 +123,7 @@ static uint64_t HashGraphicsPipelineDesc(const GraphicsPipelineDesc& d) {
 }
 
 static uint64_t HashComputePipelineDesc(const ComputePipelineDesc& d) {
+    // The same shader under two root signatures is two different library entries.
     uint64_t h = ((const PipelineLayoutD3D12*)d.pipelineLayout)->GetRootSignatureHash();
     h = Fnv1a64(h, d.shader.bytecode, (size_t)d.shader.size);
     h = HashField(h, d.shader.stage);
@@ -507,8 +508,7 @@ Result PipelineD3D12::Create(const ComputePipelineDesc& computePipelineDesc) {
     if (lib) {
         ExclusiveScope lock(cache->GetStoreLock());
 
-        hr = lib->StorePipeline(cacheName, m_PipelineState);
-        NRI_RETURN_ON_BAD_HRESULT(&m_Device, hr, "ID3D12PipelineLibrary::StorePipeline");
+        lib->StorePipeline(cacheName, m_PipelineState); // ignore failures (e.g., name already present under another root signature), fallback PSO is still valid
     }
 
     return Result::SUCCESS;

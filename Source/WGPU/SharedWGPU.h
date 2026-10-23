@@ -2,7 +2,49 @@
 
 #pragma once
 
-#include <webgpu/wgpu.h>
+#if defined(__EMSCRIPTEN__)
+#    include <emscripten/em_js.h>
+#    include <webgpu/webgpu.h>
+#else
+#    include <webgpu/wgpu.h>
+#endif
+
+#if defined(__EMSCRIPTEN__)
+// Browsers expose immediates ("setImmediates" on pass encoders, WGSL "var<immediate>"), but Emdawn has no C entry
+// points for them yet. The data is copied out of the (shared) Wasm heap; immediates are at most a few hundred bytes.
+EM_JS(void, NriWgpuRenderPassSetImmediates, (WGPURenderPassEncoder pass, uint32_t offset, const void* data, uint32_t size), {
+    WebGPU.getJsObject(pass)['setImmediates'](offset, HEAPU8.slice(data, data + size));
+});
+EM_JS(void, NriWgpuComputePassSetImmediates, (WGPUComputePassEncoder pass, uint32_t offset, const void* data, uint32_t size), {
+    WebGPU.getJsObject(pass)['setImmediates'](offset, HEAPU8.slice(data, data + size));
+});
+// Emdawn's wgpuDeviceCreatePipelineLayout drops "immediateSize", so layouts reserving immediates are created through
+// the JS API and imported back as ordinary Emdawn handles.
+EM_JS(WGPUPipelineLayout, NriWgpuCreatePipelineLayoutWithImmediates, (WGPUDevice device, const WGPUBindGroupLayout* layouts, uint32_t layoutNum, uint32_t immediateSize), {
+    var bindGroupLayouts = [];
+    for (var i = 0; i < layoutNum; ++i) {
+        bindGroupLayouts.push(WebGPU.getJsObject(HEAPU32[(layouts >>> 2) + i]));
+    }
+    var layout = WebGPU.getJsObject(device)['createPipelineLayout']({ 'bindGroupLayouts': bindGroupLayouts, 'immediateSize': immediateSize });
+    return WebGPU.importJsPipelineLayout(layout);
+});
+#endif
+
+static inline void SetPassImmediates(WGPURenderPassEncoder pass, uint32_t offset, const void* data, uint32_t size) {
+#if defined(__EMSCRIPTEN__)
+    NriWgpuRenderPassSetImmediates(pass, offset, data, size);
+#else
+    wgpuRenderPassEncoderSetImmediates(pass, offset, data, size);
+#endif
+}
+
+static inline void SetPassImmediates(WGPUComputePassEncoder pass, uint32_t offset, const void* data, uint32_t size) {
+#if defined(__EMSCRIPTEN__)
+    NriWgpuComputePassSetImmediates(pass, offset, data, size);
+#else
+    wgpuComputePassEncoderSetImmediates(pass, offset, data, size);
+#endif
+}
 
 #if defined(_WIN32)
 #    include <windows.h>
@@ -32,6 +74,15 @@ struct TextureWGPU;
 inline WGPUStringView WGPUString(const char* string) {
     return {string, WGPU_STRLEN};
 }
+
+#if defined(__EMSCRIPTEN__)
+inline bool WaitForFuture(WGPUInstance instance, WGPUFuture future, uint64_t timeoutNs = UINT64_MAX) {
+    WGPUFutureWaitInfo waitInfo = WGPU_FUTURE_WAIT_INFO_INIT;
+    waitInfo.future = future;
+
+    return wgpuInstanceWaitAny(instance, 1, &waitInfo, timeoutNs) == WGPUWaitStatus_Success && waitInfo.completed == WGPU_TRUE;
+}
+#endif
 
 inline uint32_t GetCountOrOne(uint32_t value) {
     return value ? value : 1;

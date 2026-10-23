@@ -1,14 +1,30 @@
 // © 2026 NVIDIA Corporation
 
+#if defined(__EMSCRIPTEN__)
+struct RequestAdapterContext {
+    WGPUAdapter adapter = nullptr;
+    WGPURequestAdapterStatus status = WGPURequestAdapterStatus_Error;
+    bool done = false;
+};
+
+static void OnAdapterRequested(WGPURequestAdapterStatus status, WGPUAdapter adapter, WGPUStringView, void* userdata1, void*) {
+    RequestAdapterContext& context = *(RequestAdapterContext*)userdata1;
+    context.status = status;
+    context.adapter = adapter;
+    context.done = true;
+}
+#endif
+
 struct RequestDeviceContext {
     WGPUDevice device = nullptr;
     WGPURequestDeviceStatus status = WGPURequestDeviceStatus_Error;
     bool done = false;
 };
 
+#if !defined(__EMSCRIPTEN__)
 static inline bool IsSameAdapter(const AdapterDesc& adapterDesc, const WGPUAdapterInfo& adapterInfo) {
     if (adapterDesc.vendor != Vendor::UNKNOWN && adapterDesc.deviceId && adapterInfo.vendorID && adapterInfo.deviceID)
-        return adapterDesc.vendor == GetVendorFromID(adapterInfo.vendorID) && adapterDesc.deviceId == adapterInfo.deviceID;
+        return adapterDesc.vendor == GetVendorFromPCIID(adapterInfo.vendorID) && adapterDesc.deviceId == adapterInfo.deviceID;
 
     size_t nameLength = strlen(adapterDesc.name);
 
@@ -23,6 +39,7 @@ static inline bool IsAdapterSupported(WGPUAdapter adapter) {
 
     return wgpuAdapterGetLimits(adapter, &limits) == WGPUStatus_Success && limits.maxImmediateSize >= 256;
 }
+#endif
 
 static void OnDeviceRequested(WGPURequestDeviceStatus status, WGPUDevice device, WGPUStringView, void* userdata1, void*) {
     RequestDeviceContext& context = *(RequestDeviceContext*)userdata1;
@@ -31,12 +48,18 @@ static void OnDeviceRequested(WGPURequestDeviceStatus status, WGPUDevice device,
     context.done = true;
 }
 
-static void WaitForAsyncRequest(WGPUInstance instance, const bool& done) {
+static void WaitForAsyncRequest(WGPUInstance instance, const bool& done, WGPUFuture future) {
+#if defined(__EMSCRIPTEN__)
+    MaybeUnused(done);
+    WaitForFuture(instance, future);
+#else
+    MaybeUnused(future);
     // TODO: This is a busy wait around async WGPU requests. Prefer a blocking/event-based path if wgpu-native exposes one.
     while (!done) {
         wgpuInstanceProcessEvents(instance);
         std::this_thread::yield();
     }
+#endif
 }
 
 static bool IsBCFormat(Format format) {
@@ -129,6 +152,21 @@ static bool Is16BitNormFormat(Format format) {
     }
 }
 
+#if defined(__EMSCRIPTEN__)
+static void OnDeviceLost(WGPUDevice const*, WGPUDeviceLostReason reason, WGPUStringView message, void* userdata1, void*) {
+    // Expected destruction/cancellation can outlive DeviceWGPU; do not dereference its callback data.
+    if (reason == WGPUDeviceLostReason_Destroyed || reason == WGPUDeviceLostReason_CallbackCancelled)
+        return;
+    DeviceWGPU* device = (DeviceWGPU*)userdata1;
+    NRI_REPORT_ERROR(device, "WebGPU device lost: %.*s", (int)message.length, message.data ? message.data : "");
+}
+
+static void OnUncapturedError(WGPUDevice const*, WGPUErrorType, WGPUStringView message, void* userdata1, void*) {
+    DeviceWGPU* device = (DeviceWGPU*)userdata1;
+    NRI_REPORT_ERROR(device, "WebGPU uncaptured error: %.*s", (int)message.length, message.data ? message.data : "");
+}
+#endif
+
 DeviceWGPU::DeviceWGPU(const CallbackInterface& callbacks, const AllocationCallbacks& allocationCallbacks)
     : DeviceBase(callbacks, allocationCallbacks)
     , m_QueueFamilies{
@@ -198,6 +236,14 @@ Result DeviceWGPU::Create(const DeviceCreationDesc& desc) {
 }
 
 Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
+#if defined(__EMSCRIPTEN__)
+    MaybeUnused(desc);
+    WGPUInstanceFeatureName instanceFeatures[] = {WGPUInstanceFeatureName_TimedWaitAny};
+
+    WGPUInstanceDescriptor instanceDesc = WGPU_INSTANCE_DESCRIPTOR_INIT;
+    instanceDesc.requiredFeatureCount = GetCountOf(instanceFeatures);
+    instanceDesc.requiredFeatures = instanceFeatures;
+#else
     WGPUInstanceExtras instanceExtras = {};
     instanceExtras.chain.sType = (WGPUSType)WGPUSType_InstanceExtras;
     // TODO: Backend selection is left to wgpu-native. Forcing DX12 was observed to crash during early WGPU backend profiling.
@@ -210,11 +256,30 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
     instanceDesc.nextInChain = &instanceExtras.chain;
     instanceDesc.requiredFeatureCount = GetCountOf(instanceFeatures);
     instanceDesc.requiredFeatures = instanceFeatures;
+#endif
 
     m_Instance = wgpuCreateInstance(&instanceDesc);
     if (!m_Instance)
         return Result::FAILURE;
 
+#if defined(__EMSCRIPTEN__)
+    WGPURequestAdapterOptions adapterOptions = WGPU_REQUEST_ADAPTER_OPTIONS_INIT;
+    adapterOptions.powerPreference = WGPUPowerPreference_HighPerformance;
+
+    RequestAdapterContext adapterContext = {};
+    WGPURequestAdapterCallbackInfo adapterCallbackInfo = WGPU_REQUEST_ADAPTER_CALLBACK_INFO_INIT;
+    adapterCallbackInfo.mode = WGPUCallbackMode_WaitAnyOnly;
+    adapterCallbackInfo.callback = OnAdapterRequested;
+    adapterCallbackInfo.userdata1 = &adapterContext;
+
+    WGPUFuture adapterFuture = wgpuInstanceRequestAdapter(m_Instance, &adapterOptions, adapterCallbackInfo);
+    WaitForAsyncRequest(m_Instance, adapterContext.done, adapterFuture);
+
+    if (adapterContext.status != WGPURequestAdapterStatus_Success || !adapterContext.adapter)
+        return Result::FAILURE;
+
+    m_Adapter = adapterContext.adapter;
+#else
     WGPUInstanceEnumerateAdapterOptions adapterOptions = {};
     adapterOptions.backends = WGPUInstanceBackend_Primary;
 
@@ -241,9 +306,11 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
 
     if (!m_Adapter)
         return Result::FAILURE;
+#endif
 
     std::array<WGPUFeatureName, 48> requiredFeatures = {};
     size_t requiredFeatureNum = 0;
+#if !defined(__EMSCRIPTEN__)
     // TODO: Root constants rely on the wgpu-native "immediates" extension, not core WebGPU.
     requiredFeatures[requiredFeatureNum++] = (WGPUFeatureName)WGPUNativeFeature_Immediates;
 
@@ -251,6 +318,7 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
         requiredFeatures[requiredFeatureNum++] = (WGPUFeatureName)WGPUNativeFeature_TextureAdapterSpecificFormatFeatures;
     if (wgpuAdapterHasFeature(m_Adapter, (WGPUFeatureName)WGPUNativeFeature_TextureFormat16bitNorm))
         requiredFeatures[requiredFeatureNum++] = (WGPUFeatureName)WGPUNativeFeature_TextureFormat16bitNorm;
+#endif
     if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_TextureCompressionBC))
         requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_TextureCompressionBC;
     if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_TextureCompressionETC2))
@@ -285,6 +353,19 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
         requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_PrimitiveIndex;
     if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_TextureComponentSwizzle))
         requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_TextureComponentSwizzle;
+#if defined(__EMSCRIPTEN__)
+    if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_MultiDrawIndirect))
+        requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_MultiDrawIndirect;
+    // Pass-boundary timestamps (WGPUPassTimestampWrites); timestamp writes inside passes/encoders are not exposed by Dawn.
+    if (wgpuAdapterHasFeature(m_Adapter, WGPUFeatureName_TimestampQuery))
+        requiredFeatures[requiredFeatureNum++] = WGPUFeatureName_TimestampQuery;
+
+    // Browser devices default to the core minimum limits; request what the adapter offers, including immediates.
+    WGPULimits requiredLimits = WGPU_LIMITS_INIT;
+    if (wgpuAdapterGetLimits(m_Adapter, &requiredLimits) != WGPUStatus_Success)
+        return Result::FAILURE;
+    requiredLimits.nextInChain = nullptr;
+#else
     if (wgpuAdapterHasFeature(m_Adapter, (WGPUFeatureName)WGPUNativeFeature_TextureBindingArray))
         requiredFeatures[requiredFeatureNum++] = (WGPUFeatureName)WGPUNativeFeature_TextureBindingArray;
     if (wgpuAdapterHasFeature(m_Adapter, (WGPUFeatureName)WGPUNativeFeature_SampledTextureAndStorageBufferArrayNonUniformIndexing))
@@ -321,21 +402,34 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
 
     WGPUDeviceExtras deviceExtras = {};
     deviceExtras.chain.sType = (WGPUSType)WGPUSType_DeviceExtras;
+#endif
 
     WGPUDeviceDescriptor deviceDesc = WGPU_DEVICE_DESCRIPTOR_INIT;
+#if defined(__EMSCRIPTEN__)
+    deviceDesc.deviceLostCallbackInfo.mode = WGPUCallbackMode_AllowSpontaneous;
+    deviceDesc.deviceLostCallbackInfo.callback = OnDeviceLost;
+    deviceDesc.deviceLostCallbackInfo.userdata1 = this;
+    deviceDesc.uncapturedErrorCallbackInfo.callback = OnUncapturedError;
+    deviceDesc.uncapturedErrorCallbackInfo.userdata1 = this;
+#else
     deviceDesc.nextInChain = &deviceExtras.chain;
+#endif
     deviceDesc.requiredFeatureCount = requiredFeatureNum;
     deviceDesc.requiredFeatures = requiredFeatures.data();
     deviceDesc.requiredLimits = &requiredLimits;
 
     RequestDeviceContext deviceContext = {};
     WGPURequestDeviceCallbackInfo deviceCallbackInfo = WGPU_REQUEST_DEVICE_CALLBACK_INFO_INIT;
+#if defined(__EMSCRIPTEN__)
+    deviceCallbackInfo.mode = WGPUCallbackMode_WaitAnyOnly;
+#else
     deviceCallbackInfo.mode = WGPUCallbackMode_AllowProcessEvents;
+#endif
     deviceCallbackInfo.callback = OnDeviceRequested;
     deviceCallbackInfo.userdata1 = &deviceContext;
 
-    wgpuAdapterRequestDevice(m_Adapter, &deviceDesc, deviceCallbackInfo);
-    WaitForAsyncRequest(m_Instance, deviceContext.done);
+    WGPUFuture deviceFuture = wgpuAdapterRequestDevice(m_Adapter, &deviceDesc, deviceCallbackInfo);
+    WaitForAsyncRequest(m_Instance, deviceContext.done, deviceFuture);
 
     if (deviceContext.status != WGPURequestDeviceStatus_Success || !deviceContext.device)
         return Result::FAILURE;
@@ -343,9 +437,14 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
     m_Device = deviceContext.device;
     m_Queue = wgpuDeviceGetQueue(m_Device);
     m_IsSubgroupsSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_Subgroups) == WGPU_TRUE;
+#if defined(__EMSCRIPTEN__)
+    m_IsMultiDrawIndirectSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_MultiDrawIndirect) == WGPU_TRUE && !g_DisableMultiDrawIndirect;
+    m_IsTimestampQueryInsidePassesSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TimestampQuery) == WGPU_TRUE;
+#else
     m_IsTimestampQueryInsidePassesSupported = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TimestampQuery) == WGPU_TRUE
         && wgpuDeviceHasFeature(m_Device, (WGPUFeatureName)WGPUNativeFeature_TimestampQueryInsideEncoders) == WGPU_TRUE
         && wgpuDeviceHasFeature(m_Device, (WGPUFeatureName)WGPUNativeFeature_TimestampQueryInsidePasses) == WGPU_TRUE;
+#endif
 
     return m_Queue ? Result::SUCCESS : Result::FAILURE;
 }
@@ -353,8 +452,10 @@ Result DeviceWGPU::CreateInstanceAndDevice(const DeviceCreationDesc& desc) {
 void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.adapterDesc = adapterDesc;
     m_Desc.adapterDesc.queueNum[(uint32_t)QueueType::GRAPHICS] = 1;
-    m_Desc.adapterDesc.queueNum[(uint32_t)QueueType::COMPUTE] = 0;
-    m_Desc.adapterDesc.queueNum[(uint32_t)QueueType::COPY] = 0;
+    // WebGPU exposes one universal queue. Publish logical views for NRI clients that
+    // model graphics, compute, and transfer independently.
+    m_Desc.adapterDesc.queueNum[(uint32_t)QueueType::COMPUTE] = 1;
+    m_Desc.adapterDesc.queueNum[(uint32_t)QueueType::COPY] = 1;
 
     WGPULimits limits = WGPU_LIMITS_INIT;
     wgpuDeviceGetLimits(m_Device, &limits);
@@ -398,22 +499,27 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.memoryAlignment.micromapOffset = 1;
 
     m_Desc.pipelineLayout.descriptorSetMaxNum = limits.maxBindGroups;
-    m_Desc.pipelineLayout.rootConstantMaxSize = 256;
+    m_Desc.pipelineLayout.rootConstantMaxSize = limits.maxImmediateSize;
     m_Desc.pipelineLayout.rootDescriptorMaxNum = 8;
     m_Desc.pipelineLayout.rootSamplerMaxNum = limits.maxSamplersPerShaderStage;
 
-    m_Desc.descriptorSet.samplerMaxNum = limits.maxSamplersPerShaderStage;
-    m_Desc.descriptorSet.constantBufferMaxNum = limits.maxUniformBuffersPerShaderStage;
-    m_Desc.descriptorSet.storageBufferMaxNum = limits.maxStorageBuffersPerShaderStage;
-    m_Desc.descriptorSet.textureMaxNum = limits.maxSampledTexturesPerShaderStage;
-    m_Desc.descriptorSet.storageTextureMaxNum = limits.maxStorageTexturesPerShaderStage;
+    // WebGPU has no independent per-group type caps: each entry consumes one granted binding.
+    // Per-stage type limits are reported separately below and must not constrain cross-stage groups.
+    m_Desc.descriptorSet.samplerMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.constantBufferMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.storageBufferMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.textureMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.storageTextureMaxNum = limits.maxBindingsPerBindGroup;
+    m_Desc.descriptorSet.bindingMaxNum = limits.maxBindingsPerBindGroup;
 
     m_Desc.shaderStage.descriptorSamplerMaxNum = limits.maxSamplersPerShaderStage;
     m_Desc.shaderStage.descriptorConstantBufferMaxNum = limits.maxUniformBuffersPerShaderStage;
     m_Desc.shaderStage.descriptorStorageBufferMaxNum = limits.maxStorageBuffersPerShaderStage;
     m_Desc.shaderStage.descriptorTextureMaxNum = limits.maxSampledTexturesPerShaderStage;
     m_Desc.shaderStage.descriptorStorageTextureMaxNum = limits.maxStorageTexturesPerShaderStage;
-    m_Desc.shaderStage.resourceMaxNum = limits.maxBindingsPerBindGroup;
+    // WebGPU has independent per-stage resource limits, not a separate aggregate limit.
+    m_Desc.shaderStage.resourceMaxNum = (uint32_t)std::min<uint64_t>((uint64_t)limits.maxSamplersPerShaderStage + limits.maxUniformBuffersPerShaderStage
+        + limits.maxStorageBuffersPerShaderStage + limits.maxSampledTexturesPerShaderStage + limits.maxStorageTexturesPerShaderStage, UINT32_MAX);
 
     m_Desc.shaderStage.vertex.attributeMaxNum = limits.maxVertexAttributes;
     m_Desc.shaderStage.vertex.streamMaxNum = limits.maxVertexBuffers;
@@ -445,12 +551,16 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.wave.derivativeOpsStages = StageBits::FRAGMENT_SHADER;
 
     if (m_IsTimestampQueryInsidePassesSupported) {
+#if !defined(__EMSCRIPTEN__)
         float timestampPeriod = wgpuQueueGetTimestampPeriod(m_Queue);
         m_Desc.other.timestampFrequencyHz = timestampPeriod > 0.0f ? uint64_t(1e9 / double(timestampPeriod) + 0.5) : 1;
+#else
+        m_Desc.other.timestampFrequencyHz = 1000000000ull; // WebGPU timestamps are nanoseconds
+#endif
     } else
         m_Desc.other.timestampFrequencyHz = 1;
 
-    m_Desc.other.drawIndirectMaxNum = 1;
+    m_Desc.other.drawIndirectMaxNum = m_IsMultiDrawIndirectSupported ? uint32_t(-1) : 1;
     m_Desc.other.samplerLodBiasMax = 16.0f;
     m_Desc.other.samplerAnisotropyMax = 16;
     m_Desc.other.texelOffsetMin = -8;
@@ -475,7 +585,11 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.features.textureCompressionBC = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TextureCompressionBC) == WGPU_TRUE;
     m_Desc.features.textureCompressionETC2 = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TextureCompressionETC2) == WGPU_TRUE;
     m_Desc.features.textureCompressionASTC = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TextureCompressionASTC) == WGPU_TRUE;
+#if defined(__EMSCRIPTEN__)
+    m_Desc.features.shaderBytecodeSPIRV = false;
+#else
     m_Desc.features.shaderBytecodeSPIRV = true;
+#endif
     m_Desc.features.shaderBytecodeWGSL = true;
     m_Desc.features.timestamp = m_IsTimestampQueryInsidePassesSupported;
     m_Desc.features.rectColorClears = true;
@@ -483,6 +597,8 @@ void DeviceWGPU::FillDesc(const AdapterDesc& adapterDesc) {
     m_Desc.features.getMemoryDesc2 = true;
     m_Desc.features.componentSwizzle = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_TextureComponentSwizzle) == WGPU_TRUE;
     m_Desc.features.rootConstantsOffset = true;
+    // Without multi-draw-indirect, count draws loop over every record (the producer zeroes the unused ones).
+    m_Desc.features.drawIndirectCount = true;
     m_Desc.shaderFeatures.nativeF16 = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_ShaderF16) == WGPU_TRUE;
     m_Desc.shaderFeatures.drawParameters = wgpuDeviceHasFeature(m_Device, WGPUFeatureName_IndirectFirstInstance) == WGPU_TRUE;
 }
@@ -498,8 +614,13 @@ FormatSupportBits DeviceWGPU::GetFormatSupport(Format format) const {
         return FormatSupportBits::UNSUPPORTED;
     if (IsASTCFormat(format) && !m_Desc.features.textureCompressionASTC)
         return FormatSupportBits::UNSUPPORTED;
+#if !defined(__EMSCRIPTEN__)
     if (Is16BitNormFormat(format) && wgpuDeviceHasFeature(m_Device, (WGPUFeatureName)WGPUNativeFeature_TextureFormat16bitNorm) != WGPU_TRUE)
         return FormatSupportBits::UNSUPPORTED;
+#else
+    if (Is16BitNormFormat(format))
+        return FormatSupportBits::UNSUPPORTED;
+#endif
     if (format == Format::D32_SFLOAT_S8_UINT && wgpuDeviceHasFeature(m_Device, WGPUFeatureName_Depth32FloatStencil8) != WGPU_TRUE)
         return FormatSupportBits::UNSUPPORTED;
 
@@ -534,8 +655,16 @@ Result DeviceWGPU::GetQueue(QueueType queueType, uint32_t queueIndex, Queue*& qu
 Result DeviceWGPU::WaitIdle() {
     ExclusiveScope lock(m_QueueLock);
 
-    if (m_Device)
+    if (m_Device) {
+#if defined(__EMSCRIPTEN__)
+        WGPUQueueWorkDoneCallbackInfo callbackInfo = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+        callbackInfo.mode = WGPUCallbackMode_WaitAnyOnly;
+        callbackInfo.callback = [](WGPUQueueWorkDoneStatus, WGPUStringView, void*, void*) {};
+        WaitForFuture(m_Instance, wgpuQueueOnSubmittedWorkDone(m_Queue, callbackInfo));
+#else
         wgpuDevicePoll(m_Device, WGPU_TRUE, nullptr);
+#endif
+    }
 
     return Result::SUCCESS;
 }
@@ -600,8 +729,15 @@ Result DeviceWGPU::UploadHostMemoryToTexture(const UploadHostMemoryToTextureDesc
         wgpuQueueWriteTexture(m_Queue, &dst, copyDesc.srcData, dataSize, &src.layout, &extent);
     }
 
+#if defined(__EMSCRIPTEN__)
+    WGPUQueueWorkDoneCallbackInfo callbackInfo = WGPU_QUEUE_WORK_DONE_CALLBACK_INFO_INIT;
+    callbackInfo.mode = WGPUCallbackMode_WaitAnyOnly;
+    callbackInfo.callback = [](WGPUQueueWorkDoneStatus, WGPUStringView, void*, void*) {};
+    WaitForFuture(m_Instance, wgpuQueueOnSubmittedWorkDone(m_Queue, callbackInfo));
+#else
     WGPUSubmissionIndex submissionIndex = wgpuQueueSubmitForIndex(m_Queue, 0, nullptr);
     wgpuDevicePoll(m_Device, WGPU_TRUE, &submissionIndex);
+#endif
 
     return Result::SUCCESS;
 }
@@ -664,7 +800,11 @@ Result DeviceWGPU::ReadbackTextureToHostMemory(const ReadbackTextureToHostMemory
 
     if (result == Result::SUCCESS) {
         ExclusiveScope lock(m_QueueLock);
+#if defined(__EMSCRIPTEN__)
+        wgpuQueueSubmit(m_Queue, 1, &commandBuffer);
+#else
         wgpuQueueSubmitForIndex(m_Queue, 1, &commandBuffer);
+#endif
     }
 
     if (commandBuffer)

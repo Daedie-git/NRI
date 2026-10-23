@@ -13,9 +13,11 @@ NRI_INLINE void* BufferVal::Map(uint64_t offset, uint64_t size) {
     NRI_RETURN_ON_FAILURE(&m_Device, !m_IsMapped, nullptr, "the buffer is already mapped (D3D11 doesn't support nested calls)");
     NRI_RETURN_ON_FAILURE(&m_Device, offset + size <= m_Desc.size, nullptr, "out of bounds");
 
-    m_IsMapped = true;
+    // A map that is not ready (deferred browser readback) or failed leaves the buffer unmapped.
+    void* mapped = GetCoreInterfaceImpl().MapBuffer(*GetImpl(), offset, size);
+    m_IsMapped = mapped != nullptr;
 
-    return GetCoreInterfaceImpl().MapBuffer(*GetImpl(), offset, size);
+    return mapped;
 }
 
 NRI_INLINE void BufferVal::Unmap() {

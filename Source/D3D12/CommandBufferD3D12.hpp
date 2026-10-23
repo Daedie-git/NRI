@@ -172,11 +172,15 @@ static inline D3D12_BARRIER_SYNC GetBarrierSyncFlags(StageBits stageBits, Access
         flags |= D3D12_BARRIER_SYNC_VIDEO_ENCODE;
 
     if (stageBits & (StageBits::ACCELERATION_STRUCTURE | StageBits::MICROMAP)) {
-        flags |= D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE | D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE;
+        flags |= D3D12_BARRIER_SYNC_BUILD_RAYTRACING_ACCELERATION_STRUCTURE;
+
+        // AS copies access AS memory, not geometry inputs (SHADER_RESOURCE) or scratch buffers (UAV).
+        if (accessBits & (AccessBits::ACCELERATION_STRUCTURE_READ | AccessBits::ACCELERATION_STRUCTURE_WRITE | AccessBits::MICROMAP_READ | AccessBits::MICROMAP_WRITE))
+            flags |= D3D12_BARRIER_SYNC_COPY_RAYTRACING_ACCELERATION_STRUCTURE;
 
         // There is no "EMIT_POSTBUILD_INFO" flag in VK, moreover "VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR" already includes "ACCELERATION_STRUCTURE_COPY".
         // "EMIT_POSTBUILD_INFO" can't be set if "write" access is expected.
-        if (!(accessBits & AccessBits::ACCELERATION_STRUCTURE_WRITE))
+        if (!(accessBits & (AccessBits::ACCELERATION_STRUCTURE_WRITE | AccessBits::MICROMAP_WRITE | AccessBits::SHADER_RESOURCE)))
             flags |= D3D12_BARRIER_SYNC_EMIT_RAYTRACING_ACCELERATION_STRUCTURE_POSTBUILD_INFO;
     }
 

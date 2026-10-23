@@ -35,6 +35,8 @@ struct BufferWGPU final : public DebugNameBase {
     Result Create(const BufferDesc& bufferDesc);
     Result Create(const BufferDesc& bufferDesc, MemoryLocation memoryLocation);
     void* Map(uint64_t offset, uint64_t size);
+    // Host-visible upload buffers are CPU shadows; GPU reads of a range need its latest bytes queued first.
+    void FlushHostWrites(uint64_t offset, uint64_t size);
     void Unmap();
 
     Result SetHostVisible(MemoryLocation memoryLocation);
@@ -56,6 +58,12 @@ private:
     WGPUBuffer m_Buffer = nullptr;
     BufferDesc m_Desc = {};
     const void* m_MappedReadback = nullptr;
+#if defined(__EMSCRIPTEN__)
+    // The browser cannot block a frame on a map. The first Map starts it and reports not-ready (nullptr);
+    // a later call after the event loop delivered the callback returns the range.
+    struct PendingMap;
+    PendingMap* m_PendingMap = nullptr;
+#endif
     uint64_t m_MapOffset = 0;
     uint64_t m_MapSize = 0;
     MemoryLocation m_MemoryLocation = MemoryLocation::DEVICE;
