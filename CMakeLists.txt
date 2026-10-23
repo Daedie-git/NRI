@@ -152,8 +152,13 @@ if(${CMAKE_SOURCE_DIR} STREQUAL ${CMAKE_CURRENT_SOURCE_DIR}) # if not submodule
         set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "")
     endif()
 
-    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .dll
-    set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .so
+    if(NRI_BUILD_TESTS AND NRI_VIDEO_ENABLE_SANITIZERS)
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+        set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    else()
+        set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .dll
+        set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/_Bin" CACHE STRING "") # .so
+    endif()
 endif()
 
 # Enable grouping of source files into folders in IDEs
@@ -195,6 +200,20 @@ endforeach()
 
 # Construct list of dependencies # TODO: update to latest releases from time to time
 set(DEPS)
+
+if(NRI_BUILD_TESTS)
+    enable_language(C)
+    include(CTest)
+
+    fetchcontent_declare(
+        catch2
+        DOWNLOAD_EXTRACT_TIMESTAMP 1
+        DOWNLOAD_NO_PROGRESS 1
+        URL https://github.com/catchorg/Catch2/archive/refs/tags/v3.15.0.tar.gz
+        URL_HASH SHA256=9650c55e497759cc39b977e45524bc8acb15256061c112080916ab6cb0b1ea66
+    )
+    list(APPEND DEPS catch2)
+endif()
 
 # Dependencies:
 # - URL - good (no fat ".git" folder)
@@ -1561,4 +1580,8 @@ if(NRI_ENABLE_SHADERMAKE)
     )
 
     message("NRI: shaders path '${NRI_SHADERS_PATH}'")
+endif()
+
+if(NRI_BUILD_TESTS)
+    add_subdirectory(Tests)
 endif()
